@@ -1,0 +1,83 @@
+[package]
+name = "tqsdk-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["pseudocodes@gmail.com"]
+description = "天勤 TQSDK Rust 封装提供获取 TQSDK 行情, K 线数据以及实盘交易接口"
+license = "Apache-2.0"
+repository = "https://github.com/pseudocodes/tqsdk-rs"
+keywords = ["tqsdk", "tqsdk-rs", "shinnytech", "quant", "trader"]
+categories = ["api-bindings", "finance"]
+
+[dependencies]
+# WebSocket - yawc 必须使用
+yawc = { version = "0.2.7", features = ["zlib"] }
+
+reqwest = { version = "0.12.24", features = [
+    "json",
+    "gzip",
+    "brotli",
+    "stream",
+] } # HTTP Client - 需要 gzip, br, stream
+
+# 异步运行时
+tokio = { version = "1.48.0", features = ["full"] }
+tokio-stream = "0.1.17"
+async-stream = "0.3.6"
+async-channel = "2.3.1"
+futures = "0.3.31"
+
+# Async trait
+async-trait = "0.1.89"
+
+# JSON
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+# JWT
+jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"] }
+
+# 日志
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = [
+    "env-filter",
+    "fmt",
+    "ansi",
+] }
+
+# 错误处理
+thiserror = "2.0.17"
+
+# 时间
+chrono = { version = "0.4.42", features = ["serde"] }
+
+# 其他
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+url = "2.5.7"
+
+[dev-dependencies]
+tokio-test = "0.4.4"
+
+[[example]]
+name = "quote"
+path = "examples/quote.rs"
+
+[[example]]
+name = "history"
+path = "examples/history.rs"
+
+[[example]]
+name = "trade"
+path = "examples/trade.rs"
+
+[[example]]
+name = "auth_demo"
+path = "examples/auth_demo.rs"
+
+[[example]]
+name = "auth_switch"
+path = "examples/auth_switch.rs"
+
+[[example]]
+name = "client_builder"
+path = "examples/client_builder.rs"
