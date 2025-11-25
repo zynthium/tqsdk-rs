@@ -142,7 +142,10 @@ pub struct Quote {
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub open: f64,
     /// 收盘价
-    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan_or_dash")]
+    #[serde(
+        default = "default_nan",
+        deserialize_with = "deserialize_f64_or_nan_or_dash"
+    )]
     pub close: f64,
     /// 均价
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
@@ -167,7 +170,10 @@ pub struct Quote {
 
     // 结算价
     /// 结算价
-    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan_or_dash")]
+    #[serde(
+        default = "default_nan",
+        deserialize_with = "deserialize_f64_or_nan_or_dash"
+    )]
     pub settlement: f64,
     /// 昨结算价
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
@@ -401,6 +407,7 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Kline {
     /// K线ID
+    #[serde(default)]
     pub id: i64,
     /// K线起点时间(纳秒)
     pub datetime: i64,
@@ -448,6 +455,7 @@ impl Default for Kline {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tick {
     /// Tick ID
+    #[serde(default)]
     pub id: i64,
     /// tick时间(纳秒)
     pub datetime: i64,
@@ -463,23 +471,40 @@ pub struct Tick {
     // 盘口
     pub ask_price1: f64,
     pub ask_volume1: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price2: f64,
+
     pub ask_volume2: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price3: f64,
     pub ask_volume3: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price4: f64,
     pub ask_volume4: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price5: f64,
     pub ask_volume5: i64,
 
     pub bid_price1: f64,
     pub bid_volume1: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price2: f64,
     pub bid_volume2: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price3: f64,
     pub bid_volume3: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price4: f64,
     pub bid_volume4: i64,
+
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price5: f64,
     pub bid_volume5: i64,
 

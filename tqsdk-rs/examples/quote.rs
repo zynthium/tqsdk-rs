@@ -6,11 +6,11 @@
 //! - 多合约 K线订阅（自动对齐）
 //! - Tick 订阅
 
-use std::{env, vec};
 use std::time::Duration;
+use std::{env, vec};
 use tokio;
 use tqsdk_rs::*;
-use tracing::info;
+use tracing::{info, warn};
 
 /// Quote 订阅示例
 async fn quote_subscription_example() {
@@ -37,18 +37,13 @@ async fn quote_subscription_example() {
 
     // 订阅多个合约
     info!("开始订阅合约...");
-    let ins_list = vec!["SHFE.au2602",  "SHFE.ag2512", "DCE.m2512"];
-    
+    let ins_list = vec!["SHFE.au2602", "SHFE.ag2512", "DCE.m2512"];
+
     // let quote_sub = client
     //     .subscribe_quote(&["SHFE.au2602", "SHFE.ag2512", "DCE.m2512"])
     //     .await
     //     .expect("订阅失败");
-        let quote_sub = client
-        .subscribe_quote(&ins_list)
-        .await
-        .expect("订阅失败");
-
-
+    let quote_sub = client.subscribe_quote(&ins_list).await.expect("订阅失败");
 
     // 方式 1: 使用 Channel 接收（async-channel 支持多个订阅者）
     let quote_rx = quote_sub.quote_channel();
@@ -107,7 +102,9 @@ async fn single_kline_subscription_example() {
     let mut config = ClientConfig::default();
     config.log_level = "info".to_string();
     config.view_width = 500;
-    
+
+    let symbol = "SHFE.au2602";
+
     let mut client = Client::new(&username, &password, config)
         .await
         .expect("创建客户端失败");
@@ -117,13 +114,15 @@ async fn single_kline_subscription_example() {
     // 创建订阅（延迟启动，推荐方式）
     let series_api = client.series().expect("获取 series API 失败");
     let sub = series_api
-        .kline("SHFE.au2602", Duration::from_secs(60), 5)
+        // .kline("SHFE.au2602", Duration::from_secs(60), 5)
+        .kline(&symbol, Duration::from_secs(60), 5)
         .await
         .expect("订阅失败");
 
+    let symbol2 = symbol;
     // 方式 1: 使用通用更新回调（包含更新信息）
     sub.on_update(|data, info| {
-        if let Some(sym_data) = data.get_symbol_klines("SHFE.au2602") {
+        if let Some(sym_data) = data.get_symbol_klines(symbol2) {
             if info.has_new_bar {
                 // 新增了一根 K线
                 info!(
@@ -160,10 +159,7 @@ async fn single_kline_subscription_example() {
             if info.chart_range_changed {
                 info!(
                     "📊 Chart 范围变化: [{},{}] -> [{},{}]",
-                    info.old_left_id,
-                    info.old_right_id,
-                    info.new_left_id,
-                    info.new_right_id
+                    info.old_left_id, info.old_right_id, info.new_left_id, info.new_right_id
                 );
             }
 
@@ -172,18 +168,19 @@ async fn single_kline_subscription_example() {
                     if let Some(chart) = &single.chart {
                         info!(
                             "✅ Chart 同步完成! 范围: [{},{}]",
-                            chart.left_id,
-                            chart.right_id
+                            chart.left_id, chart.right_id
                         );
                     }
                 }
             }
         }
-    }).await;
+    })
+    .await;
 
+    let symbol3 = symbol;
     // 方式 2: 使用专门的新 K线回调
     sub.on_new_bar(|data| {
-        if let Some(sym_data) = data.get_symbol_klines("SHFE.au2602") {
+        if let Some(sym_data) = data.get_symbol_klines(symbol3) {
             if let Some(latest) = sym_data.data.last() {
                 info!(
                     "🎯 新 K线: [{}] C={:.2} V={} (序列长度={})",
@@ -204,15 +201,17 @@ async fn single_kline_subscription_example() {
                 }
             }
         }
-    }).await;
+    })
+    .await;
 
     sub.on_bar_update(|data| {
-        if let Some(sym_data) = data.get_symbol_klines("SHFE.au2602") {
+        if let Some(sym_data) = data.get_symbol_klines(symbol) {
             if let Some(latest) = sym_data.data.last() {
                 info!("⏰ K线更新: [{}] C={:.2} (实时)", latest.id, latest.close);
             }
         }
-    }).await;
+    })
+    .await;
 
     // 所有回调注册完成后，启动监听（不会错过数据）
     sub.start().await.expect("启动监听失败");
@@ -233,10 +232,10 @@ async fn multi_kline_subscription_example() {
     let mut config = ClientConfig::default();
     config.log_level = "info".to_string();
     config.view_width = 500;
-    
+
     let mut client = Client::new(&username, &password, config)
-    .await
-    .expect("创建客户端失败");
+        .await
+        .expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -297,7 +296,8 @@ async fn multi_kline_subscription_example() {
                 );
             }
         }
-    }).await;
+    })
+    .await;
 
     sub.start().await.expect("启动监听失败");
 
@@ -317,19 +317,16 @@ async fn tick_subscription_example() {
     config.log_level = "info".to_string();
     config.development = true;
     config.view_width = 500;
-    
+
     let mut client = Client::new(&username, &password, config)
-    .await
-    .expect("创建客户端失败");
+        .await
+        .expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
     // 创建订阅（延迟启动，推荐方式）
     let series_api = client.series().expect("获取 series API 失败");
-    let sub = series_api
-        .tick("SHFE.au2602", 5)
-        .await
-        .expect("订阅失败");
+    let sub = series_api.tick("SHFE.au2602", 5).await.expect("订阅失败");
 
     // 先注册所有回调函数
     sub.on_new_bar(|data| {
@@ -356,7 +353,8 @@ async fn tick_subscription_example() {
                 info!("🔄 Tick 更新: [{}] 最新价={:.2}", tick.id, tick.last_price);
             }
         }
-    }).await;
+    })
+    .await;
 
     // 所有回调注册完成后，启动监听（不会错过数据）
     sub.start().await.expect("启动监听失败");
@@ -370,7 +368,7 @@ async fn tick_subscription_example() {
 #[tokio::main]
 async fn main() {
     // 初始化日志
-    tqsdk_rs::init_logger("debug", true);
+    tqsdk_rs::init_logger("debug", false);
 
     // 运行各个示例（取消注释以运行）
     // quote_subscription_example().await;

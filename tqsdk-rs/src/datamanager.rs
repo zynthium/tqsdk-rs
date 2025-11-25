@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use async_channel::{Sender, Receiver, unbounded};
-use tracing::{debug, warn};
+use tracing::{debug, error};
 
 /// 数据管理器配置
 #[derive(Debug, Clone)]
@@ -284,7 +284,6 @@ impl DataManager {
                 _ => return None,
             }
         }
-        warn!("path:[{:?}] {:?}", path, current);
         Some(current.clone())
     }
 
@@ -457,16 +456,20 @@ impl DataManager {
             // 转换 data map 为数组
             if let Some(Value::Object(kline_map)) = data_map.get("data") {
                 let mut all_klines: Vec<(i64, Kline)> = Vec::new();
-
+                
                 for (id_str, kline_data) in kline_map.iter() {
                     if let Ok(id) = id_str.parse::<i64>() {
-                        if let Ok(mut kline) = self.convert_to_struct::<Kline>(kline_data) {
-                            kline.id = id;
-                            all_klines.push((id, kline));
+                        match self.convert_to_struct::<Kline>(kline_data) {
+                            Ok(mut kline) => {
+                                kline.id = id;
+                                all_klines.push((id, kline));
+                            }
+                            Err(e) => {
+                                error!("{}", TqError::ParseError(format!("K线数据格式错误: {}", e)));
+                            }
                         }
                     }
                 }
-
                 // 按 ID 排序
                 all_klines.sort_by_key(|(id, _)| *id);
 
@@ -491,7 +494,6 @@ impl DataManager {
                     .into_iter()
                     .rev()
                     .collect();
-
                 kline_series.data = klines;
             }
 

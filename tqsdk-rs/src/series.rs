@@ -304,6 +304,7 @@ impl SeriesSubscription {
 
         self.start_watching().await;
         self.send_set_chart().await?;
+        warn!("send_set_chart done");
         Ok(())
     }
 
@@ -340,7 +341,6 @@ impl SeriesSubscription {
             tokio::spawn(async move {
                 let is_running = *running.read().await;
                 if !is_running {
-                    println!("is _running false? {}", is_running);
                     return;
                 }
                 
@@ -362,7 +362,6 @@ impl SeriesSubscription {
                 {
                     Ok((series_data, update_info)) => {
                         // 调用回调
-                        warn!("call handler {:?} {:?}", series_data, update_info);
                         if let Some(callback) = on_update.read().await.as_ref() {
                             let cb = Arc::clone(callback);
                             let sd = series_data.clone();
@@ -493,7 +492,6 @@ async fn process_series_update(
     last_right_id: &Arc<RwLock<i64>>,
     chart_ready: &Arc<RwLock<bool>>,
 ) -> Result<(SeriesData, UpdateInfo)> {
-    println!("do process_series_update !!!!!");
 
     let is_multi = options.symbols.len() > 1;
     let is_tick = options.duration == 0;
@@ -526,7 +524,6 @@ async fn process_series_update(
     } else {
         get_single_kline_data(dm, options).await?
     };
-    println!("get series_data !!!");
 
     // 检测更新信息
     let mut update_info = UpdateInfo {
@@ -541,11 +538,9 @@ async fn process_series_update(
         new_left_id: 0,
         new_right_id: 0,
     };
-    println!("detect_new_bars");
     // 检测新 K线
-    detect_new_bars(&series_data, last_ids, &mut update_info).await;
+    detect_new_bars(dm, &series_data, last_ids, &mut update_info).await;
 
-    println!("detect_chart_range_change");
     
     // 检测 Chart 范围变化
     detect_chart_range_change(
@@ -558,7 +553,6 @@ async fn process_series_update(
     )
     .await;
 
-    println!("before process_series_update");
     Ok((series_data, update_info))
 }
 
@@ -577,14 +571,11 @@ async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Res
             chart.view_width = options.view_width;
             chart
         });
-    println!("chart_info {:?}", chart_info);
     let mut kline_data = dm.get_klines_data(symbol, options.duration, options.view_width, right_id)?;
     
     // 设置 Chart 信息
     kline_data.chart_id = options.chart_id.clone();
     kline_data.chart = chart_info;
-
-    println!("kline_data: {:?}", kline_data);
 
     Ok(SeriesData {
         is_multi: false,
@@ -649,11 +640,21 @@ async fn get_tick_data(dm: &DataManager, options: &SeriesOptions) -> Result<Seri
 
 /// 检测新 K线
 async fn detect_new_bars(
+    dm: &DataManager,
     data: &SeriesData,
     last_ids: &Arc<RwLock<HashMap<String, i64>>>,
     info: &mut UpdateInfo,
 ) {
     let mut ids = last_ids.write().await;
+    
+    // 获取 duration 字符串（用于后续检查 K线更新）
+    let duration_str = if data.is_tick {
+        String::new()
+    } else if data.is_multi {
+        data.multi.as_ref().map(|m| m.duration.to_string()).unwrap_or_default()
+    } else {
+        data.single.as_ref().map(|s| s.duration.to_string()).unwrap_or_default()
+    };
 
     for symbol in &data.symbols {
         let current_id = if data.is_tick {
@@ -676,6 +677,14 @@ async fn detect_new_bars(
         }
 
         ids.insert(symbol.clone(), current_id);
+    }
+    if !info.has_new_bar && !data.is_tick {
+        for symbol in &data.symbols {
+            if dm.is_changing(&["klines", symbol, &duration_str]) {
+                info.has_bar_update = true;
+                break;
+            }
+        }
     }
 }
 
