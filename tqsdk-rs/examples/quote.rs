@@ -71,9 +71,10 @@ async fn quote_subscription_example() {
         }
     });
 
-    // 方式 2: 使用回调接口
+    // 方式 2: 使用回调接口（参数是 Arc<Quote>）
     quote_sub
         .on_quote(|quote| {
+            // quote 是 Arc<Quote>，可以直接使用
             if quote.instrument_id == "SHFE.ag2512" {
                 info!(
                     "📊 沪银: 最新价={:.2}, 涨跌={:.2}, 买一={:.2}, 卖一={:.2}",
@@ -368,7 +369,7 @@ async fn tick_subscription_example() {
 #[tokio::main]
 async fn main() {
     // 初始化日志
-    tqsdk_rs::init_logger("debug", false);
+    tqsdk_rs::init_logger("trace", false);
 
     // 运行各个示例（取消注释以运行）
     // quote_subscription_example().await;

@@ -19,8 +19,8 @@ pub struct QuoteSubscription {
     symbols: Arc<RwLock<HashSet<String>>>,
     quote_tx: Sender<Quote>,
     quote_rx: Receiver<Quote>,
-    on_quote: Arc<RwLock<Option<Arc<dyn Fn(Quote) + Send + Sync>>>>,
-    on_error: Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>,
+    on_quote: Arc<RwLock<Option<Arc<dyn Fn(Arc<Quote>) + Send + Sync>>>>,
+    on_error: Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>,
     running: Arc<RwLock<bool>>,
 }
 
@@ -57,7 +57,7 @@ impl QuoteSubscription {
         *running = true;
         drop(running);
 
-        info!("启动 Quote 订阅");
+        debug!("启动 Quote 订阅");
 
         // 先启动监听（注册数据更新回调）
         self.start_watching().await;
@@ -105,7 +105,7 @@ impl QuoteSubscription {
         let ins_list_str = ins_list.join(",");
         drop(symbols);
 
-        info!("发送 Quote 订阅请求: {} 个合约", ins_list.len());
+        debug!("发送 Quote 订阅请求: {} 个合约", ins_list.len());
         debug!("订阅合约列表: {}", ins_list_str);
 
         let req = serde_json::json!({
@@ -125,7 +125,7 @@ impl QuoteSubscription {
     /// 注册回调
     pub async fn on_quote<F>(&self, handler: F)
     where
-        F: Fn(Quote) + Send + Sync + 'static,
+        F: Fn(Arc<Quote>) + Send + Sync + 'static,
     {
         let mut guard = self.on_quote.write().await;
         *guard = Some(Arc::new(handler));
@@ -134,7 +134,7 @@ impl QuoteSubscription {
     /// 注册错误回调
     pub async fn on_error<F>(&self, handler: F)
     where
-        F: Fn(String) + Send + Sync + 'static,
+        F: Fn(Arc<String>) + Send + Sync + 'static,
     {
         let mut guard = self.on_error.write().await;
         *guard = Some(Arc::new(handler));
@@ -181,15 +181,19 @@ impl QuoteSubscription {
                                     symbol, quote.last_price
                                 );
 
-                                // 发送到 async-channel（支持多个订阅者）
-                                // 如果没有订阅者，send 会返回 Err，这是正常的，忽略即可
-                                let _ = quote_tx.send(quote.clone()).await;
+                                // 包装为 Arc（零拷贝共享）
+                                let quote_arc = Arc::new(quote);
 
-                                // 调用回调
+                                // 发送到 async-channel（支持多个订阅者）
+                                // 注意：channel 仍然发送 Quote 而不是 Arc<Quote>，保持向后兼容
+                                let _ = quote_tx.send((*quote_arc).clone()).await;
+
+                                // 调用回调（使用 Arc）
                                 if let Some(callback) = on_quote.read().await.as_ref() {
                                     let cb = Arc::clone(callback);
+                                    let q = Arc::clone(&quote_arc);
                                     tokio::spawn(async move {
-                                        cb(quote);
+                                        cb(q);
                                     });
                                 }
                             }

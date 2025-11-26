@@ -61,13 +61,22 @@ pub mod trade_session;
 // 客户端
 pub mod client;
 
+// Polars 扩展（可选功能）
+#[cfg(feature = "polars")]
+pub mod polars_ext;
+
 // 重新导出常用类型
 pub use auth::Authenticator;
 pub use client::{Client, ClientConfig, ClientOption};
 pub use datamanager::{DataManager, DataManagerConfig};
 pub use errors::{Result, TqError};
-pub use logger::init_logger;
+pub use logger::{init_logger, create_logger_layer};
 pub use quote::QuoteSubscription;
 pub use series::{SeriesAPI, SeriesSubscription};
 pub use trade_session::TradeSession;
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
+pub use websocket::TqWebsocket;
+
+// Polars 扩展
+#[cfg(feature = "polars")]
+pub use polars_ext::{KlineBuffer, TickBuffer};

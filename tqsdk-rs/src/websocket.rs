@@ -575,10 +575,10 @@ impl TqQuoteWebsocket {
 
                         if let Some(view_width) = value.get("view_width").and_then(|v| v.as_f64()) {
                             if view_width == 0.0 {
-                                debug!("删除图表: {}", chart_id);
+                                trace!("删除图表: {}", chart_id);
                                 charts_guard.remove(chart_id);
                             } else {
-                                debug!("保存图表请求: {}", chart_id);
+                                trace!("保存图表请求: {}", chart_id);
                                 charts_guard.insert(chart_id.to_string(), value.clone());
                             }
                         }
@@ -637,7 +637,7 @@ impl TqTradeWebsocket {
                                 if let Some(array) = payload.as_array() {
                                     let (notifies, cleaned_data) =
                                         Self::separate_notifies(array.clone());
-                                    println!("notifies: {:?}", notifies);
+                                    debug!("notifies: {:?}", notifies);
 
                                     // 触发通知回调
                                     if let Some(callback) = on_notify_clone.read().unwrap().as_ref()

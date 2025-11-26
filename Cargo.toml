@@ -1,3 +1,3 @@
 [workspace]
-members = ["tqsdk-rs", "examples/*"]
+members = ["tqsdk-rs", "samples/*"]
 resolver = "2"

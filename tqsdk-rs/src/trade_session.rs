@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
 /// 交易会话
+#[allow(unused)]
 pub struct TradeSession {
     broker: String,
     user_id: String,

@@ -43,6 +43,7 @@ tracing-subscriber = { version = "0.3.20", features = [
     "env-filter",
     "fmt",
     "ansi",
+    "local-time",
 ] }
 
 # 错误处理
@@ -55,8 +56,16 @@ chrono = { version = "0.4.42", features = ["serde"] }
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 url = "2.5.7"
 
+# Polars - 数据分析
+polars = { version = "0.44.2", features = ["lazy", "dtype-datetime"], optional = true }
+
+[features]
+default = []
+polars = ["dep:polars"]
+
 [dev-dependencies]
 tokio-test = "0.4.4"
+tracing-appender = "0.2"
 
 [[example]]
 name = "quote"

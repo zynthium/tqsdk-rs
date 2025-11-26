@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
 use crate::auth::Authenticator;
@@ -218,11 +218,11 @@ pub struct SeriesSubscription {
     last_right_id: Arc<RwLock<i64>>,
     chart_ready: Arc<RwLock<bool>>,
 
-    // 回调
-    on_update: Arc<RwLock<Option<Arc<dyn Fn(SeriesData, UpdateInfo) + Send + Sync>>>>,
-    on_new_bar: Arc<RwLock<Option<Arc<dyn Fn(SeriesData) + Send + Sync>>>>,
-    on_bar_update: Arc<RwLock<Option<Arc<dyn Fn(SeriesData) + Send + Sync>>>>,
-    on_error: Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>,
+    // 回调（使用 Arc 避免数据克隆）
+    on_update: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync>>>>,
+    on_new_bar: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>,
+    on_bar_update: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>,
+    on_error: Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>,
 
     running: Arc<RwLock<bool>>,
 }
@@ -282,7 +282,7 @@ impl SeriesSubscription {
             chart_req["focus_position"] = serde_json::json!(focus_position);
         }
 
-        info!(
+        debug!(
             "发送 set_chart 请求: chart_id={}, symbols={:?}, view_width={}",
             self.options.chart_id, self.options.symbols, view_width
         );
@@ -304,7 +304,7 @@ impl SeriesSubscription {
 
         self.start_watching().await;
         self.send_set_chart().await?;
-        warn!("send_set_chart done");
+        trace!("send_set_chart done");
         Ok(())
     }
 
@@ -361,11 +361,15 @@ impl SeriesSubscription {
                 .await
                 {
                     Ok((series_data, update_info)) => {
+                        // 包装为 Arc（零拷贝共享）
+                        let series_data = Arc::new(series_data);
+                        let update_info = Arc::new(update_info);
+                        
                         // 调用回调
                         if let Some(callback) = on_update.read().await.as_ref() {
                             let cb = Arc::clone(callback);
-                            let sd = series_data.clone();
-                            let ui = update_info.clone();
+                            let sd = Arc::clone(&series_data);
+                            let ui = Arc::clone(&update_info);
                             tokio::spawn(async move {
                                 cb(sd, ui);
                             });
@@ -374,7 +378,7 @@ impl SeriesSubscription {
                         if update_info.has_new_bar {
                             if let Some(callback) = on_new_bar.read().await.as_ref() {
                                 let cb = Arc::clone(callback);
-                                let sd = series_data.clone();
+                                let sd = Arc::clone(&series_data);
                                 tokio::spawn(async move {
                                     cb(sd);
                                 });
@@ -384,8 +388,9 @@ impl SeriesSubscription {
                         if update_info.has_bar_update {
                             if let Some(callback) = on_bar_update.read().await.as_ref() {
                                 let cb = Arc::clone(callback);
+                                let sd = Arc::clone(&series_data);
                                 tokio::spawn(async move {
-                                    cb(series_data);
+                                    cb(sd);
                                 });
                             }
                         }
@@ -394,7 +399,7 @@ impl SeriesSubscription {
                         warn!("处理 Series 更新失败: {}", e);
                         if let Some(callback) = on_error.read().await.as_ref() {
                             let cb = Arc::clone(callback);
-                            let err_msg = e.to_string();
+                            let err_msg = Arc::new(e.to_string());
                             tokio::spawn(async move {
                                 cb(err_msg);
                             });
@@ -409,7 +414,7 @@ impl SeriesSubscription {
     /// 注册更新回调
     pub async fn on_update<F>(&self, handler: F)
     where
-        F: Fn(SeriesData, UpdateInfo) + Send + Sync + 'static,
+        F: Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync + 'static,
     {
         let mut guard = self.on_update.write().await;
         *guard = Some(Arc::new(handler));
@@ -418,7 +423,7 @@ impl SeriesSubscription {
     /// 注册新 K线回调
     pub async fn on_new_bar<F>(&self, handler: F)
     where
-        F: Fn(SeriesData) + Send + Sync + 'static,
+        F: Fn(Arc<SeriesData>) + Send + Sync + 'static,
     {
         let mut guard = self.on_new_bar.write().await;
         *guard = Some(Arc::new(handler));
@@ -427,7 +432,7 @@ impl SeriesSubscription {
     /// 注册 K线更新回调
     pub async fn on_bar_update<F>(&self, handler: F)
     where
-        F: Fn(SeriesData) + Send + Sync + 'static,
+        F: Fn(Arc<SeriesData>) + Send + Sync + 'static,
     {
         let mut guard = self.on_bar_update.write().await;
         *guard = Some(Arc::new(handler));
@@ -436,14 +441,14 @@ impl SeriesSubscription {
     /// 注册错误回调
     pub async fn on_error<F>(&self, handler: F)
     where
-        F: Fn(String) + Send + Sync + 'static,
+        F: Fn(Arc<String>) + Send + Sync + 'static,
     {
         let mut guard = self.on_error.write().await;
         *guard = Some(Arc::new(handler));
     }
 
     /// 获取数据流
-    pub async fn data_stream(&self) -> impl Stream<Item = SeriesData> {
+    pub async fn data_stream(&self) -> impl Stream<Item = Arc<SeriesData>> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
         // 注册回调
@@ -517,7 +522,7 @@ async fn process_series_update(
     }
 
     // 获取数据
-    let series_data = if is_tick {
+    let series_data: SeriesData = if is_tick {
         get_tick_data(dm, options).await?
     } else if is_multi {
         get_multi_kline_data(dm, options).await?
