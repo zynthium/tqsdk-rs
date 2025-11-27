@@ -19,8 +19,7 @@ async fn history_kline_with_left_id_example() {
     let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
 
     let mut client = Client::builder(&username, &password)
-        .log_level("info")
-        .view_width(1000000)
+        .view_width(100000)
         .build()
         .await
         .expect("创建客户端失败");
@@ -152,7 +151,9 @@ async fn history_kline_with_left_id_example() {
         }
     })
     .await;
-
+    // 所有回调注册完成后，启动监听（不会错过数据）
+    sub.start().await.expect("启动监听失败");
+    info!("✅ 订阅已启动");
     // 等待数据传输完成
     tokio::time::sleep(Duration::from_secs(30)).await;
     info!("\n历史 K线订阅示例结束");
@@ -213,9 +214,67 @@ async fn history_kline_with_focus_example() {
 
 #[tokio::main]
 async fn main() {
+    init_logger_with_file("history=info,tqsdk_rs=debug", false);
+
     // 运行历史数据订阅示例
     history_kline_with_left_id_example().await;
     // history_kline_with_focus_example().await;
 
     info!("\n所有示例运行完成!");
+}
+
+
+/// 初始化日志系统：同时输出到终端和文件
+fn init_logger_with_file(level: &str, filter_crate_only: bool) {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    use std::fs;
+
+    // 创建日志目录
+    fs::create_dir_all("logs").expect("无法创建日志目录");
+
+    // 生成日志文件名（带时间戳）
+    let log_file = format!(
+        "logs/quote_{}.log",
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    );
+    let file = fs::File::create(&log_file).expect("无法创建日志文件");
+
+    // 构建过滤器
+    let filter = if filter_crate_only {
+        EnvFilter::new(format!("tqsdk_rs={}", level))
+    } else {
+        EnvFilter::new(level)
+    };
+
+    // Layer 1: 终端输出（带颜色）
+    let console_layer = fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_line_number(true)
+        .with_file(true)
+        .with_ansi(true) // 启用颜色
+        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
+        .compact();
+        
+    // Layer 2: 文件输出（无颜色）
+    let file_layer = fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_line_number(true)
+        .with_file(true)
+        .with_ansi(false) // 禁用颜色
+        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
+        .with_writer(file)
+        .compact();
+        
+
+    // 组合两个 Layer
+    tracing_subscriber::registry().with(filter)
+        .with(console_layer)
+        .with(file_layer)
+        .init();
+
+    println!("日志已初始化，输出到终端和文件: {}", log_file);
 }

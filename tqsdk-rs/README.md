@@ -6,10 +6,6 @@
 [![Documentation](https://docs.rs/tqsdk-rs/badge.svg)](https://docs.rs/tqsdk-rs)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-<div align="center">
-  <img src="samples/candlechart/tqsdk-candlechart.png" alt="Demo CandleChart">
-</div>
-
 ## 核心特性
 
 - **类型安全** - 使用 Rust 强类型系统，90+ 字段完整定义，编译时消除运行时错误

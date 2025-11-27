@@ -217,6 +217,7 @@ pub struct SeriesSubscription {
     last_left_id: Arc<RwLock<i64>>,
     last_right_id: Arc<RwLock<i64>>,
     chart_ready: Arc<RwLock<bool>>,
+    has_chart_sync: Arc<RwLock<bool>>,
 
     // 回调（使用 Arc 避免数据克隆）
     on_update: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync>>>>,
@@ -247,6 +248,7 @@ impl SeriesSubscription {
             last_left_id: Arc::new(RwLock::new(-1)),
             last_right_id: Arc::new(RwLock::new(-1)),
             chart_ready: Arc::new(RwLock::new(false)),
+            has_chart_sync: Arc::new(RwLock::new(false)),
             on_update: Arc::new(RwLock::new(None)),
             on_new_bar: Arc::new(RwLock::new(None)),
             on_bar_update: Arc::new(RwLock::new(None)),
@@ -316,6 +318,8 @@ impl SeriesSubscription {
         let last_left_id = Arc::clone(&self.last_left_id);
         let last_right_id = Arc::clone(&self.last_right_id);
         let chart_ready = Arc::clone(&self.chart_ready);
+        let has_chart_sync = Arc::clone(&self.has_chart_sync);
+
         let on_update = Arc::clone(&self.on_update);
         let on_new_bar = Arc::clone(&self.on_new_bar);
         let on_bar_update = Arc::clone(&self.on_bar_update);
@@ -331,24 +335,24 @@ impl SeriesSubscription {
             let last_left_id = Arc::clone(&last_left_id);
             let last_right_id = Arc::clone(&last_right_id);
             let chart_ready = Arc::clone(&chart_ready);
+            let has_chart_sync = Arc::clone(&has_chart_sync);
             let on_update = Arc::clone(&on_update);
             let on_new_bar = Arc::clone(&on_new_bar);
             let on_bar_update = Arc::clone(&on_bar_update);
             let on_error = Arc::clone(&on_error);
             let running = Arc::clone(&running);
-            
 
             tokio::spawn(async move {
                 let is_running = *running.read().await;
                 if !is_running {
                     return;
                 }
-                
+
                 let chart_id = &options.chart_id;
                 if dm.get_by_path(&["charts", chart_id]).is_none() {
-                    return; 
+                    return;
                 }
-                    
+
                 // 处理更新
                 match process_series_update(
                     &dm,
@@ -357,6 +361,7 @@ impl SeriesSubscription {
                     &last_left_id,
                     &last_right_id,
                     &chart_ready,
+                    &has_chart_sync,
                 )
                 .await
                 {
@@ -364,34 +369,38 @@ impl SeriesSubscription {
                         // 包装为 Arc（零拷贝共享）
                         let series_data = Arc::new(series_data);
                         let update_info = Arc::new(update_info);
-                        
+
                         // 调用回调
-                        if let Some(callback) = on_update.read().await.as_ref() {
-                            let cb = Arc::clone(callback);
-                            let sd = Arc::clone(&series_data);
-                            let ui = Arc::clone(&update_info);
-                            tokio::spawn(async move {
-                                cb(sd, ui);
-                            });
-                        }
-
-                        if update_info.has_new_bar {
-                            if let Some(callback) = on_new_bar.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                let sd = Arc::clone(&series_data);
-                                tokio::spawn(async move {
-                                    cb(sd);
-                                });
+                        if update_info.has_chart_sync {
+                            if update_info.chart_ready {
+                                if let Some(callback) = on_update.read().await.as_ref() {
+                                    let cb = Arc::clone(callback);
+                                    let sd = Arc::clone(&series_data);
+                                    let ui = Arc::clone(&update_info);
+                                    tokio::spawn(async move {
+                                        cb(sd, ui);
+                                    });
+                                }
                             }
-                        }
 
-                        if update_info.has_bar_update {
-                            if let Some(callback) = on_bar_update.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                let sd = Arc::clone(&series_data);
-                                tokio::spawn(async move {
-                                    cb(sd);
-                                });
+                            if update_info.has_new_bar && update_info.chart_ready {
+                                if let Some(callback) = on_new_bar.read().await.as_ref() {
+                                    let cb = Arc::clone(callback);
+                                    let sd = Arc::clone(&series_data);
+                                    tokio::spawn(async move {
+                                        cb(sd);
+                                    });
+                                }
+                            }
+
+                            if update_info.has_bar_update && update_info.chart_ready {
+                                if let Some(callback) = on_bar_update.read().await.as_ref() {
+                                    let cb = Arc::clone(callback);
+                                    let sd = Arc::clone(&series_data);
+                                    tokio::spawn(async move {
+                                        cb(sd);
+                                    });
+                                }
                             }
                         }
                     }
@@ -406,7 +415,6 @@ impl SeriesSubscription {
                         }
                     }
                 }
-                
             });
         });
     }
@@ -496,8 +504,8 @@ async fn process_series_update(
     last_left_id: &Arc<RwLock<i64>>,
     last_right_id: &Arc<RwLock<i64>>,
     chart_ready: &Arc<RwLock<bool>>,
+    has_chart_sync: &Arc<RwLock<bool>>,
 ) -> Result<(SeriesData, UpdateInfo)> {
-
     let is_multi = options.symbols.len() > 1;
     let is_tick = options.duration == 0;
 
@@ -546,7 +554,6 @@ async fn process_series_update(
     // 检测新 K线
     detect_new_bars(dm, &series_data, last_ids, &mut update_info).await;
 
-    
     // 检测 Chart 范围变化
     detect_chart_range_change(
         dm,
@@ -554,6 +561,7 @@ async fn process_series_update(
         last_left_id,
         last_right_id,
         chart_ready,
+        has_chart_sync,
         &mut update_info,
     )
     .await;
@@ -564,7 +572,7 @@ async fn process_series_update(
 /// 获取单合约 K线数据
 async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Result<SeriesData> {
     let symbol = &options.symbols[0];
-    
+
     // 获取 Chart 信息 - 直接从 JSON 转换为 ChartInfo
     let mut right_id = -1i64;
     let chart_info = dm
@@ -576,8 +584,9 @@ async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Res
             chart.view_width = options.view_width;
             chart
         });
-    let mut kline_data = dm.get_klines_data(symbol, options.duration, options.view_width, right_id)?;
-    
+    let mut kline_data =
+        dm.get_klines_data(symbol, options.duration, options.view_width, right_id)?;
+
     // 设置 Chart 信息
     kline_data.chart_id = options.chart_id.clone();
     kline_data.chart = chart_info;
@@ -628,7 +637,7 @@ async fn get_tick_data(dm: &DataManager, options: &SeriesOptions) -> Result<Seri
         });
 
     let mut tick_data = dm.get_ticks_data(symbol, options.view_width, right_id)?;
-    
+
     // 设置 Chart 信息
     tick_data.chart_id = options.chart_id.clone();
     tick_data.chart = chart_info;
@@ -651,14 +660,20 @@ async fn detect_new_bars(
     info: &mut UpdateInfo,
 ) {
     let mut ids = last_ids.write().await;
-    
+
     // 获取 duration 字符串（用于后续检查 K线更新）
     let duration_str = if data.is_tick {
         String::new()
     } else if data.is_multi {
-        data.multi.as_ref().map(|m| m.duration.to_string()).unwrap_or_default()
+        data.multi
+            .as_ref()
+            .map(|m| m.duration.to_string())
+            .unwrap_or_default()
     } else {
-        data.single.as_ref().map(|s| s.duration.to_string()).unwrap_or_default()
+        data.single
+            .as_ref()
+            .map(|s| s.duration.to_string())
+            .unwrap_or_default()
     };
 
     for symbol in &data.symbols {
@@ -673,14 +688,13 @@ async fn detect_new_bars(
         } else {
             data.single.as_ref().map(|s| s.last_id).unwrap_or(-1)
         };
-
         let last_id = ids.get(symbol).copied().unwrap_or(-1);
+        trace!("current_id = {}, last_id = {}", current_id, last_id);
         if current_id > last_id {
             info.has_new_bar = true;
             info.has_bar_update = true;
             info.new_bar_ids.insert(symbol.clone(), current_id);
         }
-
         ids.insert(symbol.clone(), current_id);
     }
     if !info.has_new_bar && !data.is_tick {
@@ -700,6 +714,7 @@ async fn detect_chart_range_change(
     last_left_id: &Arc<RwLock<i64>>,
     last_right_id: &Arc<RwLock<i64>>,
     chart_ready: &Arc<RwLock<bool>>,
+    has_chart_sync: &Arc<RwLock<bool>>,
     info: &mut UpdateInfo,
 ) {
     let chart: Option<&ChartInfo> = if let Some(single) = &data.single {
@@ -710,44 +725,58 @@ async fn detect_chart_range_change(
         None
     };
 
-    let multi_chart= if let Some(multi) =  &data.multi {
+    let multi_chart = if let Some(multi) = &data.multi {
         if let Some(chart_data) = dm.get_by_path(&["charts", &multi.chart_id]) {
-            dm.convert_to_struct::<ChartInfo>(&chart_data).ok().map(|mut c| {
-                c.chart_id = multi.chart_id.clone();
-                c.view_width = multi.view_width;
-                c
-            })
+            dm.convert_to_struct::<ChartInfo>(&chart_data)
+                .ok()
+                .map(|mut c| {
+                    c.chart_id = multi.chart_id.clone();
+                    c.view_width = multi.view_width;
+                    c
+                })
         } else {
             None
         }
     } else {
         None
     };
-         
-    if let Some(chart) = &chart.or(multi_chart.as_ref()) {
+
+    if let Some(chart) = chart.or(multi_chart.as_ref()) {
         let mut last_left = last_left_id.write().await;
         let mut last_right = last_right_id.write().await;
         let mut ready = chart_ready.write().await;
+        let mut has_sync = has_chart_sync.write().await;
 
+        trace!("before compare -> last_left: {}, last_right: {}, chart.left_id: {}, chart.right_id: {}, ready: {}, chart.ready: {}, has_sync: {}",
+            *last_left, *last_right, chart.left_id, chart.right_id, *ready, chart.ready, *has_sync,
+        );
         if chart.left_id != *last_left || chart.right_id != *last_right {
-            if *last_left != -1 || *last_right != -1 {
-                info.chart_range_changed = true;
-                info.old_left_id = *last_left;
-                info.old_right_id = *last_right;
-                info.new_left_id = chart.left_id;
-                info.new_right_id = chart.right_id;
-            }
+            info.chart_range_changed = true;
+            info.old_left_id = *last_left;
+            info.old_right_id = *last_right;
+            info.new_left_id = chart.left_id;
+            info.new_right_id = chart.right_id;
+
             *last_left = chart.left_id;
             *last_right = chart.right_id;
         }
 
         if chart.ready && !*ready {
-            info.has_chart_sync = true;
+            // 首次完成同步
             *ready = true;
+            *has_sync = true;
+
+            info.has_chart_sync = true;
+            info.has_bar_update = true;
+            info.has_new_bar = true;
         }
 
         if chart.ready && !chart.more_data {
             info.chart_ready = true;
         }
+        trace!("after compare -> last_left: {}, last_right: {}, chart.left_id: {}, chart.right_id: {}, ready: {}, chart.ready: {}, has_sync: {}",
+            *last_left, *last_right, chart.left_id, chart.right_id, *ready, chart.ready,  *has_sync,
+        );
+        info.has_chart_sync = *has_sync
     }
 }

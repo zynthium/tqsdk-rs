@@ -10,7 +10,7 @@ use std::time::Duration;
 use std::{env, vec};
 use tokio;
 use tqsdk_rs::*;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Quote 订阅示例
 async fn quote_subscription_example() {
@@ -22,7 +22,7 @@ async fn quote_subscription_example() {
     // 创建客户端
     let mut config = ClientConfig::default();
     config.log_level = "info".to_string();
-    config.view_width = 500;
+    config.view_width = 10000;
     config.development = true;
 
     let mut client = Client::new(&username, &password, config)
@@ -102,9 +102,11 @@ async fn single_kline_subscription_example() {
 
     let mut config = ClientConfig::default();
     config.log_level = "info".to_string();
-    config.view_width = 500;
+    config.view_width = 20000;
 
-    let symbol = "SHFE.au2602";
+    // let symbol = "SHFE.au2602";
+    let symbol = "CFFEX.IF2512";
+
 
     let mut client = Client::new(&username, &password, config)
         .await
@@ -116,7 +118,7 @@ async fn single_kline_subscription_example() {
     let series_api = client.series().expect("获取 series API 失败");
     let sub = series_api
         // .kline("SHFE.au2602", Duration::from_secs(60), 5)
-        .kline(&symbol, Duration::from_secs(60), 5)
+        .kline(&symbol, Duration::from_secs(60), 3010)
         .await
         .expect("订阅失败");
 
@@ -128,7 +130,7 @@ async fn single_kline_subscription_example() {
                 // 新增了一根 K线
                 info!(
                     "🆕 新 K线! ID={:?}, 数据量={}",
-                    info.new_bar_ids.get("SHFE.au2602"),
+                    info.new_bar_ids.get(symbol2),
                     sym_data.data.len()
                 );
 
@@ -368,8 +370,8 @@ async fn tick_subscription_example() {
 
 #[tokio::main]
 async fn main() {
-    // 初始化日志
-    tqsdk_rs::init_logger("trace", false);
+    // 初始化日志：同时输出到终端和文件
+    init_logger_with_file("quote=info,tqsdk_rs=debug", false);
 
     // 运行各个示例（取消注释以运行）
     // quote_subscription_example().await;
@@ -378,4 +380,59 @@ async fn main() {
     // tick_subscription_example().await;
 
     info!("所有示例运行完成!");
+}
+
+/// 初始化日志系统：同时输出到终端和文件
+fn init_logger_with_file(level: &str, filter_crate_only: bool) {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+    use std::fs;
+
+    // 创建日志目录
+    fs::create_dir_all("logs").expect("无法创建日志目录");
+
+    // 生成日志文件名（带时间戳）
+    let log_file = format!(
+        "logs/quote_{}.log",
+        chrono::Local::now().format("%Y%m%d_%H%M%S")
+    );
+    let file = fs::File::create(&log_file).expect("无法创建日志文件");
+
+    // 构建过滤器
+    let filter = if filter_crate_only {
+        EnvFilter::new(format!("tqsdk_rs={}", level))
+    } else {
+        EnvFilter::new(level)
+    };
+
+    // Layer 1: 终端输出（带颜色）
+    let console_layer = fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_line_number(true)
+        .with_file(true)
+        .with_ansi(true) // 启用颜色
+        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
+        .compact();
+        
+    // Layer 2: 文件输出（无颜色）
+    let file_layer = fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_line_number(true)
+        .with_file(true)
+        .with_ansi(false) // 禁用颜色
+        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
+        .with_writer(file)
+        .compact();
+        
+
+    // 组合两个 Layer
+    tracing_subscriber::registry().with(filter)
+        .with(console_layer)
+        .with(file_layer)
+        .init();
+
+    println!("日志已初始化，输出到终端和文件: {}", log_file);
 }

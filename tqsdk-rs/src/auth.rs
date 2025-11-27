@@ -248,7 +248,7 @@ impl Authenticator for TqAuth {
     async fn login(&mut self) -> Result<()> {
         self.request_token().await?;
         self.parse_token()?;
-        info!("TqAuth 登录成功: AuthId[{}]", self.auth_id);
+        info!("TqAuth 登录成功, User: {},  AuthId: {}", self.username, self.auth_id);
         Ok(())
     }
 
