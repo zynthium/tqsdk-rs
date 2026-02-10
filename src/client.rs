@@ -5,10 +5,14 @@
 use crate::auth::{Authenticator, TqAuth};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
+use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
-use crate::websocket::{TqQuoteWebsocket, WebSocketConfig};
+use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
+use crate::types::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
+use async_channel::Receiver;
+use chrono::NaiveDate;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -22,6 +26,7 @@ pub struct ClientConfig {
     pub view_width: usize,
     /// 开发模式
     pub development: bool,
+    pub stock: bool,
 }
 
 impl Default for ClientConfig {
@@ -30,6 +35,7 @@ impl Default for ClientConfig {
             log_level: "info".to_string(),
             view_width: 10000,
             development: false,
+            stock: true,
         }
     }
 }
@@ -57,6 +63,7 @@ impl ClientBuilder {
     ///
     /// ```no_run
     /// # use tqsdk_rs::*;
+    /// # use tqsdk_rs::client::ClientBuilder;
     /// # async fn example() -> Result<()> {
     /// let client = ClientBuilder::new("username", "password")
     ///     .log_level("debug")
@@ -157,6 +164,7 @@ impl ClientBuilder {
             dm,
             quotes_ws: None,
             series_api: None,
+            ins_api: None,
             trade_sessions: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -170,6 +178,7 @@ pub struct Client {
     dm: Arc<DataManager>,
     quotes_ws: Option<Arc<TqQuoteWebsocket>>,
     series_api: Option<Arc<SeriesAPI>>,
+    ins_api: Option<Arc<InsAPI>>,
     trade_sessions: Arc<RwLock<HashMap<String, Arc<TradeSession>>>>,
 }
 
@@ -179,6 +188,7 @@ impl Client {
     /// 这是一个便捷方法，等同于：
     /// ```no_run
     /// # use tqsdk_rs::*;
+    /// # use tqsdk_rs::client::ClientBuilder;
     /// # async fn example() -> Result<()> {
     /// let client = ClientBuilder::new("username", "password")
     ///     .config(ClientConfig::default())
@@ -219,7 +229,7 @@ impl Client {
     /// 初始化行情功能
     pub async fn init_market(&mut self) -> Result<()> {
         let auth = self.auth.read().await;
-        let md_url = auth.get_md_url(false, false).await?;
+        let md_url = auth.get_md_url(self._config.stock, false).await?;
 
         let mut ws_config = WebSocketConfig::default();
         ws_config.headers = auth.base_header();
@@ -227,7 +237,7 @@ impl Client {
         let quotes_ws = Arc::new(TqQuoteWebsocket::new(
             md_url,
             Arc::clone(&self.dm),
-            ws_config,
+            ws_config.clone(),
         ));
 
         quotes_ws.init(false).await?;
@@ -241,6 +251,25 @@ impl Client {
             Arc::clone(&self.auth),
         ));
         self.series_api = Some(series_api);
+        let trading_status_ws = if auth.has_feature("tq_trading_status") {
+            let ts_ws = Arc::new(TqTradingStatusWebsocket::new(
+                "wss://trading-status.shinnytech.com/status".to_string(),
+                Arc::clone(&self.dm),
+                ws_config,
+            ));
+            ts_ws.init(false).await?;
+            Some(ts_ws)
+        } else {
+            None
+        };
+
+        self.ins_api = Some(Arc::new(InsAPI::new(
+            Arc::clone(&self.dm),
+            self.quotes_ws.as_ref().unwrap().clone(),
+            trading_status_ws,
+            Arc::clone(&self.auth),
+            self._config.stock,
+        )));
 
         Ok(())
     }
@@ -301,6 +330,114 @@ impl Client {
         self.series_api
             .clone()
             .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))
+    }
+
+    /// 获取合约查询 API
+    pub fn ins(&self) -> Result<Arc<InsAPI>> {
+        self.ins_api
+            .clone()
+            .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))
+    }
+
+    pub async fn query_graphql(&self, query: &str, variables: Option<serde_json::Value>) -> Result<serde_json::Value> {
+        self.ins()?.query_graphql(query, variables).await
+    }
+
+    pub async fn query_quotes(
+        &self,
+        ins_class: Option<&str>,
+        exchange_id: Option<&str>,
+        product_id: Option<&str>,
+        expired: Option<bool>,
+        has_night: Option<bool>,
+    ) -> Result<Vec<String>> {
+        self.ins()?
+            .query_quotes(ins_class, exchange_id, product_id, expired, has_night)
+            .await
+    }
+
+    pub async fn query_cont_quotes(
+        &self,
+        exchange_id: Option<&str>,
+        product_id: Option<&str>,
+        has_night: Option<bool>,
+    ) -> Result<Vec<String>> {
+        self.ins()?
+            .query_cont_quotes(exchange_id, product_id, has_night)
+            .await
+    }
+
+    pub async fn query_options(
+        &self,
+        underlying_symbol: &str,
+        option_class: Option<&str>,
+        exercise_year: Option<i32>,
+        exercise_month: Option<i32>,
+        strike_price: Option<f64>,
+        expired: Option<bool>,
+        has_a: Option<bool>,
+    ) -> Result<Vec<String>> {
+        self.ins()?
+            .query_options(
+                underlying_symbol,
+                option_class,
+                exercise_year,
+                exercise_month,
+                strike_price,
+                expired,
+                has_a,
+            )
+            .await
+    }
+
+    pub async fn query_symbol_info(&self, symbols: &[&str]) -> Result<Vec<serde_json::Value>> {
+        self.ins()?.query_symbol_info(symbols).await
+    }
+
+    pub async fn query_symbol_settlement(
+        &self,
+        symbols: &[&str],
+        days: i32,
+        start_dt: Option<NaiveDate>,
+    ) -> Result<Vec<SymbolSettlement>> {
+        self.ins()?
+            .query_symbol_settlement(symbols, days, start_dt)
+            .await
+    }
+
+    pub async fn query_symbol_ranking(
+        &self,
+        symbol: &str,
+        ranking_type: &str,
+        days: i32,
+        start_dt: Option<NaiveDate>,
+        broker: Option<&str>,
+    ) -> Result<Vec<SymbolRanking>> {
+        self.ins()?
+            .query_symbol_ranking(symbol, ranking_type, days, start_dt, broker)
+            .await
+    }
+
+    pub async fn query_edb_data(
+        &self,
+        ids: &[i32],
+        n: i32,
+        align: Option<&str>,
+        fill: Option<&str>,
+    ) -> Result<Vec<EdbIndexData>> {
+        self.ins()?.query_edb_data(ids, n, align, fill).await
+    }
+
+    pub async fn get_trading_calendar(
+        &self,
+        start_dt: NaiveDate,
+        end_dt: NaiveDate,
+    ) -> Result<Vec<TradingCalendarDay>> {
+        self.ins()?.get_trading_calendar(start_dt, end_dt).await
+    }
+
+    pub async fn get_trading_status(&self, symbol: &str) -> Result<Receiver<TradingStatus>> {
+        self.ins()?.get_trading_status(symbol).await
     }
 
     /// 订阅 Quote

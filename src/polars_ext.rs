@@ -6,12 +6,15 @@
 use polars::prelude::*;
 
 use crate::errors::{Result, TqError};
-use crate::types::{Kline, Tick, SeriesData, KlineSeriesData, TickSeriesData, MultiKlineSeriesData};
+use crate::types::{
+    EdbIndexData, Kline, KlineSeriesData, MultiKlineSeriesData, SeriesData, SymbolRanking,
+    SymbolSettlement, Tick, TickSeriesData,
+};
 
 // ==================== K线缓冲区 ====================
 
 /// K线数据缓冲区
-/// 
+///
 /// 维护可变的列向量，支持高效的追加和更新操作
 /// 可按需转换为 Polars DataFrame 进行分析
 #[cfg(feature = "polars")]
@@ -77,7 +80,7 @@ impl KlineBuffer {
     }
 
     /// 更新最后一根 K线
-    /// 
+    ///
     /// 如果缓冲区为空，则添加新 K线
     pub fn update_last(&mut self, kline: &Kline) {
         if self.ids.is_empty() {
@@ -86,7 +89,7 @@ impl KlineBuffer {
         }
 
         let last_idx = self.ids.len() - 1;
-        
+
         // 更新可能变化的字段
         self.highs[last_idx] = kline.high;
         self.lows[last_idx] = kline.low;
@@ -316,7 +319,7 @@ impl TickBuffer {
         }
 
         let last_idx = self.ids.len() - 1;
-        
+
         self.last_prices[last_idx] = tick.last_price;
         self.averages[last_idx] = tick.average;
         self.highests[last_idx] = tick.highest;
@@ -615,6 +618,169 @@ impl MultiKlineSeriesData {
     }
 }
 
+// ==================== 结算价 DataFrame 缓冲区 ====================
+
+#[cfg(feature = "polars")]
+#[derive(Debug, Clone, Default)]
+pub struct SettlementBuffer {
+    pub datetimes: Vec<String>,
+    pub symbols: Vec<String>,
+    pub settlements: Vec<f64>,
+}
+
+#[cfg(feature = "polars")]
+impl SettlementBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_rows(rows: &[SymbolSettlement]) -> Self {
+        let mut buffer = Self::new();
+        for row in rows {
+            buffer.push(row);
+        }
+        buffer
+    }
+
+    pub fn push(&mut self, row: &SymbolSettlement) {
+        self.datetimes.push(row.datetime.clone());
+        self.symbols.push(row.symbol.clone());
+        self.settlements.push(row.settlement);
+    }
+
+    pub fn to_dataframe(&self) -> Result<DataFrame> {
+        if self.datetimes.is_empty() {
+            return Err(TqError::Other("结算价缓冲区为空".to_string()));
+        }
+        let df = DataFrame::new(vec![
+            Column::new("datetime".into(), &self.datetimes),
+            Column::new("symbol".into(), &self.symbols),
+            Column::new("settlement".into(), &self.settlements),
+        ])
+        .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
+        Ok(df)
+    }
+}
+
+// ==================== 持仓排名 DataFrame 缓冲区 ====================
+
+#[cfg(feature = "polars")]
+#[derive(Debug, Clone, Default)]
+pub struct RankingBuffer {
+    pub datetimes: Vec<String>,
+    pub symbols: Vec<String>,
+    pub exchange_ids: Vec<String>,
+    pub instrument_ids: Vec<String>,
+    pub brokers: Vec<String>,
+    pub volumes: Vec<f64>,
+    pub volume_changes: Vec<f64>,
+    pub volume_rankings: Vec<f64>,
+    pub long_ois: Vec<f64>,
+    pub long_changes: Vec<f64>,
+    pub long_rankings: Vec<f64>,
+    pub short_ois: Vec<f64>,
+    pub short_changes: Vec<f64>,
+    pub short_rankings: Vec<f64>,
+}
+
+#[cfg(feature = "polars")]
+impl RankingBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_rows(rows: &[SymbolRanking]) -> Self {
+        let mut buffer = Self::new();
+        for row in rows {
+            buffer.push(row);
+        }
+        buffer
+    }
+
+    pub fn push(&mut self, row: &SymbolRanking) {
+        self.datetimes.push(row.datetime.clone());
+        self.symbols.push(row.symbol.clone());
+        self.exchange_ids.push(row.exchange_id.clone());
+        self.instrument_ids.push(row.instrument_id.clone());
+        self.brokers.push(row.broker.clone());
+        self.volumes.push(row.volume);
+        self.volume_changes.push(row.volume_change);
+        self.volume_rankings.push(row.volume_ranking);
+        self.long_ois.push(row.long_oi);
+        self.long_changes.push(row.long_change);
+        self.long_rankings.push(row.long_ranking);
+        self.short_ois.push(row.short_oi);
+        self.short_changes.push(row.short_change);
+        self.short_rankings.push(row.short_ranking);
+    }
+
+    pub fn to_dataframe(&self) -> Result<DataFrame> {
+        if self.datetimes.is_empty() {
+            return Err(TqError::Other("持仓排名缓冲区为空".to_string()));
+        }
+        let df = DataFrame::new(vec![
+            Column::new("datetime".into(), &self.datetimes),
+            Column::new("symbol".into(), &self.symbols),
+            Column::new("exchange_id".into(), &self.exchange_ids),
+            Column::new("instrument_id".into(), &self.instrument_ids),
+            Column::new("broker".into(), &self.brokers),
+            Column::new("volume".into(), &self.volumes),
+            Column::new("volume_change".into(), &self.volume_changes),
+            Column::new("volume_ranking".into(), &self.volume_rankings),
+            Column::new("long_oi".into(), &self.long_ois),
+            Column::new("long_change".into(), &self.long_changes),
+            Column::new("long_ranking".into(), &self.long_rankings),
+            Column::new("short_oi".into(), &self.short_ois),
+            Column::new("short_change".into(), &self.short_changes),
+            Column::new("short_ranking".into(), &self.short_rankings),
+        ])
+        .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
+        Ok(df)
+    }
+}
+
+// ==================== EDB DataFrame 缓冲区 ====================
+
+#[cfg(feature = "polars")]
+#[derive(Debug, Clone, Default)]
+pub struct EdbBuffer {
+    pub dates: Vec<String>,
+    pub ids: Vec<i32>,
+    pub values: Vec<f64>,
+}
+
+#[cfg(feature = "polars")]
+impl EdbBuffer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_rows(rows: &[EdbIndexData]) -> Self {
+        let mut buffer = Self::new();
+        for row in rows {
+            for (id, value) in row.values.iter() {
+                buffer.dates.push(row.date.clone());
+                buffer.ids.push(*id);
+                buffer.values.push(*value);
+            }
+        }
+        buffer
+    }
+
+    pub fn to_dataframe(&self) -> Result<DataFrame> {
+        if self.dates.is_empty() {
+            return Err(TqError::Other("EDB 缓冲区为空".to_string()));
+        }
+        let df = DataFrame::new(vec![
+            Column::new("date".into(), &self.dates),
+            Column::new("id".into(), &self.ids),
+            Column::new("value".into(), &self.values),
+        ])
+        .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
+        Ok(df)
+    }
+}
+
 #[cfg(test)]
 #[cfg(feature = "polars")]
 mod tests {
@@ -623,7 +789,7 @@ mod tests {
     #[test]
     fn test_kline_buffer() {
         let mut buffer = KlineBuffer::new();
-        
+
         // 添加 K线
         let kline1 = Kline {
             id: 1,
@@ -637,10 +803,10 @@ mod tests {
             close_oi: 520,
             epoch: None,
         };
-        
+
         buffer.push(&kline1);
         assert_eq!(buffer.len(), 1);
-        
+
         // 更新最后一根
         let kline2 = Kline {
             id: 1,
@@ -654,12 +820,12 @@ mod tests {
             close_oi: 530,
             epoch: None,
         };
-        
+
         buffer.update_last(&kline2);
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.highs[0], 106.0);
         assert_eq!(buffer.closes[0], 104.0);
-        
+
         // 转换为 DataFrame
         let df = buffer.to_dataframe().unwrap();
         assert_eq!(df.height(), 1);
@@ -669,7 +835,7 @@ mod tests {
     #[test]
     fn test_tick_buffer() {
         let mut buffer = TickBuffer::new();
-        
+
         let tick = Tick {
             id: 1,
             datetime: 1000000000,
@@ -702,10 +868,10 @@ mod tests {
             open_interest: 5000,
             epoch: None,
         };
-        
+
         buffer.push(&tick);
         assert_eq!(buffer.len(), 1);
-        
+
         let df = buffer.to_dataframe().unwrap();
         assert_eq!(df.height(), 1);
     }

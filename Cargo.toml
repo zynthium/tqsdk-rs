@@ -78,15 +78,3 @@ path = "examples/history.rs"
 [[example]]
 name = "trade"
 path = "examples/trade.rs"
-
-[[example]]
-name = "auth_demo"
-path = "examples/auth_demo.rs"
-
-[[example]]
-name = "auth_switch"
-path = "examples/auth_switch.rs"
-
-[[example]]
-name = "client_builder"
-path = "examples/client_builder.rs"

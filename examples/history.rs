@@ -212,13 +212,79 @@ async fn history_kline_with_focus_example() {
     info!("\n历史 K线订阅示例结束");
 }
 
+async fn interface_live_test_example() {
+    let user = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
+    let pass = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
+    let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.cu2605".to_string());
+
+    let mut client = Client::new(&user, &pass, ClientConfig::default())
+        .await
+        .expect("创建客户端失败");
+    client.init_market().await.expect("初始化行情功能失败");
+
+    match client
+        .query_cont_quotes(Some("GFEX"), Some("lc"), None)
+        .await
+    {
+        Ok(list) => info!("query_cont_quotes: {:?}", list),
+        Err(err) => info!("query_cont_quotes error: {}", err),
+    }
+
+    match client.query_symbol_info(&["GFEX.lc2605"]).await {
+        Ok(info_list) => info!("query_symbol_info: {:?}", info_list),
+        Err(err) => info!("query_symbol_info error: {}", err),
+    }
+
+    match client.query_symbol_settlement(&[&symbol], 1, None).await {
+        Ok(settlement) => info!("query_symbol_settlement: {:?}", settlement),
+        Err(err) => info!("query_symbol_settlement error: {}", err),
+    }
+
+    match client
+        .query_symbol_ranking(&symbol, "VOLUME", 1, None, None)
+        .await
+    {
+        Ok(ranking) => info!("query_symbol_ranking: {:?}", ranking),
+        Err(err) => info!("query_symbol_ranking error: {}", err),
+    }
+
+    match client.query_edb_data(&[1, 2], 5, Some("day"), Some("ffill")).await {
+        Ok(edb) => info!("query_edb_data: {:?}", edb),
+        Err(err) => info!("query_edb_data error: {}", err),
+    }
+
+    let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let end = NaiveDate::from_ymd_opt(2024, 1, 5).unwrap();
+    match client.get_trading_calendar(start, end).await {
+        Ok(calendar) => info!("get_trading_calendar: {:?}", calendar),
+        Err(err) => info!("get_trading_calendar error: {}", err),
+    }
+
+    match client.get_trading_status(&symbol).await {
+        Ok(rx) => {
+            let recv = tokio::time::timeout(Duration::from_secs(15), rx.recv()).await;
+            match recv {
+                Ok(Ok(status)) => info!("get_trading_status: {:?}", status),
+                Ok(Err(err)) => info!("get_trading_status recv error: {}", err),
+                Err(_) => info!("get_trading_status timeout"),
+            }
+        }
+        Err(err) => info!("get_trading_status error: {}", err),
+    }
+
+    client.close().await.expect("关闭客户端失败");
+}
+
 #[tokio::main]
 async fn main() {
     init_logger_with_file("history=info,tqsdk_rs=debug", false);
 
-    // 运行历史数据订阅示例
-    history_kline_with_left_id_example().await;
-    // history_kline_with_focus_example().await;
+    interface_live_test_example().await;
+    let has_shinny_env =
+        env::var("SHINNYTECH_ID").is_ok() && env::var("SHINNYTECH_PW").is_ok();
+    if has_shinny_env {
+        history_kline_with_left_id_example().await;
+    }
 
     info!("\n所有示例运行完成!");
 }
@@ -256,7 +322,7 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
         .with_ansi(true) // 启用颜色
         .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
         .compact();
-        
+
     // Layer 2: 文件输出（无颜色）
     let file_layer = fmt::layer()
         .with_target(true)
@@ -268,7 +334,7 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
         .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
         .with_writer(file)
         .compact();
-        
+
 
     // 组合两个 Layer
     tracing_subscriber::registry().with(filter)

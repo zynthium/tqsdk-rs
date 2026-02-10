@@ -8,6 +8,7 @@
 use crate::errors::{Result, TqError};
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
+use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::time::Duration;
 use tracing::{debug, info};
@@ -74,6 +75,49 @@ pub async fn fetch_json(url: &str) -> Result<Value> {
     info!("下载完成，总大小: {} 字节", buffer.len());
 
     // 解析 JSON
+    let json: Value = serde_json::from_slice(&buffer)
+        .map_err(|e| TqError::ParseError(format!("JSON 解析失败: {}", e)))?;
+
+    Ok(json)
+}
+
+pub async fn fetch_json_with_headers(url: &str, headers: HeaderMap) -> Result<Value> {
+    info!("开始下载 JSON: {}", url);
+
+    let client = reqwest::Client::builder()
+        .gzip(true)
+        .brotli(true)
+        .timeout(Duration::from_secs(30))
+        .default_headers(headers)
+        .build()
+        .map_err(|e| TqError::NetworkError(format!("创建 HTTP 客户端失败: {}", e)))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| TqError::NetworkError(format!("请求失败: {}", e)))?;
+
+    if !response.status().is_success() {
+        return Err(TqError::NetworkError(format!(
+            "HTTP 状态码错误: {}",
+            response.status()
+        )));
+    }
+
+    debug!("HTTP 状态: {}", response.status());
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = Vec::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| TqError::NetworkError(format!("下载数据失败: {}", e)))?;
+        buffer.extend_from_slice(&chunk);
+        debug!("已下载: {} 字节", buffer.len());
+    }
+
+    info!("下载完成，总大小: {} 字节", buffer.len());
+
     let json: Value = serde_json::from_slice(&buffer)
         .map_err(|e| TqError::ParseError(format!("JSON 解析失败: {}", e)))?;
 
@@ -272,4 +316,3 @@ mod tests {
         assert_ne!(id1, id2); // 应该是不同的 ID
     }
 }
-

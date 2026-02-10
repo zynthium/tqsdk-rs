@@ -26,6 +26,7 @@
 - Tick 数据订阅 - 逐笔成交数据
 - 历史数据获取（支持 left_kline_id 和 focus_datetime 两种方式）
 - ViewWidth 限制和二分查找优化 - 高效处理大数据集
+- 合约与期权查询（GraphQL）
 - **Polars DataFrame 集成** - 高性能数据分析（可选功能）
 
 ### 交易功能
@@ -50,6 +51,19 @@
 - **灵活日志系统** - 支持 Layer 组合和本地时区
 - **完整示例** - 8+ 示例程序覆盖所有功能
 - **详细文档** - 完整的 API 文档和使用指南
+
+## 近期修复与更新
+- 修复：行情 WebSocket 在断线重连后自动重发未完成的 ins_query，并在收到非空响应后清理缓存，避免查询丢失与重复
+  - 影响接口：GraphQL 查询、主连/期权查询等基于 ins_query 的功能
+  - 验证：`cargo run --example history` 中的 `query_cont_quotes` 返回正常
+- 更新：主连查询 query_cont_quotes 在未提供 has_night 时不再携带该变量，避免服务端变量校验导致超时
+  - 兼容：与 tqsdk-python 的接口行为对齐
+
+## 验证与排查
+- 示例验证：运行 `cargo run --example history` 覆盖行情、GraphQL、交易状态等核心接口
+- 静态检查：`cargo clippy`（当前存在若干复杂度与默认赋值告警，不影响功能）
+- 类型检查：`cargo check`
+- 账户权限：`query_edb_data` 需要已购买非价量数据权限，否则将返回权限提示（不影响其他功能）
 
 ## 快速开始
 
@@ -506,7 +520,40 @@ dm.on_data(|| {
 });
 ```
 
-### 4. Polars DataFrame 集成（可选功能）
+### 2. 合约查询
+
+使用 GraphQL 查询合约、主连和期权列表：
+
+```rust
+use serde_json::json;
+use tqsdk_rs::{Client, ClientConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = Client::new("username", "password", ClientConfig::default()).await?;
+    client.init_market().await?;
+    client.init_ins_api().await?;
+
+    let quotes = client.query_quotes(Some("FUTURE"), Some("SHFE"), None, Some(false), None).await?;
+    let cont = client.query_cont_quotes(Some("SHFE"), Some("cu"), None).await?;
+    let options = client
+        .query_options("SHFE.cu2405", Some("CALL"), Some(2024), Some(12), None, Some(false), None)
+        .await?;
+
+    let query = r#"query($class_:[Class]) {
+  multi_symbol_info(class: $class_) {
+    ... on basic { instrument_id }
+  }
+}"#;
+    let variables = json!({ "class_": ["FUTURE"] });
+    let raw = client.query_graphql(query, Some(variables)).await?;
+
+    println!("quotes={:?} cont={:?} options={:?} raw={:?}", quotes, cont, options, raw);
+    Ok(())
+}
+```
+
+### 3. Polars DataFrame 集成（可选功能）
 
 启用 `polars` 功能后，可以将 K线和 Tick 数据转换为 Polars DataFrame 进行高性能分析。
 

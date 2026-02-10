@@ -11,7 +11,8 @@ use crate::errors::{Result, TqError};
 use futures::{SinkExt, StreamExt};
 use reqwest::header::HeaderMap;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -133,7 +134,7 @@ impl TqWebsocket {
 
                 // 尝试重连
                 if *self.should_reconnect.read().unwrap() {
-                    self.handle_reconnect().await;
+                    let _ = self.handle_reconnect().await;
                 }
 
                 return Err(TqError::WebSocketError(format!("Connection failed: {}", e)));
@@ -162,6 +163,7 @@ impl TqWebsocket {
         self.start_receive_loop().await;
         // 发送队列中的消息
         self.flush_queue().await;
+        self.send(&json!({"aid": "peek_message"})).await?;
 
         info!("WebSocket 连接成功");
         Ok(())
@@ -418,7 +420,7 @@ impl TqWebsocket {
     }
 
     /// 处理重连
-    async fn handle_reconnect(&self) {
+    async fn handle_reconnect(&self) -> bool {
         // 检查重连次数（在锁的作用域内完成）
         let (should_reconnect, times) = {
             let mut reconnect_times = self.reconnect_times.write().unwrap();
@@ -428,7 +430,7 @@ impl TqWebsocket {
                     "已达到最大重连次数 {}，停止重连",
                     self.config.reconnect_max_times
                 );
-                return;
+                return false;
             }
 
             *reconnect_times += 1;
@@ -444,10 +446,19 @@ impl TqWebsocket {
             // 等待重连间隔
             sleep(self.config.reconnect_interval).await;
 
-            // 重新连接（这里只是标记，实际重连需要外部调用 init）
-            // 外部应该监听 on_error 回调并调用 init(true)
-            info!("重连等待完成，请外部调用 init(true) 进行重连");
+            info!("重连等待完成，准备重连");
         }
+        should_reconnect
+    }
+
+    pub async fn reconnect(&self) {
+        if !*self.should_reconnect.read().unwrap() {
+            return;
+        }
+        if !self.handle_reconnect().await {
+            return;
+        }
+        let _ = self.init(true).await;
     }
 }
 
@@ -457,6 +468,8 @@ pub struct TqQuoteWebsocket {
     _dm: Arc<DataManager>,
     subscribe_quote: Arc<RwLock<Option<Value>>>,
     charts: Arc<RwLock<std::collections::HashMap<String, Value>>>,
+    pending_ins_query: Arc<RwLock<std::collections::HashMap<String, Value>>>,
+    login_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl TqQuoteWebsocket {
@@ -467,16 +480,42 @@ impl TqQuoteWebsocket {
         let subscribe_quote: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
         let charts: Arc<RwLock<std::collections::HashMap<String, Value>>> =
             Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let pending_ins_query: Arc<RwLock<std::collections::HashMap<String, Value>>> =
+            Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let login_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         // 注册消息处理
         base.on_message({
             let dm = Arc::clone(&dm_clone);
+            let pending_ins_query = Arc::clone(&pending_ins_query);
+            let login_ready = Arc::clone(&login_ready);
             move |data: Value| {
                 if let Some(aid) = data.get("aid").and_then(|v| v.as_str()) {
-                    if aid == "rtn_data" {
-                        if let Some(payload) = data.get("data") {
-                            dm.merge_data(payload.clone(), true, true);
+                    match aid {
+                        "rtn_data" => {
+                            if let Some(payload) = data.get("data") {
+                                if let Some(array) = payload.as_array() {
+                                    for item in array {
+                                        if let Some(symbols) = item.get("symbols") {
+                                            if let Some(obj) = symbols.as_object() {
+                                                let mut pending_guard =
+                                                    pending_ins_query.write().unwrap();
+                                                for (query_id, value) in obj {
+                                                    if !value.is_null() {
+                                                        pending_guard.remove(query_id);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                dm.merge_data(payload.clone(), true, true);
+                            }
                         }
+                        "rsp_login" => {
+                            login_ready.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -486,33 +525,44 @@ impl TqQuoteWebsocket {
         {
             let subscribe_quote_clone = Arc::clone(&subscribe_quote);
             let charts_clone = Arc::clone(&charts);
+            let pending_ins_query_clone = Arc::clone(&pending_ins_query);
+            let login_ready_clone = Arc::clone(&login_ready);
             let base_clone = Arc::clone(&base);
 
             base.on_open(move || {
-                // 重发订阅请求
-                if let Some(sub) = subscribe_quote_clone.read().unwrap().as_ref() {
-                    debug!("重连后重发订阅请求");
-                    let base_for_send = Arc::clone(&base_clone);
-                    let sub_clone = sub.clone();
-                    tokio::spawn(async move {
-                        let _ = base_for_send.send(&sub_clone).await;
-                    });
-                }
+                login_ready_clone.store(false, std::sync::atomic::Ordering::SeqCst);
+                let sub = subscribe_quote_clone.read().unwrap().clone();
+                let charts = charts_clone.read().unwrap().clone();
+                let pending_ins_query = pending_ins_query_clone.read().unwrap().clone();
+                let base_for_send = Arc::clone(&base_clone);
 
-                // 重发图表请求
-                let charts_guard = charts_clone.read().unwrap();
-                for (chart_id, chart) in charts_guard.iter() {
-                    if let Some(view_width) = chart.get("view_width").and_then(|v| v.as_f64()) {
-                        if view_width > 0.0 {
-                            debug!("重连后重发图表请求: {}", chart_id);
-                            let base_for_send = Arc::clone(&base_clone);
-                            let chart_clone = chart.clone();
-                            tokio::spawn(async move {
-                                let _ = base_for_send.send(&chart_clone).await;
-                            });
+                tokio::spawn(async move {
+                    for query in pending_ins_query.values() {
+                        let _ = base_for_send.send(query).await;
+                    }
+                    if let Some(sub) = sub {
+                        let _ = base_for_send.send(&sub).await;
+                    }
+                    for (chart_id, chart) in charts.iter() {
+                        if let Some(view_width) = chart.get("view_width").and_then(|v| v.as_f64())
+                        {
+                            if view_width > 0.0 {
+                                debug!("重连后重发图表请求: {}", chart_id);
+                                let _ = base_for_send.send(chart).await;
+                            }
                         }
                     }
-                }
+                });
+            });
+        }
+
+        {
+            let base_clone = Arc::clone(&base);
+            base.on_close(move || {
+                let base_for_reconnect = Arc::clone(&base_clone);
+                tokio::spawn(async move {
+                    base_for_reconnect.reconnect().await;
+                });
             });
         }
 
@@ -521,6 +571,8 @@ impl TqQuoteWebsocket {
             _dm: dm_clone,
             subscribe_quote,
             charts,
+            pending_ins_query,
+            login_ready,
         }
     }
 
@@ -587,6 +639,12 @@ impl TqQuoteWebsocket {
                         return self.base.send(&value).await;
                     }
                 }
+                "ins_query" => {
+                    if let Some(query_id) = value.get("query_id").and_then(|v| v.as_str()) {
+                        let mut pending_guard = self.pending_ins_query.write().unwrap();
+                        pending_guard.insert(query_id.to_string(), value.clone());
+                    }
+                }
                 _ => {}
             }
         }
@@ -600,7 +658,157 @@ impl TqQuoteWebsocket {
         self.base.is_ready()
     }
 
+    pub fn is_logged_in(&self) -> bool {
+        self.login_ready
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// 关闭连接
+    pub async fn close(&self) -> Result<()> {
+        self.base.close().await
+    }
+}
+
+pub struct TqTradingStatusWebsocket {
+    base: Arc<TqWebsocket>,
+    _dm: Arc<DataManager>,
+    subscribe_trading_status: Arc<RwLock<Option<Value>>>,
+    option_underlyings: Arc<RwLock<HashMap<String, String>>>,
+}
+
+impl TqTradingStatusWebsocket {
+    pub fn new(url: String, dm: Arc<DataManager>, config: WebSocketConfig) -> Self {
+        let base = Arc::new(TqWebsocket::new(url, config));
+        let dm_clone = Arc::clone(&dm);
+        let subscribe_trading_status: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
+        let option_underlyings: Arc<RwLock<HashMap<String, String>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+
+        base.on_message({
+            let dm = Arc::clone(&dm_clone);
+            let option_underlyings = Arc::clone(&option_underlyings);
+            move |data: Value| {
+                if let Some(aid) = data.get("aid").and_then(|v| v.as_str()) {
+                    if aid == "rtn_data" {
+                        if let Some(payload) = data.get("data").and_then(|v| v.as_array()) {
+                            let mut diffs = payload.clone();
+                            let mut received: HashMap<String, String> = HashMap::new();
+                            for diff in diffs.iter_mut() {
+                                if let Some(map) =
+                                    diff.get_mut("trading_status").and_then(|v| v.as_object_mut())
+                                {
+                                    for (symbol, ts_val) in map.iter_mut() {
+                                        if let Some(ts_map) = ts_val.as_object_mut() {
+                                            if !ts_map.contains_key("symbol") {
+                                                ts_map.insert("symbol".to_string(), Value::String(symbol.clone()));
+                                            }
+                                            if let Some(status_val) =
+                                                ts_map.get_mut("trade_status")
+                                            {
+                                                if let Some(status) = status_val.as_str() {
+                                                    let normalized = if status == "AUCTIONORDERING"
+                                                        || status == "CONTINOUS"
+                                                    {
+                                                        status.to_string()
+                                                    } else {
+                                                        "NOTRADING".to_string()
+                                                    };
+                                                    *status_val = Value::String(normalized.clone());
+                                                    received.insert(symbol.clone(), normalized);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let option_map = option_underlyings.read().unwrap();
+                            for (option, underlying) in option_map.iter() {
+                                if let Some(status) = received.get(underlying) {
+                                    diffs.push(json!({
+                                        "trading_status": {
+                                            option: {
+                                                "symbol": option,
+                                                "trade_status": status
+                                            }
+                                        }
+                                    }));
+                                }
+                            }
+                            dm.merge_data(Value::Array(diffs), true, true);
+                        }
+                    }
+                }
+            }
+        });
+
+        {
+            let subscribe_clone = Arc::clone(&subscribe_trading_status);
+            let base_clone = Arc::clone(&base);
+            base.on_open(move || {
+                if let Some(sub) = subscribe_clone.read().unwrap().as_ref() {
+                    let base_for_send = Arc::clone(&base_clone);
+                    let sub_clone = sub.clone();
+                    tokio::spawn(async move {
+                        let _ = base_for_send.send(&sub_clone).await;
+                    });
+                }
+            });
+        }
+
+        TqTradingStatusWebsocket {
+            base,
+            _dm: dm_clone,
+            subscribe_trading_status,
+            option_underlyings,
+        }
+    }
+
+    pub async fn init(&self, is_reconnection: bool) -> Result<()> {
+        self.base.init(is_reconnection).await
+    }
+
+    pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
+        let json_str = serde_json::to_string(obj)?;
+        let value: Value = serde_json::from_str(&json_str)?;
+
+        if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
+            if aid == "subscribe_trading_status" {
+                let mut should_send = false;
+                let mut subscribe_guard = self.subscribe_trading_status.write().unwrap();
+                if let Some(old_sub) = subscribe_guard.as_ref() {
+                    let old_list = old_sub.get("ins_list");
+                    let new_list = value.get("ins_list");
+                    if old_list != new_list {
+                        *subscribe_guard = Some(value.clone());
+                        should_send = true;
+                    }
+                } else {
+                    *subscribe_guard = Some(value.clone());
+                    should_send = true;
+                }
+                drop(subscribe_guard);
+                if should_send {
+                    return self.base.send(&value).await;
+                }
+                return Ok(());
+            }
+        }
+
+        self.base.send(obj).await
+    }
+
+    pub fn update_option_underlyings(&self, mapping: HashMap<String, String>) {
+        let mut guard = self.option_underlyings.write().unwrap();
+        for (option, underlying) in mapping {
+            guard.insert(option, underlying);
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.base.is_ready()
+    }
+
     pub async fn close(&self) -> Result<()> {
         self.base.close().await
     }

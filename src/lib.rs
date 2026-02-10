@@ -16,7 +16,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // 创建客户端
-//!     let client = Client::new("username", "password", ClientConfig::default()).await?;
+//!     let mut client = Client::new("username", "password", ClientConfig::default()).await?;
 //!     
 //!     // 初始化行情
 //!     client.init_market().await?;
@@ -55,6 +55,9 @@ pub mod quote;
 // Series API
 pub mod series;
 
+// 合约查询
+pub mod ins;
+
 // 交易会话
 pub mod trade_session;
 
@@ -71,6 +74,7 @@ pub use client::{Client, ClientConfig, ClientOption};
 pub use datamanager::{DataManager, DataManagerConfig};
 pub use errors::{Result, TqError};
 pub use logger::{init_logger, create_logger_layer};
+pub use ins::InsAPI;
 pub use quote::QuoteSubscription;
 pub use series::{SeriesAPI, SeriesSubscription};
 pub use trade_session::TradeSession;
