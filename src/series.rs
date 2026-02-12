@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::auth::Authenticator;
 
 /// Series API
+#[derive(Clone)]
 pub struct SeriesAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
@@ -170,8 +171,8 @@ impl SeriesAPI {
             options,
         )?);
 
-        // // 先启动监听（注册数据更新回调）
-        // sub.start().await?;
+        // 先启动监听（注册数据更新回调）
+        sub.start().await?;
 
         // // 再发送 set_chart 请求（避免错过初始数据）
         // sub.send_set_chart().await?;
@@ -284,9 +285,9 @@ impl SeriesSubscription {
             chart_req["focus_position"] = serde_json::json!(focus_position);
         }
 
-        debug!(
-            "发送 set_chart 请求: chart_id={}, symbols={:?}, view_width={}",
-            self.options.chart_id, self.options.symbols, view_width
+        info!(
+            "发送 set_chart 请求: chart_id={}, symbols={:?}, view_width={}, duration={}",
+            self.options.chart_id, self.options.symbols, view_width, self.options.duration
         );
 
         self.ws.send(&chart_req).await?;
@@ -306,7 +307,7 @@ impl SeriesSubscription {
 
         self.start_watching().await;
         self.send_set_chart().await?;
-        trace!("send_set_chart done");
+        info!("send_set_chart done for {}", self.options.chart_id);
         Ok(())
     }
 
@@ -372,16 +373,20 @@ impl SeriesSubscription {
 
                         // 调用回调
                         if update_info.has_chart_sync {
-                            if update_info.chart_ready {
+                            // fix: 只要 sync 了就回调，不要卡 chart_ready (more_data)
+                            // if update_info.chart_ready {
                                 if let Some(callback) = on_update.read().await.as_ref() {
                                     let cb = Arc::clone(callback);
                                     let sd = Arc::clone(&series_data);
                                     let ui = Arc::clone(&update_info);
+                                    // let symbol_log = options.symbols[0].clone();
                                     tokio::spawn(async move {
+                                        // let spawn_time = chrono::Local::now();
+                                        // info!("DEBUG_TIME: [0.2] Spawning callback for {}: {}", symbol_log, spawn_time.format("%H:%M:%S%.6f"));
                                         cb(sd, ui);
                                     });
                                 }
-                            }
+                            // }
 
                             if update_info.has_new_bar && update_info.chart_ready {
                                 if let Some(callback) = on_new_bar.read().await.as_ref() {
@@ -407,8 +412,8 @@ impl SeriesSubscription {
                     Err(e) => {
                         let err_str = e.to_string();
                         // 忽略"数据未更新"的错误，这是正常现象（收到不相关的更新）
-                        if err_str == "数据未更新" {
-                            trace!("Series update skipped: no data change");
+                        if err_str.contains("数据未更新") {
+                            // trace!("Series update skipped: no data change");
                         } else {
                             warn!("处理 Series 更新失败: {}", e);
                             if let Some(callback) = on_error.read().await.as_ref() {
@@ -530,6 +535,10 @@ async fn process_series_update(
     };
     let has_chart_changed = dm.is_changing(&chart_path);
     let has_data_changed = dm.is_changing(&data_path);
+
+    if has_chart_changed || has_data_changed {
+        info!("Series update detected: chart_id={}, has_chart={}, has_data={}", options.chart_id, has_chart_changed, has_data_changed);
+    }
 
     if !has_chart_changed && !has_data_changed {
         return Err(TqError::Other("数据未更新".to_string()));

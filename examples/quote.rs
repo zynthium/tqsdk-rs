@@ -12,17 +12,29 @@ use tokio;
 use tqsdk_rs::*;
 use tracing::info;
 
+fn get_credentials() -> (String, String) {
+    let username = env::var("SHINNYTECH_ID")
+        .or_else(|_| env::var("TQ_AUTH_USER"))
+        .expect("请设置 SHINNYTECH_ID 或 TQ_AUTH_USER 环境变量");
+    let password = env::var("SHINNYTECH_PW")
+        .or_else(|_| env::var("TQ_AUTH_PASS"))
+        .expect("请设置 SHINNYTECH_PW 或 TQ_AUTH_PASS 环境变量");
+    (username, password)
+}
+
 /// Quote 订阅示例
 async fn quote_subscription_example() {
     info!("==================== Quote 订阅示例 ====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let (username, password) = get_credentials();
 
     // 创建客户端
     let mut config = ClientConfig::default();
-    config.log_level = "info".to_string();
+    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
     config.view_width = 10000;
+    config.development = true;
+    config.stock = false;
+    config.stock = false;
     config.development = true;
 
     let mut client = Client::new(&username, &password, config)
@@ -97,12 +109,12 @@ async fn quote_subscription_example() {
 async fn single_kline_subscription_example() {
     info!("==================== 单合约 K线订阅示例 ====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let (username, password) = get_credentials();
 
     let mut config = ClientConfig::default();
-    config.log_level = "info".to_string();
+    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
     config.view_width = 20000;
+    config.stock = false;
 
     // let symbol = "SHFE.au2602";
     let symbol = "CFFEX.IF2512";
@@ -229,11 +241,10 @@ async fn single_kline_subscription_example() {
 async fn multi_kline_subscription_example() {
     info!("==================== 多合约 K线订阅示例 ====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let (username, password) = get_credentials();
 
     let mut config = ClientConfig::default();
-    config.log_level = "info".to_string();
+    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
     config.view_width = 500;
 
     let mut client = Client::new(&username, &password, config)
@@ -252,7 +263,7 @@ async fn multi_kline_subscription_example() {
                 "INE.sc2601".to_string(),
             ],
             Duration::from_secs(60),
-            10,
+            1000,
         )
         .await
         .expect("订阅失败");
@@ -313,11 +324,10 @@ async fn multi_kline_subscription_example() {
 async fn tick_subscription_example() {
     info!("==================== Tick 订阅示例 ====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let (username, password) = get_credentials();
 
     let mut config = ClientConfig::default();
-    config.log_level = "info".to_string();
+    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
     config.development = true;
     config.view_width = 500;
 
@@ -371,12 +381,14 @@ async fn tick_subscription_example() {
 #[tokio::main]
 async fn main() {
     // 初始化日志：同时输出到终端和文件
-    init_logger_with_file("quote=info,tqsdk_rs=debug", false);
+    let log_level =
+        env::var("TQ_LOG").unwrap_or_else(|_| "quote=info,tqsdk_rs=debug".to_string());
+    init_logger_with_file(&log_level, false);
 
     // 运行各个示例（取消注释以运行）
     // quote_subscription_example().await;
-    single_kline_subscription_example().await;
-    // multi_kline_subscription_example().await;
+    // single_kline_subscription_example().await;
+    multi_kline_subscription_example().await;
     // tick_subscription_example().await;
 
     info!("所有示例运行完成!");
@@ -414,7 +426,7 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
         .with_ansi(true) // 启用颜色
         .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
         .compact();
-        
+
     // Layer 2: 文件输出（无颜色）
     let file_layer = fmt::layer()
         .with_target(true)
@@ -426,7 +438,7 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
         .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
         .with_writer(file)
         .compact();
-        
+
 
     // 组合两个 Layer
     tracing_subscriber::registry().with(filter)

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use async_channel::{Sender, Receiver, unbounded};
-use tracing::{debug, error};
+use tracing::{debug, info, error};
 
 /// 数据管理器配置
 #[derive(Debug, Clone)]
@@ -265,14 +265,17 @@ impl DataManager {
 
     /// 根据路径获取数据
     pub fn get_by_path(&self, path: &[&str]) -> Option<Value> {
-        let data = self.data.read().unwrap();
-        let mut current: &Value = &Value::Object(
-            data.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<serde_json::Map<String, Value>>(),
-        );
+        if path.is_empty() {
+            return None;
+        }
 
-        for &key in path.iter() {
+        let data = self.data.read().unwrap();
+
+        // 第一层直接从 HashMap 获取
+        let mut current = data.get(path[0])?;
+
+        // 后续层级从 Value::Object 获取
+        for &key in path[1..].iter() {
             match current {
                 Value::Object(map) => {
                     if let Some(val) = map.get(key) {
@@ -292,37 +295,28 @@ impl DataManager {
         let current_epoch = self.epoch.load(Ordering::SeqCst);
         let data = self.data.read().unwrap();
 
-        let mut current_value = Some(&Value::Object(
-            data.iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<serde_json::Map<String, Value>>(),
-        ));
+        if path.is_empty() {
+            return false;
+        }
 
-        for (i, &key) in path.iter().enumerate() {
+        // 第一层直接从 HashMap 获取
+        let mut current_value = data.get(path[0]);
+
+        // 遍历路径
+        for &key in path[1..].iter() {
             if let Some(Value::Object(map)) = current_value {
-                if let Some(val) = map.get(key) {
-                    // 只在最后一层检查 epoch（避免父节点更新导致误判）
-                    if i == path.len() - 1 {
-                        if let Some(Value::Object(obj)) = Some(val) {
-                            if let Some(Value::Number(e)) = obj.get("_epoch") {
-                                if let Some(e_val) = e.as_i64() {
-                                    if e_val == current_epoch {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // 继续往下查找
-                    if i < path.len() - 1 {
-                        current_value = Some(val);
-                    }
-                } else {
-                    return false;
-                }
+                current_value = map.get(key);
             } else {
                 return false;
+            }
+        }
+
+        // 检查 _epoch
+        if let Some(Value::Object(map)) = current_value {
+            if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
+                if let Some(epoch) = epoch_val.as_i64() {
+                    return epoch == current_epoch;
+                }
             }
         }
 
@@ -455,27 +449,22 @@ impl DataManager {
 
             // 转换 data map 为数组
             if let Some(Value::Object(kline_map)) = data_map.get("data") {
-                let mut all_klines: Vec<(i64, Kline)> = Vec::new();
-                
+                // 优化：先收集 ID 和 Value，排序后再反序列化，避免全量反序列化
+                let mut all_entries: Vec<(i64, &Value)> = Vec::with_capacity(kline_map.len());
+
                 for (id_str, kline_data) in kline_map.iter() {
                     if let Ok(id) = id_str.parse::<i64>() {
-                        match self.convert_to_struct::<Kline>(kline_data) {
-                            Ok(mut kline) => {
-                                kline.id = id;
-                                all_klines.push((id, kline));
-                            }
-                            Err(e) => {
-                                error!("{}", TqError::ParseError(format!("K线数据格式错误: {}", e)));
-                            }
-                        }
+                        all_entries.push((id, kline_data));
                     }
                 }
+
                 // 按 ID 排序
-                all_klines.sort_by_key(|(id, _)| *id);
+                all_entries.sort_unstable_by_key(|(id, _)| *id);
 
                 // 过滤超出 right_id 的数据
                 if right_id > 0 {
-                    all_klines.retain(|(id, _)| *id <= right_id);
+                    let r_id = right_id; // Copy for closure
+                    all_entries.retain(|(id, _)| *id <= r_id);
                 }
 
                 // 应用 ViewWidth 限制
@@ -485,15 +474,26 @@ impl DataManager {
                     self.config.default_view_width
                 };
 
-                let klines: Vec<Kline> = all_klines
-                    .into_iter()
-                    .map(|(_, k)| k)
-                    .rev()
-                    .take(vw)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
+                // 取最后 vw 个
+                let target_entries = if all_entries.len() > vw {
+                    &all_entries[all_entries.len() - vw..]
+                } else {
+                    &all_entries[..]
+                };
+
+                let mut klines: Vec<Kline> = Vec::with_capacity(target_entries.len());
+                for (id, data) in target_entries {
+                    match self.convert_to_struct::<Kline>(data) {
+                        Ok(mut kline) => {
+                            kline.id = *id;
+                            klines.push(kline);
+                        }
+                        Err(e) => {
+                            error!("{}", TqError::ParseError(format!("K线数据格式错误 id={}: {}", id, e)));
+                        }
+                    }
+                }
+
                 kline_series.data = klines;
             }
 

@@ -65,7 +65,7 @@ pub struct Quote {
     /// 行情时间
     pub datetime: String,
     /// 最新价
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub last_price: f64,
 
     // 买卖盘口
@@ -181,15 +181,15 @@ pub struct Quote {
 
     // 涨跌
     /// 涨跌
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub change: f64,
     /// 涨跌幅
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub change_percent: f64,
 
     // 期权相关
     /// 行权价
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub strike_price: f64,
 
     // 昨日数据
@@ -205,10 +205,10 @@ pub struct Quote {
 
     // 保证金和手续费
     /// 每手保证金
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub margin: f64,
     /// 每手手续费
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub commission: f64,
 
     // 合约信息
@@ -243,7 +243,7 @@ pub struct Quote {
     #[serde(default)]
     pub volume_multiple: i32,
     /// 最小变动价位
-    #[serde(default = "default_nan")]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub price_tick: f64,
     /// 价格小数位数
     #[serde(default)]
