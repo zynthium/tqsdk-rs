@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use async_channel::{Sender, Receiver, unbounded};
-use tracing::{debug, info, error};
+use tracing::{debug, error};
 
 /// 数据管理器配置
 #[derive(Debug, Clone)]

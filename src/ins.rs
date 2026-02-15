@@ -4,10 +4,10 @@ use crate::auth::Authenticator;
 use crate::types::{
     EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus,
 };
-use crate::utils::{fetch_json, fetch_json_with_headers, split_symbol, value_to_f64};
+use crate::utils::{fetch_json_with_headers, split_symbol, value_to_f64};
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket};
 use async_channel::{unbounded, Receiver};
-use chrono::{Datelike, FixedOffset, NaiveDate, NaiveDateTime, Utc};
+use chrono::{Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
 use chrono::Duration as ChronoDuration;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
@@ -247,8 +247,7 @@ fn timestamp_nano_to_cst_datetime(ts: i64) -> Option<chrono::DateTime<FixedOffse
     let offset = FixedOffset::east_opt(8 * 3600)?;
     let secs = ts / 1_000_000_000;
     let nanos = (ts % 1_000_000_000) as u32;
-    let naive = NaiveDateTime::from_timestamp_opt(secs, nanos)?;
-    Some(chrono::DateTime::<FixedOffset>::from_utc(naive, offset))
+    offset.timestamp_opt(secs, nanos).single()
 }
 
 fn get_trading_time_part(trading_time: &Value, key: &str) -> Option<Value> {
@@ -531,13 +530,11 @@ fn parse_query_symbol_info_result(
         if let Some(expire_ts) = expire_ts {
             let offset = FixedOffset::east_opt(8 * 3600).unwrap();
             if let (Some(expire_dt), Some(current_dt)) = (
-                NaiveDateTime::from_timestamp_opt(expire_ts, 0),
-                NaiveDateTime::from_timestamp_opt(current_ts, 0),
+                offset.timestamp_opt(expire_ts, 0).single(),
+                offset.timestamp_opt(current_ts, 0).single(),
             ) {
-                let expire_date =
-                    chrono::DateTime::<FixedOffset>::from_utc(expire_dt, offset).date_naive();
-                let current_date =
-                    chrono::DateTime::<FixedOffset>::from_utc(current_dt, offset).date_naive();
+                let expire_date = expire_dt.date_naive();
+                let current_date = current_dt.date_naive();
                 let days = (expire_date - current_date).num_days();
                 info.insert("expire_rest_days".to_string(), json!(days));
             }

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
-use tracing::{debug, info, trace, warn};
+use tracing::{info, trace, warn};
 use uuid::Uuid;
 
 use crate::auth::Authenticator;

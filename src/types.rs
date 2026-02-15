@@ -779,61 +779,61 @@ pub struct Account {
     #[serde(default = "default_currency")]
     pub currency: String,
     /// 可用资金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub available: f64,
     /// 账户权益
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub balance: f64,
     /// 本交易日内平仓盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub close_profit: f64,
     /// 手续费 - 本交易日内交纳的手续费
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub commission: f64,
     /// CTP可用资金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub ctp_available: f64,
     /// CTP账户权益
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub ctp_balance: f64,
     /// 入金金额 - 本交易日内的入金金额
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub deposit: f64,
     /// 浮动盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub float_profit: f64,
     /// 冻结手续费
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub frozen_commission: f64,
     /// 冻结保证金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub frozen_margin: f64,
     /// 冻结权利金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub frozen_premium: f64,
     /// 保证金占用
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub margin: f64,
     /// 期权市值
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub market_value: f64,
     /// 持仓盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_profit: f64,
     /// 昨日账户权益
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub pre_balance: f64,
     /// 权利金 - 本交易日内交纳的权利金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub premium: f64,
     /// 风险度 = 1 - available / balance
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub risk_ratio: f64,
     /// 静态权益
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub static_balance: f64,
     /// 出金金额 - 本交易日内的出金金额
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub withdraw: f64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -843,6 +843,14 @@ pub struct Account {
 
 fn default_currency() -> String {
     "CNY".to_string()
+}
+
+fn deserialize_f64_default<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)?;
+    Ok(value.unwrap_or_default())
 }
 
 impl Account {
@@ -924,67 +932,67 @@ pub struct Position {
     #[serde(default)]
     pub pos_short_today: i64,
     /// 多头开仓均价
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub open_price_long: f64,
     /// 空头开仓均价
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub open_price_short: f64,
     /// 多头开仓市值
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub open_cost_long: f64,
     /// 空头开仓市值
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub open_cost_short: f64,
     /// 多头持仓均价
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_price_long: f64,
     /// 空头持仓均价
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_price_short: f64,
     /// 多头持仓市值
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_cost_long: f64,
     /// 空头持仓市值
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_cost_short: f64,
     /// 最新价
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub last_price: f64,
     /// 多头浮动盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub float_profit_long: f64,
     /// 空头浮动盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub float_profit_short: f64,
     /// 浮动盈亏 = floatProfitLong + floatProfitShort
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub float_profit: f64,
     /// 多头持仓盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_profit_long: f64,
     /// 空头持仓盈亏
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_profit_short: f64,
     /// 持仓盈亏 = positionProfitLong + positionProfitShort
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub position_profit: f64,
     /// 多头持仓占用保证金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub margin_long: f64,
     /// 空头持仓占用保证金
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub margin_short: f64,
     /// 持仓占用保证金 = marginLong + marginShort
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub margin: f64,
     /// 期权权利方市值(始终 >= 0)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub market_value_long: f64,
     /// 期权义务方市值(始终 <= 0)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub market_value_short: f64,
     /// 期权市值
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub market_value: f64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
