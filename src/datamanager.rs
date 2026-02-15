@@ -10,7 +10,7 @@ use crate::errors::{Result, TqError};
 use crate::types::*;
 use crate::utils::{nanos_to_datetime, value_to_i64};
 use chrono::Utc;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -186,16 +186,7 @@ impl DataManager {
                             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
                         if let Value::Object(target_map) = target_obj {
-                            let mut target_hashmap: HashMap<String, Value> = target_map
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect();
-
-                            self.merge_object(&mut target_hashmap, obj, epoch, delete_null);
-
-                            *target_map = target_hashmap
-                                .into_iter()
-                                .collect::<serde_json::Map<String, Value>>();
+                            self.merge_object_map(target_map, obj, epoch, delete_null);
                         }
                     }
                 }
@@ -207,6 +198,46 @@ impl DataManager {
         }
 
         // 设置 epoch
+        target.insert("_epoch".to_string(), Value::Number(epoch.into()));
+    }
+
+    fn merge_object_map(
+        &self,
+        target: &mut Map<String, Value>,
+        source: &Map<String, Value>,
+        epoch: i64,
+        delete_null: bool,
+    ) {
+        for (property, value) in source.iter() {
+            if value.is_null() {
+                if delete_null {
+                    target.remove(property);
+                }
+                continue;
+            }
+
+            match value {
+                Value::String(s) if s == "NaN" || s == "-" => {
+                    target.insert(property.clone(), Value::Null);
+                }
+                Value::Object(obj) => {
+                    if property == "quotes" {
+                        self.merge_quotes_map(target, obj, epoch, delete_null);
+                    } else {
+                        let target_obj = target
+                            .entry(property.clone())
+                            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        if let Value::Object(target_map) = target_obj {
+                            self.merge_object_map(target_map, obj, epoch, delete_null);
+                        }
+                    }
+                }
+                _ => {
+                    target.insert(property.clone(), value.clone());
+                }
+            }
+        }
+
         target.insert("_epoch".to_string(), Value::Number(epoch.into()));
     }
 
@@ -223,43 +254,58 @@ impl DataManager {
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
         if let Value::Object(quotes_map) = quotes_obj {
-            let mut quotes_hashmap: HashMap<String, Value> = quotes_map
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect();
-
             for (symbol, quote_data) in quotes.iter() {
                 if quote_data.is_null() {
                     if delete_null {
-                        quotes_hashmap.remove(symbol);
+                        quotes_map.remove(symbol);
                     }
                     continue;
                 }
 
                 if let Value::Object(quote_obj) = quote_data {
                     // 确保目标存在
-                    let target_quote = quotes_hashmap
+                    let target_quote = quotes_map
                         .entry(symbol.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
                     if let Value::Object(target_quote_map) = target_quote {
-                        let mut target_quote_hashmap: HashMap<String, Value> = target_quote_map
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect();
-
-                        self.merge_object(&mut target_quote_hashmap, quote_obj, epoch, delete_null);
-
-                        *target_quote_map = target_quote_hashmap
-                            .into_iter()
-                            .collect::<serde_json::Map<String, Value>>();
+                        self.merge_object_map(target_quote_map, quote_obj, epoch, delete_null);
                     }
                 }
             }
+        }
+    }
 
-            *quotes_map = quotes_hashmap
-                .into_iter()
-                .collect::<serde_json::Map<String, Value>>();
+    fn merge_quotes_map(
+        &self,
+        target: &mut Map<String, Value>,
+        quotes: &Map<String, Value>,
+        epoch: i64,
+        delete_null: bool,
+    ) {
+        let quotes_obj = target
+            .entry("quotes".to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+        if let Value::Object(quotes_map) = quotes_obj {
+            for (symbol, quote_data) in quotes.iter() {
+                if quote_data.is_null() {
+                    if delete_null {
+                        quotes_map.remove(symbol);
+                    }
+                    continue;
+                }
+
+                if let Value::Object(quote_obj) = quote_data {
+                    let target_quote = quotes_map
+                        .entry(symbol.clone())
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+
+                    if let Value::Object(target_quote_map) = target_quote {
+                        self.merge_object_map(target_quote_map, quote_obj, epoch, delete_null);
+                    }
+                }
+            }
         }
     }
 
@@ -276,6 +322,29 @@ impl DataManager {
 
         // 后续层级从 Value::Object 获取
         for &key in path[1..].iter() {
+            match current {
+                Value::Object(map) => {
+                    if let Some(val) = map.get(key) {
+                        current = val;
+                    } else {
+                        return None;
+                    }
+                }
+                _ => return None,
+            }
+        }
+        Some(current.clone())
+    }
+
+    fn get_by_path_strings(&self, path: &[String]) -> Option<Value> {
+        if path.is_empty() {
+            return None;
+        }
+
+        let data = self.data.read().unwrap();
+        let mut current = data.get(&path[0])?;
+
+        for key in &path[1..] {
             match current {
                 Value::Object(map) => {
                     if let Some(val) = map.get(key) {
@@ -312,6 +381,35 @@ impl DataManager {
         }
 
         // 检查 _epoch
+        if let Some(Value::Object(map)) = current_value {
+            if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
+                if let Some(epoch) = epoch_val.as_i64() {
+                    return epoch == current_epoch;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn is_changing_strings(&self, path: &[String]) -> bool {
+        let current_epoch = self.epoch.load(Ordering::SeqCst);
+        let data = self.data.read().unwrap();
+
+        if path.is_empty() {
+            return false;
+        }
+
+        let mut current_value = data.get(&path[0]);
+
+        for key in &path[1..] {
+            if let Some(Value::Object(map)) = current_value {
+                current_value = map.get(key);
+            } else {
+                return false;
+            }
+        }
+
         if let Some(Value::Object(map)) = current_value {
             if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
                 if let Some(epoch) = epoch_val.as_i64() {
@@ -390,9 +488,8 @@ impl DataManager {
     fn notify_watchers(&self) {
         let watchers = self.watchers.read().unwrap();
         for (_, watcher) in watchers.iter() {
-            let path_refs: Vec<&str> = watcher.path.iter().map(|s| s.as_str()).collect();
-            if self.is_changing(&path_refs) {
-                if let Some(data) = self.get_by_path(&path_refs) {
+            if self.is_changing_strings(&watcher.path) {
+                if let Some(data) = self.get_by_path_strings(&watcher.path) {
                     let tx = watcher.tx.clone();
                     tokio::spawn(async move {
                         let _ = tx.send(data).await;
@@ -600,16 +697,14 @@ impl DataManager {
 
                     // 应用 ViewWidth 限制
                     if view_width > 0 && main_ids.len() > view_width {
-                        main_ids = main_ids
-                            .into_iter()
-                            .rev()
-                            .take(view_width)
-                            .collect::<Vec<_>>()
-                            .into_iter()
-                            .rev()
-                            .collect();
-                        result.left_id = main_ids[0];
-                        result.right_id = main_ids[main_ids.len() - 1];
+                        let split_index = main_ids.len() - view_width;
+                        main_ids.drain(0..split_index);
+                        if let Some(first) = main_ids.first() {
+                            result.left_id = *first;
+                        }
+                        if let Some(last) = main_ids.last() {
+                            result.right_id = *last;
+                        }
                     }
 
                     // 对齐所有合约的 K线
@@ -684,7 +779,7 @@ impl DataManager {
 
             // 转换 data map 为数组
             if let Some(Value::Object(tick_map)) = data_map.get("data") {
-                let mut all_ticks: Vec<(i64, Tick)> = Vec::new();
+                let mut all_ticks: Vec<(i64, Tick)> = Vec::with_capacity(tick_map.len());
 
                 for (id_str, tick_data) in tick_map.iter() {
                     if let Ok(id) = id_str.parse::<i64>() {
@@ -710,15 +805,13 @@ impl DataManager {
                     self.config.default_view_width
                 };
 
-                let ticks: Vec<Tick> = all_ticks
-                    .into_iter()
-                    .map(|(_, t)| t)
-                    .rev()
-                    .take(vw)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
+                let ticks = if all_ticks.len() > vw {
+                    let split_index = all_ticks.len() - vw;
+                    let tail = all_ticks.split_off(split_index);
+                    tail.into_iter().map(|(_, t)| t).collect()
+                } else {
+                    all_ticks.into_iter().map(|(_, t)| t).collect()
+                };
 
                 tick_series.data = ticks;
             }

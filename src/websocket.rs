@@ -583,9 +583,7 @@ impl TqQuoteWebsocket {
 
     /// 发送消息（重写以记录订阅和图表请求）
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
-        // 序列化为 Value 以检查 aid
-        let json_str = serde_json::to_string(obj)?;
-        let value: Value = serde_json::from_str(&json_str)?;
+        let value = serde_json::to_value(obj)?;
 
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
             match aid {
@@ -650,7 +648,7 @@ impl TqQuoteWebsocket {
         }
 
         // 其他消息直接发送
-        self.base.send(obj).await
+        self.base.send(&value).await
     }
 
     /// 检查是否就绪
@@ -769,8 +767,7 @@ impl TqTradingStatusWebsocket {
     }
 
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
-        let json_str = serde_json::to_string(obj)?;
-        let value: Value = serde_json::from_str(&json_str)?;
+        let value = serde_json::to_value(obj)?;
 
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
             if aid == "subscribe_trading_status" {
@@ -795,7 +792,7 @@ impl TqTradingStatusWebsocket {
             }
         }
 
-        self.base.send(obj).await
+        self.base.send(&value).await
     }
 
     pub fn update_option_underlyings(&self, mapping: HashMap<String, String>) {

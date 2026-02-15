@@ -325,6 +325,11 @@ impl Client {
         self.auth.read().await
     }
 
+    pub async fn get_auth_id(&self) -> String {
+        let auth = self.auth.read().await;
+        auth.get_auth_id().to_string()
+    }
+
     /// 获取 Series API
     pub fn series(&self) -> Result<Arc<SeriesAPI>> {
         self.series_api
