@@ -64,6 +64,8 @@ pub mod trade_session;
 // 客户端
 pub mod client;
 
+pub mod backtest;
+
 // Polars 扩展（可选功能）
 #[cfg(feature = "polars")]
 pub mod polars_ext;
@@ -78,6 +80,7 @@ pub use ins::InsAPI;
 pub use quote::QuoteSubscription;
 pub use series::{SeriesAPI, SeriesSubscription};
 pub use trade_session::TradeSession;
+pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
 pub use websocket::TqWebsocket;
 

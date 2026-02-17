@@ -15,8 +15,8 @@ use tracing::info;
 async fn trade_callback_example() {
     info!("==================== 交易回调模式示例（实盘）====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
+    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
 
     let sim_user_id = env::var("SIMNOW_USER_0").expect("请设置 SIMNOW_USER_0 环境变量");
     let sim_password = env::var("SIMNOW_PASS_0").expect("请设置 SIMNOW_PASS_0 环境变量");

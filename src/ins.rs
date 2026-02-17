@@ -574,6 +574,13 @@ impl InsAPI {
         }
     }
 
+    pub async fn close(&self) -> Result<()> {
+        if let Some(ws) = &self.trading_status_ws {
+            ws.close().await?;
+        }
+        Ok(())
+    }
+
     async fn send_ins_query(
         &self,
         query: String,

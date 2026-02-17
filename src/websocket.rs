@@ -42,6 +42,8 @@ pub struct WebSocketConfig {
     pub reconnect_interval: Duration,
     /// 最大重连次数
     pub reconnect_max_times: usize,
+    /// 自动发送 peek_message
+    pub auto_peek: bool,
 }
 
 impl Default for WebSocketConfig {
@@ -50,6 +52,7 @@ impl Default for WebSocketConfig {
             headers: HeaderMap::new(),
             reconnect_interval: Duration::from_secs(3),
             reconnect_max_times: 2,
+            auto_peek: true,
         }
     }
 }
@@ -304,6 +307,7 @@ impl TqWebsocket {
         let _on_close = Arc::clone(&self.on_close);
         let _should_reconnect = Arc::clone(&self.should_reconnect);
         let _url = self.url.clone();
+        let auto_peek = self.config.auto_peek;
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
@@ -355,15 +359,17 @@ impl TqWebsocket {
                                         }
                                     }
 
-                                    let frame =
-                                        FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
-                                    match ws_instance.send(frame).await {
-                                        Ok(_) => {
-                                            debug!("Websocket Send -> peek_message");
-                                        }
-                                        Err(e) => {
-                                            error!("Websocket Send `peek_message` failed: {}", e);
-                                            break;
+                                    if auto_peek {
+                                        let frame =
+                                            FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                                        match ws_instance.send(frame).await {
+                                            Ok(_) => {
+                                                debug!("Websocket Send -> peek_message");
+                                            }
+                                            Err(e) => {
+                                                error!("Websocket Send `peek_message` failed: {}", e);
+                                                break;
+                                            }
                                         }
                                     }
                                 }
@@ -535,8 +541,16 @@ impl TqQuoteWebsocket {
                 let charts = charts_clone.read().unwrap().clone();
                 let pending_ins_query = pending_ins_query_clone.read().unwrap().clone();
                 let base_for_send = Arc::clone(&base_clone);
+                let login_ready_for_wait = Arc::clone(&login_ready_clone);
 
                 tokio::spawn(async move {
+                    let mut waited = 0usize;
+                    while !login_ready_for_wait.load(std::sync::atomic::Ordering::SeqCst)
+                        && waited < 100
+                    {
+                        sleep(Duration::from_millis(50)).await;
+                        waited += 1;
+                    }
                     for query in pending_ins_query.values() {
                         let _ = base_for_send.send(query).await;
                     }

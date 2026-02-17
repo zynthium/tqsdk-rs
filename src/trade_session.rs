@@ -11,9 +11,11 @@ use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use async_channel::{Sender, Receiver, unbounded};
+use async_channel::{Receiver, Sender, unbounded};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
+
+type TradeCallback = Arc<RwLock<Option<Arc<dyn Fn(Trade) + Send + Sync>>>>;
 
 /// 交易会话
 #[allow(unused)]
@@ -40,7 +42,7 @@ pub struct TradeSession {
     on_account: Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>,
     on_position: Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>,
     on_order: Arc<RwLock<Option<Arc<dyn Fn(Order) + Send + Sync>>>>,
-    on_trade: Arc<RwLock<Option<Arc<dyn Fn(Trade) + Send + Sync>>>>,
+    on_trade: TradeCallback,
     on_notification: Arc<RwLock<Option<Arc<dyn Fn(Notification) + Send + Sync>>>>,
     on_error: Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>,
 
@@ -292,29 +294,29 @@ impl TradeSession {
         order_tx: &Sender<Order>,
         on_order: &Arc<RwLock<Option<Arc<dyn Fn(Order) + Send + Sync>>>>,
     ) {
-        if let Some(orders_data) = dm.get_by_path(&["trade", user_id, "orders"]) {
-            if let serde_json::Value::Object(orders_map) = orders_data {
-                for (order_id, order_data) in orders_map.iter() {
-                    // 跳过内部元数据字段（以 _ 开头）
-                    if order_id.starts_with('_') {
-                        continue;
-                    }
+        if let Some(serde_json::Value::Object(orders_map)) =
+            dm.get_by_path(&["trade", user_id, "orders"])
+        {
+            for (order_id, order_data) in orders_map.iter() {
+                // 跳过内部元数据字段（以 _ 开头）
+                if order_id.starts_with('_') {
+                    continue;
+                }
 
-                    // 检查单个订单是否有更新
-                    if dm.is_changing(&["trade", user_id, "orders", order_id]) {
-                        if let Ok(order) = serde_json::from_value::<Order>(order_data.clone()) {
-                            debug!("订单更新: order_id={}", order_id);
+                // 检查单个订单是否有更新
+                if dm.is_changing(&["trade", user_id, "orders", order_id]) {
+                    if let Ok(order) = serde_json::from_value::<Order>(order_data.clone()) {
+                        debug!("订单更新: order_id={}", order_id);
 
-                            // 发送到 async-channel
-                            let _ = order_tx.send(order.clone()).await;
+                        // 发送到 async-channel
+                        let _ = order_tx.send(order.clone()).await;
 
-                            // 调用回调
-                            if let Some(callback) = on_order.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                tokio::spawn(async move {
-                                    cb(order);
-                                });
-                            }
+                        // 调用回调
+                        if let Some(callback) = on_order.read().await.as_ref() {
+                            let cb = Arc::clone(callback);
+                            tokio::spawn(async move {
+                                cb(order);
+                            });
                         }
                     }
                 }
@@ -327,31 +329,31 @@ impl TradeSession {
         dm: &Arc<DataManager>,
         user_id: &str,
         trade_tx: &Sender<Trade>,
-        on_trade: &Arc<RwLock<Option<Arc<dyn Fn(Trade) + Send + Sync>>>>,
+        on_trade: &TradeCallback,
     ) {
-        if let Some(trades_data) = dm.get_by_path(&["trade", user_id, "trades"]) {
-            if let serde_json::Value::Object(trades_map) = trades_data {
-                for (trade_id, trade_data) in trades_map.iter() {
-                    // 跳过内部元数据字段（以 _ 开头）
-                    if trade_id.starts_with('_') {
-                        continue;
-                    }
+        if let Some(serde_json::Value::Object(trades_map)) =
+            dm.get_by_path(&["trade", user_id, "trades"])
+        {
+            for (trade_id, trade_data) in trades_map.iter() {
+                // 跳过内部元数据字段（以 _ 开头）
+                if trade_id.starts_with('_') {
+                    continue;
+                }
 
-                    // 检查单个成交是否有更新
-                    if dm.is_changing(&["trade", user_id, "trades", trade_id]) {
-                        if let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone()) {
-                            debug!("成交更新: trade_id={}", trade_id);
+                // 检查单个成交是否有更新
+                if dm.is_changing(&["trade", user_id, "trades", trade_id]) {
+                    if let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone()) {
+                        debug!("成交更新: trade_id={}", trade_id);
 
-                            // 发送到 async-channel
-                            let _ = trade_tx.send(trade.clone()).await;
+                        // 发送到 async-channel
+                        let _ = trade_tx.send(trade.clone()).await;
 
-                            // 调用回调
-                            if let Some(callback) = on_trade.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                tokio::spawn(async move {
-                                    cb(trade);
-                                });
-                            }
+                        // 调用回调
+                        if let Some(callback) = on_trade.read().await.as_ref() {
+                            let cb = Arc::clone(callback);
+                            tokio::spawn(async move {
+                                cb(trade);
+                            });
                         }
                     }
                 }

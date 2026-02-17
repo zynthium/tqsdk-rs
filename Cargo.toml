@@ -78,3 +78,7 @@ path = "examples/history.rs"
 [[example]]
 name = "trade"
 path = "examples/trade.rs"
+
+[[example]]
+name = "backtest"
+path = "examples/backtest.rs"

@@ -3,6 +3,7 @@
 //! 统一的客户端入口
 
 use crate::auth::{Authenticator, TqAuth};
+use crate::backtest::{BacktestConfig, BacktestHandle};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
@@ -13,6 +14,7 @@ use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConf
 use crate::types::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use async_channel::Receiver;
 use chrono::NaiveDate;
+use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -231,8 +233,10 @@ impl Client {
         let auth = self.auth.read().await;
         let md_url = auth.get_md_url(self._config.stock, false).await?;
 
-        let mut ws_config = WebSocketConfig::default();
-        ws_config.headers = auth.base_header();
+        let ws_config = WebSocketConfig {
+            headers: auth.base_header(),
+            ..Default::default()
+        };
 
         let quotes_ws = Arc::new(TqQuoteWebsocket::new(
             md_url,
@@ -272,6 +276,77 @@ impl Client {
         )));
 
         Ok(())
+    }
+
+    pub async fn init_market_backtest(&mut self, config: BacktestConfig) -> Result<BacktestHandle> {
+        let auth = self.auth.read().await;
+        let md_url = auth.get_md_url(self._config.stock, true).await?;
+
+        let ws_config = WebSocketConfig {
+            headers: auth.base_header(),
+            auto_peek: false,
+            ..Default::default()
+        };
+
+        let quotes_ws = Arc::new(TqQuoteWebsocket::new(
+            md_url,
+            Arc::clone(&self.dm),
+            ws_config.clone(),
+        ));
+
+        quotes_ws.init(false).await?;
+
+        self.quotes_ws = Some(Arc::clone(&quotes_ws));
+
+        let series_api = Arc::new(SeriesAPI::new(
+            Arc::clone(&self.dm),
+            Arc::clone(&quotes_ws),
+            Arc::clone(&self.auth),
+        ));
+        self.series_api = Some(series_api);
+
+        let trading_status_ws = if auth.has_feature("tq_trading_status") {
+            let mut status_config = ws_config.clone();
+            status_config.auto_peek = true; // Status server likely needs auto-peek
+
+            let ts_ws = Arc::new(TqTradingStatusWebsocket::new(
+                "wss://trading-status.shinnytech.com/status".to_string(),
+                Arc::clone(&self.dm),
+                status_config,
+            ));
+            ts_ws.init(false).await?;
+            Some(ts_ws)
+        } else {
+            None
+        };
+
+        self.ins_api = Some(Arc::new(InsAPI::new(
+            Arc::clone(&self.dm),
+            self.quotes_ws.as_ref().unwrap().clone(),
+            trading_status_ws,
+            Arc::clone(&self.auth),
+            self._config.stock,
+        )));
+
+        Ok(BacktestHandle::new(Arc::clone(&self.dm), quotes_ws, config))
+    }
+
+    pub async fn switch_to_live(&mut self) -> Result<()> {
+        self.close_market().await?;
+        self.dm.merge_data(
+            json!({
+                "action": { "mode": "real" },
+                "_tqsdk_backtest": null
+            }),
+            true,
+            true,
+        );
+        self.init_market().await
+    }
+
+    pub async fn switch_to_backtest(&mut self, config: BacktestConfig) -> Result<BacktestHandle> {
+        self.close_market().await?;
+        self.init_market_backtest(config).await
     }
 
     /// 设置认证器
@@ -372,6 +447,7 @@ impl Client {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn query_options(
         &self,
         underlying_symbol: &str,
@@ -512,8 +588,10 @@ impl Client {
         let auth = self.auth.read().await;
         let broker_info = auth.get_td_url(broker, user_id).await?;
 
-        let mut ws_config = WebSocketConfig::default();
-        ws_config.headers = auth.base_header();
+        let ws_config = WebSocketConfig {
+            headers: auth.base_header(),
+            ..Default::default()
+        };
         drop(auth);
 
         // 创建交易会话（不自动连接）
@@ -548,15 +626,23 @@ impl Client {
 
     /// 关闭客户端
     pub async fn close(&self) -> Result<()> {
-        if let Some(ws) = &self.quotes_ws {
-            ws.close().await?;
-        }
+        self.close_market().await?;
 
         let sessions = self.trade_sessions.read().await;
         for (_key, trader) in sessions.iter() {
             trader.close().await?;
         }
 
+        Ok(())
+    }
+
+    async fn close_market(&self) -> Result<()> {
+        if let Some(ws) = &self.quotes_ws {
+            ws.close().await?;
+        }
+        if let Some(ins) = &self.ins_api {
+            ins.close().await?;
+        }
         Ok(())
     }
 }

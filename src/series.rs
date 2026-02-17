@@ -294,6 +294,29 @@ impl SeriesSubscription {
         Ok(())
     }
 
+    pub async fn update_focus(
+        &self,
+        focus_time: DateTime<Utc>,
+        focus_position: i32,
+    ) -> Result<()> {
+        let view_width = if self.options.view_width > 10000 {
+            10000
+        } else {
+            self.options.view_width
+        };
+        let chart_req = serde_json::json!({
+            "aid": "set_chart",
+            "chart_id": self.options.chart_id,
+            "ins_list": self.options.symbols.join(","),
+            "duration": self.options.duration,
+            "view_width": view_width,
+            "focus_datetime": focus_time.timestamp_nanos_opt(),
+            "focus_position": focus_position
+        });
+        self.ws.send(&chart_req).await?;
+        Ok(())
+    }
+
     /// 启动监听
     pub async fn start(&self) -> Result<()> {
         let mut running = self.running.write().await;

@@ -13,12 +13,8 @@ use tqsdk_rs::*;
 use tracing::info;
 
 fn get_credentials() -> (String, String) {
-    let username = env::var("SHINNYTECH_ID")
-        .or_else(|_| env::var("TQ_AUTH_USER"))
-        .expect("请设置 SHINNYTECH_ID 或 TQ_AUTH_USER 环境变量");
-    let password = env::var("SHINNYTECH_PW")
-        .or_else(|_| env::var("TQ_AUTH_PASS"))
-        .expect("请设置 SHINNYTECH_PW 或 TQ_AUTH_PASS 环境变量");
+    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
+    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
     (username, password)
 }
 

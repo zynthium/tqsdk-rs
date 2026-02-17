@@ -15,8 +15,8 @@ use tracing::info;
 async fn history_kline_with_left_id_example() {
     info!("==================== 历史 K线订阅示例（使用 left_kline_id） ====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
+    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
 
     let mut client = Client::builder(&username, &password)
         .view_width(100000)
@@ -163,8 +163,8 @@ async fn history_kline_with_left_id_example() {
 async fn history_kline_with_focus_example() {
     info!("==================== 历史 K线订阅示例（使用 focus_datetime） ====================");
 
-    let username = env::var("SHINNYTECH_ID").expect("请设置 SHINNYTECH_ID 环境变量");
-    let password = env::var("SHINNYTECH_PW").expect("请设置 SHINNYTECH_PW 环境变量");
+    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
+    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
 
     let mut client = Client::builder(&username, &password)
         .log_level("info")
@@ -281,7 +281,7 @@ async fn main() {
 
     interface_live_test_example().await;
     let has_shinny_env =
-        env::var("SHINNYTECH_ID").is_ok() && env::var("SHINNYTECH_PW").is_ok();
+        env::var("TQ_AUTH_USER").is_ok() && env::var("TQ_AUTH_PASS").is_ok();
     if has_shinny_env {
         history_kline_with_left_id_example().await;
     }
