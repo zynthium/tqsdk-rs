@@ -17,6 +17,7 @@
 - **零拷贝回调** - 使用 Arc 参数优化，多回调场景下性能提升 50-100x
 - **Polars 集成** - 高性能列式数据分析，支持 K线/Tick 数据转换为 DataFrame（可选功能）
 - **灵活日志系统** - 支持 Layer 组合，本地时区显示，可与业务层日志集成
+- **回测支持** - 支持历史数据回放与回测场景
 
 ## 功能模块
 
@@ -73,22 +74,25 @@
 
 ```toml
 [dependencies]
-tqsdk-rs = "0.1.0"
+tqsdk-rs = "0.1.1"
 tokio = { version = "1", features = ["full"] }
 
 # 可选：启用 Polars DataFrame 支持
-tqsdk-rs = { version = "0.1.0", features = ["polars"] }
+tqsdk-rs = { version = "0.1.1", features = ["polars"] }
 ```
 
 ### 基础示例 - 行情订阅
 
 ```rust
+use std::env;
 use tqsdk_rs::{Client, ClientConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. 创建客户端（自动完成认证）
-    let mut client = Client::new("username", "password", ClientConfig::default()).await?;
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
     
     // 2. 初始化行情连接
     client.init_market().await?;
@@ -116,12 +120,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ClientBuilder 提供了更灵活的配置方式：
 
 ```rust
+use std::env;
 use tqsdk_rs::Client;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 使用构建器模式创建客户端
-    let mut client = Client::builder("username", "password")
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let mut client = Client::builder(username, password)
         .log_level("debug")          // 设置日志级别
         .view_width(5000)            // 设置默认视图宽度
         .development(true)           // 开启开发模式
@@ -433,106 +440,82 @@ println!("成交数量: {}", trade.volume);
 
 ### 3. 数据管理器（DataManager）
 
-DataManager 是底层数据存储，实现了 DIFF 协议：
-
-#### 直接访问数据
+DataManager 是底层数据存储与 DIFF 合并核心，普通使用不需要直接访问。回测场景可以通过 BacktestHandle 获取：
 
 ```rust
-// 获取 DataManager 实例（需要先初始化 client）
-let dm = client.dm.clone();
+use chrono::Utc;
+use std::env;
+use tqsdk_rs::{BacktestConfig, Client};
 
-// 获取 Quote 数据
-let quote = dm.get_quote_data("SHFE.au2602")?;
-println!("最新价: {}", quote.last_price);
-println!("买一价: {}", quote.bid_price1);
-println!("卖一价: {}", quote.ask_price1);
+#[tokio::main]
+async fn main() -> tqsdk_rs::Result<()> {
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let mut client = Client::builder(username, password).build().await?;
 
-// 获取 K线数据
-// 参数：合约代码, 周期(纳秒), 数量, right_id(-1表示最新)
-let klines = dm.get_klines_data("SHFE.au2602", 60_000_000_000, 100, -1)?;
-println!("K线数量: {}", klines.data.len());
+    let start = Utc::now() - chrono::Duration::days(7);
+    let end = Utc::now();
+    let backtest = client.init_market_backtest(BacktestConfig::new(start, end)).await?;
+    let dm = backtest.dm();
 
-// 路径访问（灵活访问任意数据）
-if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
-    println!("原始数据: {:?}", data);
-}
-
-// 检查数据是否在最近一次更新中发生变化
-if dm.is_changing(&["quotes", "SHFE.au2602"]) {
-    println!("数据在最近一次更新中发生了变化");
-}
-
-// 获取当前版本号
-let epoch = dm.get_epoch();
-println!("当前数据版本: {}", epoch);
-```
-
-#### 路径监听（Watch/UnWatch）
-
-精确监听指定路径的数据变化：
-
-```rust
-// 监听指定路径的数据变化
-let rx = dm.watch(vec![
-    "quotes".to_string(), 
-    "SHFE.au2602".to_string()
-]);
-
-// 在另一个任务中接收更新
-tokio::spawn(async move {
-    while let Ok(data) = rx.recv().await {
-        println!("路径数据更新: {:?}", data);
+    if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
+        println!("原始数据: {:?}", data);
     }
-});
 
-// 监听多个路径
-let symbols = vec!["SHFE.au2602", "SHFE.ag2512", "DCE.m2505"];
-for symbol in &symbols {
-    let rx = dm.watch(vec!["quotes".to_string(), symbol.to_string()]);
-    // 处理每个路径的更新
+    Ok(())
 }
-
-// 取消监听
-dm.unwatch(&vec![
-    "quotes".to_string(),
-    "SHFE.au2602".to_string()
-])?;
 ```
 
-#### 数据更新回调
-
-注册全局数据更新回调：
+### 4. 回测与历史回放
 
 ```rust
-// 注册数据更新回调（每次数据更新时触发）
-dm.on_data(|| {
-    println!("数据已更新，当前版本: {}", dm.get_epoch());
-    // 可以在这里触发其他操作
-});
+use chrono::Utc;
+use std::env;
+use tqsdk_rs::{BacktestConfig, BacktestEvent, Client};
 
-// 可以注册多个回调
-dm.on_data(|| {
-    // 回调 1
-});
+#[tokio::main]
+async fn main() -> tqsdk_rs::Result<()> {
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let mut client = Client::builder(username, password).build().await?;
 
-dm.on_data(|| {
-    // 回调 2
-});
+    let start = Utc::now() - chrono::Duration::days(7);
+    let end = Utc::now();
+    let backtest = client.init_market_backtest(BacktestConfig::new(start, end)).await?;
+
+    client.subscribe_quote(&["SHFE.au2602"]).await?;
+
+    loop {
+        match backtest.next().await? {
+            BacktestEvent::Tick { current_dt } => {
+                println!("回测推进到: {}", current_dt);
+            }
+            BacktestEvent::Finished { current_dt } => {
+                println!("回测结束: {}", current_dt);
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
 ```
 
-### 2. 合约查询
+### 5. 合约查询
 
 使用 GraphQL 查询合约、主连和期权列表：
 
 ```rust
 use serde_json::json;
+use std::env;
 use tqsdk_rs::{Client, ClientConfig};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = Client::new("username", "password", ClientConfig::default()).await?;
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
     client.init_market().await?;
-    client.init_ins_api().await?;
 
     let quotes = client.query_quotes(Some("FUTURE"), Some("SHFE"), None, Some(false), None).await?;
     let cont = client.query_cont_quotes(Some("SHFE"), Some("cu"), None).await?;
@@ -553,22 +536,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 3. Polars DataFrame 集成（可选功能）
+### 6. Polars DataFrame 集成（可选功能）
 
 启用 `polars` 功能后，可以将 K线和 Tick 数据转换为 Polars DataFrame 进行高性能分析。
 
 #### 使用 KlineBuffer 进行实时数据分析
 
 ```rust
+use std::{env, time::Duration};
 use tqsdk_rs::{Client, ClientConfig, KlineBuffer};
-use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new("username", "password", ClientConfig::default()).await?;
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
     client.init_market().await?;
 
-    let series_api = client.get_series_api();
+    let series_api = client.series()?;
     let subscription = series_api
         .kline("SHFE.au2506", Duration::from_secs(60), 100)
         .await?;
@@ -673,9 +658,9 @@ subscription.on_update(move |series_data, _| {
 }).await;
 ```
 
-**详细文档**: 查看 [POLARS_INTEGRATION.md](./POLARS_INTEGRATION.md) 了解完整的 Polars 集成指南。
+**详细文档**: 查看 docs.rs 上的 API 文档（`polars_ext` 模块）。
 
-### 5. 认证管理
+### 7. 认证管理
 
 #### 切换账号（运行时）
 
@@ -745,20 +730,11 @@ cargo run --example history
 # 交易操作示例（下单、撤单、查询）
 cargo run --example trade
 
+# 回测示例
+cargo run --example backtest
+
 # DataManager 高级功能示例
 cargo run --example datamanager
-
-# 认证功能示例
-cargo run --example auth_demo
-
-# 账号切换示例
-cargo run --example auth_switch
-
-# ClientBuilder 使用示例
-cargo run --example client_builder
-
-# Polars DataFrame 集成示例（需要启用 polars 功能）
-cargo run --example polars_demo --features polars
 
 # 自定义日志 Layer 组合示例
 cargo run --example custom_logger
@@ -770,8 +746,12 @@ cargo run --example custom_logger
 
 ```bash
 # 天勤账号（必需）
-export SHINNYTECH_ID="your_username"
-export SHINNYTECH_PW="your_password"
+export TQ_AUTH_USER="your_username"
+export TQ_AUTH_PASS="your_password"
+
+# 回测起止日期（可选，仅 backtest 示例需要）
+export TQ_START_DT="2026-01-02"
+export TQ_END_DT="2026-01-31"
 
 # SimNow 模拟账号（仅交易示例需要）
 export SIMNOW_USER_0="your_simnow_user"
@@ -785,12 +765,9 @@ export SIMNOW_PASS_0="your_simnow_pass"
 | quote.rs | Quote、K线、Tick 订阅 | 学习行情订阅 |
 | history.rs | 历史数据获取 | 回测、数据分析 |
 | trade.rs | 下单、撤单、查询 | 实盘交易 |
+| backtest.rs | 回测回放 | 回测流程参考 |
 | datamanager.rs | 数据管理器高级用法 | 自定义数据处理 |
-| auth_demo.rs | 认证和权限检查 | 了解认证机制 |
-| auth_switch.rs | 运行时切换账号 | 多账号管理 |
-| client_builder.rs | ClientBuilder 用法 | 灵活配置客户端 |
-| **polars_demo.rs** | **Polars DataFrame 集成** | **数据分析和技术指标** |
-| **custom_logger.rs** | **自定义日志 Layer** | **日志系统集成** |
+| custom_logger.rs | 自定义日志 Layer | 日志系统集成 |
 
 ## 技术栈
 
@@ -821,6 +798,9 @@ tqsdk-rs/
 │   ├── types.rs            # 数据结构定义（90+ 字段）
 │   ├── quote.rs            # Quote 订阅
 │   ├── series.rs           # Series API（K线/Tick）
+│   ├── ins.rs              # 合约查询
+│   ├── backtest.rs         # 回测支持
+│   ├── polars_ext.rs       # Polars 扩展（可选）
 │   ├── trade_session.rs    # 交易会话
 │   ├── utils.rs            # 工具函数
 │   ├── logger.rs           # 日志系统
@@ -829,10 +809,9 @@ tqsdk-rs/
 │   ├── quote.rs            # 行情订阅示例
 │   ├── history.rs          # 历史数据示例
 │   ├── trade.rs            # 交易示例
+│   ├── backtest.rs         # 回测示例
 │   ├── datamanager.rs      # DataManager 示例
-│   ├── auth_demo.rs        # 认证示例
-│   ├── auth_switch.rs      # 切换账号示例
-│   └── client_builder.rs   # ClientBuilder 示例
+│   └── custom_logger.rs    # 自定义日志示例
 └── README.md
 ```
 
@@ -900,7 +879,7 @@ series_sub.on_update(|data, info| {
 - 克隆性能提升 500-1000x（只克隆 8 字节指针）
 - 线程安全的数据共享
 
-**详细文档**: 查看 [ARC_OPTIMIZATION.md](./tqsdk-rs/ARC_OPTIMIZATION.md) 和 [ARC_QUOTE_OPTIMIZATION.md](./tqsdk-rs/ARC_QUOTE_OPTIMIZATION.md)
+**详细文档**: 查看 docs.rs 上的 API 文档（`quote` / `series` 模块）。
 
 ### 零成本抽象
 
@@ -1029,7 +1008,7 @@ let client = Client::builder("user", "pass")
 - 支持 Layer 组合，可与业务日志集成
 - 详细的源文件和行号信息
 
-**详细文档**: 查看 [LOGGER_GUIDE.md](./tqsdk-rs/LOGGER_GUIDE.md) 了解完整的日志配置指南。
+**详细文档**: 查看 docs.rs 上的 API 文档（`logger` 模块）。
 
 ### 5. 合约代码格式
 
