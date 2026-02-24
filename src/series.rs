@@ -560,7 +560,7 @@ async fn process_series_update(
     let has_data_changed = dm.is_changing(&data_path);
 
     if has_chart_changed || has_data_changed {
-        info!("Series update detected: chart_id={}, has_chart={}, has_data={}", options.chart_id, has_chart_changed, has_data_changed);
+        trace!("Series update detected: chart_id={}, has_chart={}, has_data={}", options.chart_id, has_chart_changed, has_data_changed);
     }
 
     if !has_chart_changed && !has_data_changed {
