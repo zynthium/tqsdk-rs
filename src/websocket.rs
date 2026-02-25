@@ -44,6 +44,7 @@ pub struct WebSocketConfig {
     pub reconnect_max_times: usize,
     /// 自动发送 peek_message
     pub auto_peek: bool,
+    pub auto_peek_interval: Duration,
 }
 
 impl Default for WebSocketConfig {
@@ -51,8 +52,9 @@ impl Default for WebSocketConfig {
         WebSocketConfig {
             headers: HeaderMap::new(),
             reconnect_interval: Duration::from_secs(3),
-            reconnect_max_times: 2,
+            reconnect_max_times: usize::MAX,
             auto_peek: true,
+            auto_peek_interval: Duration::from_secs(15),
         }
     }
 }
@@ -302,12 +304,16 @@ impl TqWebsocket {
     async fn start_receive_loop(&self) {
         let status = Arc::clone(&self.status);
         let ws = Arc::clone(&self.ws);
+        let status_for_peek = Arc::clone(&self.status);
+        let ws_for_peek = Arc::clone(&self.ws);
         let _on_message = Arc::clone(&self.on_message);
         let _on_error = Arc::clone(&self.on_error);
         let _on_close = Arc::clone(&self.on_close);
+        let _on_close_for_peek = Arc::clone(&self.on_close);
         let _should_reconnect = Arc::clone(&self.should_reconnect);
         let _url = self.url.clone();
         let auto_peek = self.config.auto_peek;
+        let auto_peek_interval = self.config.auto_peek_interval;
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
@@ -422,6 +428,35 @@ impl TqWebsocket {
             }
 
             info!("WebSocket 消息接收循环结束");
+        });
+
+        tokio::spawn(async move {
+            if !auto_peek {
+                return;
+            }
+            let mut ticker = tokio::time::interval(auto_peek_interval);
+            loop {
+                ticker.tick().await;
+                let current_status = *status_for_peek.read().unwrap();
+                if current_status != WebSocketStatus::Open {
+                    break;
+                }
+                let mut ws_guard = ws_for_peek.lock().await;
+                if let Some(ws_instance) = ws_guard.as_mut() {
+                    let frame = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                    if let Err(e) = ws_instance.send(frame).await {
+                        error!("Websocket Send `peek_message` failed: {}", e);
+                        *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
+                        if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
+                            callback();
+                        }
+                        break;
+                    }
+                } else {
+                    break;
+                }
+                drop(ws_guard);
+            }
         });
     }
 
