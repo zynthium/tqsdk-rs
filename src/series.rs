@@ -160,6 +160,7 @@ impl SeriesAPI {
         {
             let subs = self.subscriptions.read().await;
             if let Some(sub) = subs.get(&options.chart_id) {
+                let _ = sub.refresh().await;
                 return Ok(Arc::clone(sub));
             }
         }
@@ -332,6 +333,21 @@ impl SeriesSubscription {
         self.send_set_chart().await?;
         info!("send_set_chart done for {}", self.options.chart_id);
         Ok(())
+    }
+
+    pub async fn refresh(&self) -> Result<()> {
+        {
+            let mut ids = self.last_ids.write().await;
+            for value in ids.values_mut() {
+                *value = -1;
+            }
+        }
+        *self.last_left_id.write().await = -1;
+        *self.last_right_id.write().await = -1;
+        *self.chart_ready.write().await = false;
+        *self.has_chart_sync.write().await = false;
+        *self.running.write().await = true;
+        self.send_set_chart().await
     }
 
     /// 启动监听数据更新
