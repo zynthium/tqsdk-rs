@@ -14,6 +14,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
@@ -69,6 +70,7 @@ pub struct TqWebsocket {
     queue: Arc<Mutex<Vec<String>>>,
     reconnect_times: Arc<RwLock<usize>>,
     should_reconnect: Arc<RwLock<bool>>,
+    connecting: Arc<AtomicBool>,
 
     // WebSocket 连接实例
     ws: Arc<Mutex<Option<yawc::WebSocket>>>,
@@ -90,6 +92,7 @@ impl TqWebsocket {
             queue: Arc::new(Mutex::new(Vec::new())),
             reconnect_times: Arc::new(RwLock::new(0)),
             should_reconnect: Arc::new(RwLock::new(true)),
+            connecting: Arc::new(AtomicBool::new(false)),
             ws: Arc::new(Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
             on_open: Arc::new(RwLock::new(None)),
@@ -100,6 +103,13 @@ impl TqWebsocket {
 
     /// 初始化连接
     pub async fn init(&self, is_reconnection: bool) -> Result<()> {
+        let status = *self.status.read().unwrap();
+        if status == WebSocketStatus::Open || status == WebSocketStatus::Connecting {
+            return Ok(());
+        }
+        if self.connecting.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
         info!(
             "正在连接 WebSocket: {} (重连: {})",
             self.url, is_reconnection
@@ -142,6 +152,7 @@ impl TqWebsocket {
                     let _ = self.handle_reconnect().await;
                 }
 
+                self.connecting.store(false, Ordering::SeqCst);
                 return Err(TqError::WebSocketError(format!("Connection failed: {}", e)));
             }
         };
@@ -171,6 +182,7 @@ impl TqWebsocket {
         self.send(&json!({"aid": "peek_message"})).await?;
 
         info!("WebSocket 连接成功");
+        self.connecting.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -191,6 +203,11 @@ impl TqWebsocket {
                     }
                     Err(e) => {
                         error!("消息发送失败: {}", e);
+                        *self.status.write().unwrap() = WebSocketStatus::Closed;
+                        drop(ws_guard);
+                        if let Some(callback) = self.on_close.read().unwrap().as_ref() {
+                            callback();
+                        }
                         Err(TqError::WebSocketError(format!("Send failed: {}", e)))
                     }
                 }
@@ -233,6 +250,7 @@ impl TqWebsocket {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         *self.status.write().unwrap() = WebSocketStatus::Closed;
+        self.connecting.store(false, Ordering::SeqCst);
 
         // 触发 onClose 回调
         if let Some(callback) = self.on_close.read().unwrap().as_ref() {
@@ -251,17 +269,32 @@ impl TqWebsocket {
 
         debug!("发送队列中的 {} 条消息", queue.len());
 
+        // 复制队列并清空，发送失败时将消息放回队列并触发关闭回调
+        let pending = queue.clone();
+        queue.clear();
+        drop(queue);
+
         let mut ws_guard = self.ws.lock().await;
         if let Some(ws) = ws_guard.as_mut() {
-            for msg in queue.drain(..) {
+            for (idx, msg) in pending.iter().enumerate() {
                 debug!("发送队列消息: {}", msg);
-                let frame = FrameView::text(msg.into_bytes());
+                let frame = FrameView::text(msg.clone().into_bytes());
                 match ws.send(frame).await {
                     Ok(_) => {
                         debug!("队列消息发送成功");
                     }
                     Err(e) => {
                         error!("队列消息发送失败: {}", e);
+                        // 连接异常，恢复状态、回退消息到队列并触发关闭回调
+                        *self.status.write().unwrap() = WebSocketStatus::Closed;
+                        drop(ws_guard);
+                        let mut q = self.queue.lock().await;
+                        q.extend_from_slice(&pending[idx..]);
+                        drop(q);
+                        if let Some(callback) = self.on_close.read().unwrap().as_ref() {
+                            callback();
+                        }
+                        break;
                     }
                 }
             }

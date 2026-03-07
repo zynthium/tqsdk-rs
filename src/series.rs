@@ -389,7 +389,15 @@ impl SeriesSubscription {
                 }
 
                 let chart_id = &options.chart_id;
-                if dm.get_by_path(&["charts", chart_id]).is_none() {
+                let chart_data = match dm.get_by_path(&["charts", chart_id]) {
+                    Some(data) => data,
+                    None => return,
+                };
+                let chart_info = match dm.convert_to_struct::<ChartInfo>(&chart_data) {
+                    Ok(info) => info,
+                    Err(_) => return,
+                };
+                if !chart_info.ready || chart_info.more_data {
                     return;
                 }
 
@@ -406,45 +414,40 @@ impl SeriesSubscription {
                 .await
                 {
                     Ok((series_data, update_info)) => {
+                        if !update_info.chart_ready {
+                            return;
+                        }
                         // 包装为 Arc（零拷贝共享）
                         let series_data = Arc::new(series_data);
                         let update_info = Arc::new(update_info);
 
                         // 调用回调
-                        if update_info.has_chart_sync {
-                            // fix: 只要 sync 了就回调，不要卡 chart_ready (more_data)
-                            // if update_info.chart_ready {
-                                if let Some(callback) = on_update.read().await.as_ref() {
-                                    let cb = Arc::clone(callback);
-                                    let sd = Arc::clone(&series_data);
-                                    let ui = Arc::clone(&update_info);
-                                    // let symbol_log = options.symbols[0].clone();
-                                    tokio::spawn(async move {
-                                        // let spawn_time = chrono::Local::now();
-                                        // info!("DEBUG_TIME: [0.2] Spawning callback for {}: {}", symbol_log, spawn_time.format("%H:%M:%S%.6f"));
-                                        cb(sd, ui);
-                                    });
-                                }
-                            // }
+                        if let Some(callback) = on_update.read().await.as_ref() {
+                            let cb = Arc::clone(callback);
+                            let sd = Arc::clone(&series_data);
+                            let ui = Arc::clone(&update_info);
+                            tokio::spawn(async move {
+                                cb(sd, ui);
+                            });
+                        }
 
-                            if update_info.has_new_bar && update_info.chart_ready {
-                                if let Some(callback) = on_new_bar.read().await.as_ref() {
-                                    let cb = Arc::clone(callback);
-                                    let sd = Arc::clone(&series_data);
-                                    tokio::spawn(async move {
-                                        cb(sd);
-                                    });
-                                }
+                        if update_info.has_new_bar {
+                            if let Some(callback) = on_new_bar.read().await.as_ref() {
+                                let cb = Arc::clone(callback);
+                                let sd = Arc::clone(&series_data);
+                                tokio::spawn(async move {
+                                    cb(sd);
+                                });
                             }
+                        }
 
-                            if update_info.has_bar_update && update_info.chart_ready {
-                                if let Some(callback) = on_bar_update.read().await.as_ref() {
-                                    let cb = Arc::clone(callback);
-                                    let sd = Arc::clone(&series_data);
-                                    tokio::spawn(async move {
-                                        cb(sd);
-                                    });
-                                }
+                        if update_info.has_bar_update {
+                            if let Some(callback) = on_bar_update.read().await.as_ref() {
+                                let cb = Arc::clone(callback);
+                                let sd = Arc::clone(&series_data);
+                                tokio::spawn(async move {
+                                    cb(sd);
+                                });
                             }
                         }
                     }
