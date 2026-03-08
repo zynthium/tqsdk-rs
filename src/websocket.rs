@@ -46,6 +46,7 @@ pub struct WebSocketConfig {
     /// 自动发送 peek_message
     pub auto_peek: bool,
     pub auto_peek_interval: Duration,
+    pub peek_timeout: Option<Duration>,
 }
 
 impl Default for WebSocketConfig {
@@ -56,6 +57,7 @@ impl Default for WebSocketConfig {
             reconnect_max_times: usize::MAX,
             auto_peek: true,
             auto_peek_interval: Duration::from_secs(15),
+            peek_timeout: None,
         }
     }
 }
@@ -369,8 +371,12 @@ impl TqWebsocket {
         let _url = self.url.clone();
         let auto_peek = self.config.auto_peek;
         let auto_peek_interval = self.config.auto_peek_interval;
+        let peek_timeout = self.config.peek_timeout;
         let pending_peek_for_recv = Arc::clone(&self.pending_peek);
         let pending_peek_for_timer = Arc::clone(&self.pending_peek);
+        let last_peek_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let last_peek_time_for_recv = Arc::clone(&last_peek_time);
+        let last_peek_time_for_timer = Arc::clone(&last_peek_time);
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
@@ -437,6 +443,9 @@ impl TqWebsocket {
                                             match ws_instance.send(frame).await {
                                                 Ok(_) => {
                                                     debug!("Websocket Send -> peek_message");
+                                                    if let Ok(mut t) = last_peek_time_for_recv.lock() {
+                                                        *t = std::time::Instant::now();
+                                                    }
                                                 }
                                                 Err(e) => {
                                                     pending_peek_for_recv
@@ -514,7 +523,20 @@ impl TqWebsocket {
                     break;
                 }
                 if pending_peek_for_timer.load(Ordering::SeqCst) {
-                    continue;
+                    if let Some(timeout) = peek_timeout {
+                        if let Ok(last_time) = last_peek_time_for_timer.lock() {
+                            if last_time.elapsed() > timeout {
+                                warn!("Peek message timeout (elapsed {:?}), forcing reset", last_time.elapsed());
+                                pending_peek_for_timer.store(false, Ordering::SeqCst);
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
                 let mut ws_guard = ws_for_peek.lock().await;
                 if let Some(ws_instance) = ws_guard.as_mut() {
@@ -531,6 +553,9 @@ impl TqWebsocket {
                             callback();
                         }
                         break;
+                    }
+                    if let Ok(mut t) = last_peek_time_for_timer.lock() {
+                        *t = std::time::Instant::now();
                     }
                 } else {
                     break;
