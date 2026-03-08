@@ -1449,9 +1449,11 @@ impl InsAPI {
 
         let mut subscribe_symbol = symbol.to_string();
         let mut option_mapping: HashMap<String, String> = HashMap::new();
+        let mut need_query = true;
         if let Some(quote) = self.dm.get_by_path(&["quotes", symbol]) {
             if let Some(obj) = quote.as_object() {
                 if let Some(class_str) = obj.get("class").and_then(|v| v.as_str()) {
+                    need_query = false;
                     if class_str == "OPTION" {
                         if let Some(underlying) =
                             obj.get("underlying_symbol").and_then(|v| v.as_str())
@@ -1459,6 +1461,29 @@ impl InsAPI {
                             if !underlying.is_empty() {
                                 subscribe_symbol = underlying.to_string();
                                 option_mapping.insert(symbol.to_string(), subscribe_symbol.clone());
+                            } else {
+                                need_query = true;
+                            }
+                        } else {
+                            need_query = true;
+                        }
+                    }
+                }
+            }
+        }
+        if need_query {
+            if let Ok(info_list) = self.query_symbol_info(&[symbol]).await {
+                if let Some(Value::Object(info)) = info_list.get(0) {
+                    if let Some(Value::String(class_str)) = info.get("ins_class") {
+                        if class_str == "OPTION" {
+                            if let Some(Value::String(underlying)) =
+                                info.get("underlying_symbol")
+                            {
+                                if !underlying.is_empty() {
+                                    subscribe_symbol = underlying.clone();
+                                    option_mapping
+                                        .insert(symbol.to_string(), subscribe_symbol.clone());
+                                }
                             }
                         }
                     }

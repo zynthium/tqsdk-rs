@@ -6,13 +6,13 @@
 //! - 消息队列
 //! - Debug 日志
 
-use crate::datamanager::DataManager;
+use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use futures::{SinkExt, StreamExt};
 use reqwest::header::HeaderMap;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -71,6 +71,7 @@ pub struct TqWebsocket {
     reconnect_times: Arc<RwLock<usize>>,
     should_reconnect: Arc<RwLock<bool>>,
     connecting: Arc<AtomicBool>,
+    pending_peek: Arc<AtomicBool>,
 
     // WebSocket 连接实例
     ws: Arc<Mutex<Option<yawc::WebSocket>>>,
@@ -93,6 +94,7 @@ impl TqWebsocket {
             reconnect_times: Arc::new(RwLock::new(0)),
             should_reconnect: Arc::new(RwLock::new(true)),
             connecting: Arc::new(AtomicBool::new(false)),
+            pending_peek: Arc::new(AtomicBool::new(false)),
             ws: Arc::new(Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
             on_open: Arc::new(RwLock::new(None)),
@@ -179,7 +181,7 @@ impl TqWebsocket {
         self.start_receive_loop().await;
         // 发送队列中的消息
         self.flush_queue().await;
-        self.send(&json!({"aid": "peek_message"})).await?;
+        self.send_peek_message().await?;
 
         info!("WebSocket 连接成功");
         self.connecting.store(false, Ordering::SeqCst);
@@ -229,10 +231,29 @@ impl TqWebsocket {
         *self.status.read().unwrap() == WebSocketStatus::Open
     }
 
+    pub fn auto_peek_enabled(&self) -> bool {
+        self.config.auto_peek
+    }
+
+    pub async fn send_peek_message(&self) -> Result<()> {
+        if !self.config.auto_peek {
+            return Ok(());
+        }
+        if self.pending_peek.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+        let res = self.send(&json!({"aid": "peek_message"})).await;
+        if res.is_err() {
+            self.pending_peek.store(false, Ordering::SeqCst);
+        }
+        res
+    }
+
     /// 关闭连接
     pub async fn close(&self) -> Result<()> {
         info!("正在关闭 WebSocket 连接");
         *self.should_reconnect.write().unwrap() = false;
+        self.pending_peek.store(false, Ordering::SeqCst);
 
         // 先设置状态为 Closing，这会让接收循环在下次迭代时退出
         *self.status.write().unwrap() = WebSocketStatus::Closing;
@@ -251,6 +272,7 @@ impl TqWebsocket {
 
         *self.status.write().unwrap() = WebSocketStatus::Closed;
         self.connecting.store(false, Ordering::SeqCst);
+        self.pending_peek.store(false, Ordering::SeqCst);
 
         // 触发 onClose 回调
         if let Some(callback) = self.on_close.read().unwrap().as_ref() {
@@ -347,6 +369,8 @@ impl TqWebsocket {
         let _url = self.url.clone();
         let auto_peek = self.config.auto_peek;
         let auto_peek_interval = self.config.auto_peek_interval;
+        let pending_peek_for_recv = Arc::clone(&self.pending_peek);
+        let pending_peek_for_timer = Arc::clone(&self.pending_peek);
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
@@ -381,7 +405,14 @@ impl TqWebsocket {
                                             // 解析 JSON
                                             match serde_json::from_str::<Value>(&text) {
                                                 Ok(json_value) => {
-                                                    // 触发消息回调
+                                                    if let Some(aid) =
+                                                        json_value.get("aid").and_then(|v| v.as_str())
+                                                    {
+                                                        if aid == "rtn_data" {
+                                                            pending_peek_for_recv
+                                                                .store(false, Ordering::SeqCst);
+                                                        }
+                                                    }
                                                     if let Some(callback) =
                                                         _on_message.read().unwrap().as_ref()
                                                     {
@@ -399,15 +430,23 @@ impl TqWebsocket {
                                     }
 
                                     if auto_peek {
-                                        let frame =
-                                            FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
-                                        match ws_instance.send(frame).await {
-                                            Ok(_) => {
-                                                debug!("Websocket Send -> peek_message");
-                                            }
-                                            Err(e) => {
-                                                error!("Websocket Send `peek_message` failed: {}", e);
-                                                break;
+                                        if !pending_peek_for_recv.swap(true, Ordering::SeqCst) {
+                                            let frame = FrameView::text(
+                                                r#"{"aid": "peek_message"}"#.as_bytes(),
+                                            );
+                                            match ws_instance.send(frame).await {
+                                                Ok(_) => {
+                                                    debug!("Websocket Send -> peek_message");
+                                                }
+                                                Err(e) => {
+                                                    pending_peek_for_recv
+                                                        .store(false, Ordering::SeqCst);
+                                                    error!(
+                                                        "Websocket Send `peek_message` failed: {}",
+                                                        e
+                                                    );
+                                                    break;
+                                                }
                                             }
                                         }
                                     }
@@ -474,12 +513,20 @@ impl TqWebsocket {
                 if current_status != WebSocketStatus::Open {
                     break;
                 }
+                if pending_peek_for_timer.load(Ordering::SeqCst) {
+                    continue;
+                }
                 let mut ws_guard = ws_for_peek.lock().await;
                 if let Some(ws_instance) = ws_guard.as_mut() {
+                    if pending_peek_for_timer.swap(true, Ordering::SeqCst) {
+                        drop(ws_guard);
+                        continue;
+                    }
                     let frame = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
                     if let Err(e) = ws_instance.send(frame).await {
                         error!("Websocket Send `peek_message` failed: {}", e);
                         *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
+                        pending_peek_for_timer.store(false, Ordering::SeqCst);
                         if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
                             callback();
                         }
@@ -536,6 +583,197 @@ impl TqWebsocket {
     }
 }
 
+fn extract_notify_code(value: &Value) -> Option<i64> {
+    if let Some(code) = value.as_i64() {
+        return Some(code);
+    }
+    value
+        .as_str()
+        .and_then(|s| s.parse::<i64>().ok())
+}
+
+fn has_reconnect_notify(item: &Value) -> bool {
+    let notify = match item.get("notify").and_then(|v| v.as_object()) {
+        Some(notify) => notify,
+        None => return false,
+    };
+    notify.values().any(|n| {
+        n.get("code")
+            .and_then(extract_notify_code)
+            .map(|code| code == 2019112902)
+            .unwrap_or(false)
+    })
+}
+
+fn get_i64(value: Option<&Value>, default: i64) -> i64 {
+    value
+        .and_then(|v| v.as_i64())
+        .or_else(|| value.and_then(|v| v.as_str()?.parse::<i64>().ok()))
+        .unwrap_or(default)
+}
+
+fn get_bool(value: Option<&Value>, default: bool) -> bool {
+    value
+        .and_then(|v| v.as_bool())
+        .unwrap_or(default)
+}
+
+fn is_md_reconnect_complete(
+    dm: &DataManager,
+    charts: &HashMap<String, Value>,
+    subscribe_quote: &Option<Value>,
+) -> bool {
+    let set_chart_packs: Vec<(&String, &Value)> = charts
+        .iter()
+        .filter(|(_, v)| {
+            v.get("aid").and_then(|v| v.as_str()) == Some("set_chart")
+                && v.get("ins_list")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    for (chart_id, req) in set_chart_packs.iter() {
+        let state = match dm.get_by_path(&["charts", chart_id.as_str(), "state"]) {
+            Some(Value::Object(state)) => state,
+            _ => return false,
+        };
+        for key in [
+            "ins_list",
+            "duration",
+            "view_width",
+            "left_kline_id",
+            "focus_datetime",
+            "focus_position",
+        ] {
+            if let Some(req_val) = req.get(key) {
+                if state.get(key) != Some(req_val) {
+                    return false;
+                }
+            }
+        }
+
+        let chart = match dm.get_by_path(&["charts", chart_id.as_str()]) {
+            Some(Value::Object(chart)) => chart,
+            _ => return false,
+        };
+        let left_id = get_i64(chart.get("left_id"), -1);
+        let right_id = get_i64(chart.get("right_id"), -1);
+        let more_data = get_bool(chart.get("more_data"), true);
+        if left_id == -1 && right_id == -1 {
+            return false;
+        }
+        if more_data {
+            return false;
+        }
+        if get_bool(dm.get_by_path(&["mdhis_more_data"]).as_ref(), true) {
+            return false;
+        }
+
+        let ins_list = req.get("ins_list").and_then(|v| v.as_str()).unwrap_or("");
+        let duration = get_i64(req.get("duration"), -1);
+        for symbol in ins_list.split(',').filter(|s| !s.is_empty()) {
+            let last_id = if duration == 0 {
+                dm.get_by_path(&["ticks", symbol])
+                    .and_then(|v| v.get("last_id").cloned())
+            } else {
+                let duration_str = duration.to_string();
+                dm.get_by_path(&["klines", symbol, &duration_str])
+                    .and_then(|v| v.get("last_id").cloned())
+            };
+            if get_i64(last_id.as_ref(), -1) == -1 {
+                return false;
+            }
+        }
+    }
+
+    if let Some(sub) = subscribe_quote.as_ref() {
+        if let Some(sub_ins_list) = sub.get("ins_list").and_then(|v| v.as_str()) {
+            match dm.get_by_path(&["ins_list"]) {
+                Some(Value::String(data_ins_list)) => {
+                    if data_ins_list != sub_ins_list {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+
+    true
+}
+
+fn extract_trade_positions(dm: &DataManager) -> HashMap<String, HashSet<String>> {
+    let mut result = HashMap::new();
+    let trade = match dm.get_by_path(&["trade"]) {
+        Some(Value::Object(trade)) => trade,
+        _ => return result,
+    };
+    for (user, value) in trade.iter() {
+        if let Value::Object(user_obj) = value {
+            if let Some(Value::Object(positions)) = user_obj.get("positions") {
+                let symbols = positions.keys().cloned().collect::<HashSet<_>>();
+                result.insert(user.to_string(), symbols);
+            }
+        }
+    }
+    result
+}
+
+fn trade_users_from_dm(dm: &DataManager) -> Vec<String> {
+    let trade = match dm.get_by_path(&["trade"]) {
+        Some(Value::Object(trade)) => trade,
+        _ => return Vec::new(),
+    };
+    trade.keys().cloned().collect()
+}
+
+fn is_trade_reconnect_complete(
+    dm: &DataManager,
+    prev_positions: &HashMap<String, HashSet<String>>,
+) -> Option<Vec<Value>> {
+    let users = if prev_positions.is_empty() {
+        trade_users_from_dm(dm)
+    } else {
+        prev_positions.keys().cloned().collect()
+    };
+    if users.is_empty() {
+        return Some(Vec::new());
+    }
+    for user in users.iter() {
+        let more_data = get_bool(
+            dm.get_by_path(&["trade", user, "trade_more_data"])
+                .as_ref(),
+            true,
+        );
+        if more_data {
+            return None;
+        }
+    }
+    let current_positions = extract_trade_positions(dm);
+    let mut removal_diffs = Vec::new();
+    for (user, prev) in prev_positions.iter() {
+        if let Some(current) = current_positions.get(user) {
+            let removed: Vec<String> = prev.difference(current).cloned().collect();
+            if !removed.is_empty() {
+                let mut positions = serde_json::Map::new();
+                for symbol in removed {
+                    positions.insert(symbol, Value::Null);
+                }
+                let mut user_map = serde_json::Map::new();
+                user_map.insert("positions".to_string(), Value::Object(positions));
+                let mut trade_map = serde_json::Map::new();
+                trade_map.insert(user.clone(), Value::Object(user_map));
+                let mut root = serde_json::Map::new();
+                root.insert("trade".to_string(), Value::Object(trade_map));
+                removal_diffs.push(Value::Object(root));
+            }
+        }
+    }
+    Some(removal_diffs)
+}
+
 /// 行情 WebSocket
 pub struct TqQuoteWebsocket {
     base: Arc<TqWebsocket>,
@@ -557,12 +795,21 @@ impl TqQuoteWebsocket {
         let pending_ins_query: Arc<RwLock<std::collections::HashMap<String, Value>>> =
             Arc::new(RwLock::new(std::collections::HashMap::new()));
         let login_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reconnect_pending = Arc::new(AtomicBool::new(false));
+        let reconnect_diffs: Arc<RwLock<Vec<Value>>> = Arc::new(RwLock::new(Vec::new()));
+        let reconnect_dm: Arc<RwLock<Option<Arc<DataManager>>>> = Arc::new(RwLock::new(None));
 
         // 注册消息处理
         base.on_message({
             let dm = Arc::clone(&dm_clone);
             let pending_ins_query = Arc::clone(&pending_ins_query);
             let login_ready = Arc::clone(&login_ready);
+            let charts_clone = Arc::clone(&charts);
+            let subscribe_quote_clone = Arc::clone(&subscribe_quote);
+            let reconnect_pending = Arc::clone(&reconnect_pending);
+            let reconnect_diffs = Arc::clone(&reconnect_diffs);
+            let reconnect_dm = Arc::clone(&reconnect_dm);
+            let base_clone = Arc::clone(&base);
             move |data: Value| {
                 if let Some(aid) = data.get("aid").and_then(|v| v.as_str()) {
                     match aid {
@@ -582,6 +829,90 @@ impl TqQuoteWebsocket {
                                             }
                                         }
                                     }
+
+                                    let reconnect_index = array
+                                        .iter()
+                                        .position(|item| has_reconnect_notify(item));
+                                    if let Some(index) = reconnect_index {
+                                        reconnect_pending.store(true, Ordering::SeqCst);
+                                        let mut diffs = reconnect_diffs.write().unwrap();
+                                        diffs.clear();
+                                        diffs.extend(array[index..].iter().cloned());
+                                        let dm_temp = Arc::new(DataManager::new(
+                                            HashMap::new(),
+                                            DataManagerConfig::default(),
+                                        ));
+                                        dm_temp.merge_data(Value::Array(diffs.clone()), true, true);
+                                        *reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
+                                        let sub = subscribe_quote_clone.read().unwrap().clone();
+                                        let charts = charts_clone.read().unwrap().clone();
+                                        let base_for_send = Arc::clone(&base_clone);
+                                        tokio::spawn(async move {
+                                            if let Some(sub) = sub {
+                                                let _ = base_for_send.send(&sub).await;
+                                            }
+                                            for chart in charts.values() {
+                                                if let Some(view_width) =
+                                                    chart.get("view_width").and_then(|v| v.as_f64())
+                                                {
+                                                    if view_width > 0.0 {
+                                                        let _ = base_for_send.send(chart).await;
+                                                    }
+                                                }
+                                            }
+                                            let _ = base_for_send.send_peek_message().await;
+                                        });
+                                    } else if reconnect_pending.load(Ordering::SeqCst) {
+                                        let mut diffs = reconnect_diffs.write().unwrap();
+                                        diffs.extend(array.iter().cloned());
+                                        if let Some(dm_temp) =
+                                            reconnect_dm.read().unwrap().as_ref().cloned()
+                                        {
+                                            dm_temp.merge_data(
+                                                Value::Array(array.clone()),
+                                                true,
+                                                true,
+                                            );
+                                        }
+                                    }
+
+                                    if reconnect_pending.load(Ordering::SeqCst) {
+                                        let dm_temp =
+                                            reconnect_dm.read().unwrap().as_ref().cloned();
+                                        let charts_snapshot =
+                                            charts_clone.read().unwrap().clone();
+                                        let subscribe_snapshot =
+                                            subscribe_quote_clone.read().unwrap().clone();
+                                        if let Some(dm_temp) = dm_temp {
+                                            if is_md_reconnect_complete(
+                                                &dm_temp,
+                                                &charts_snapshot,
+                                                &subscribe_snapshot,
+                                            ) {
+                                                let mut diffs =
+                                                    reconnect_diffs.write().unwrap();
+                                                let pending = diffs.clone();
+                                                diffs.clear();
+                                                reconnect_pending
+                                                    .store(false, Ordering::SeqCst);
+                                                *reconnect_dm.write().unwrap() = None;
+                                                dm.merge_data(
+                                                    Value::Array(pending),
+                                                    true,
+                                                    true,
+                                                );
+                                            } else {
+                                                let base_for_peek =
+                                                    Arc::clone(&base_clone);
+                                                tokio::spawn(async move {
+                                                    let _ = base_for_peek
+                                                        .send_peek_message()
+                                                        .await;
+                                                });
+                                            }
+                                        }
+                                        return;
+                                    }
                                 }
                                 dm.merge_data(payload.clone(), true, true);
                             }
@@ -595,52 +926,15 @@ impl TqQuoteWebsocket {
             }
         });
 
-        // 注册重连回调：重连时重发订阅和图表请求
-        {
-            let subscribe_quote_clone = Arc::clone(&subscribe_quote);
-            let charts_clone = Arc::clone(&charts);
-            let pending_ins_query_clone = Arc::clone(&pending_ins_query);
-            let login_ready_clone = Arc::clone(&login_ready);
-            let base_clone = Arc::clone(&base);
-
-            base.on_open(move || {
-                login_ready_clone.store(false, std::sync::atomic::Ordering::SeqCst);
-                let sub = subscribe_quote_clone.read().unwrap().clone();
-                let charts = charts_clone.read().unwrap().clone();
-                let pending_ins_query = pending_ins_query_clone.read().unwrap().clone();
-                let base_for_send = Arc::clone(&base_clone);
-                let login_ready_for_wait = Arc::clone(&login_ready_clone);
-
-                tokio::spawn(async move {
-                    let mut waited = 0usize;
-                    while !login_ready_for_wait.load(std::sync::atomic::Ordering::SeqCst)
-                        && waited < 100
-                    {
-                        sleep(Duration::from_millis(50)).await;
-                        waited += 1;
-                    }
-                    for query in pending_ins_query.values() {
-                        let _ = base_for_send.send(query).await;
-                    }
-                    if let Some(sub) = sub {
-                        let _ = base_for_send.send(&sub).await;
-                    }
-                    for (chart_id, chart) in charts.iter() {
-                        if let Some(view_width) = chart.get("view_width").and_then(|v| v.as_f64())
-                        {
-                            if view_width > 0.0 {
-                                debug!("重连后重发图表请求: {}", chart_id);
-                                let _ = base_for_send.send(chart).await;
-                            }
-                        }
-                    }
-                });
-            });
-        }
-
         {
             let base_clone = Arc::clone(&base);
+            let reconnect_pending = Arc::clone(&reconnect_pending);
+            let reconnect_diffs = Arc::clone(&reconnect_diffs);
+            let reconnect_dm = Arc::clone(&reconnect_dm);
             base.on_close(move || {
+                reconnect_pending.store(false, Ordering::SeqCst);
+                reconnect_diffs.write().unwrap().clear();
+                *reconnect_dm.write().unwrap() = None;
                 let base_for_reconnect = Arc::clone(&base_clone);
                 tokio::spawn(async move {
                     base_for_reconnect.reconnect().await;
@@ -695,10 +989,14 @@ impl TqQuoteWebsocket {
                     drop(subscribe_guard);
 
                     if should_send {
-                        return self.base.send(&value).await;
-                    } else {
-                        return Ok(());
+                        let res = self.base.send(&value).await;
+                        if res.is_ok() {
+                            let _ = self.base.send_peek_message().await;
+                        }
+                        return res;
                     }
+                    let _ = self.base.send_peek_message().await;
+                    return Ok(());
                 }
                 "set_chart" => {
                     // 记录图表请求
@@ -716,7 +1014,11 @@ impl TqQuoteWebsocket {
                         }
 
                         drop(charts_guard);
-                        return self.base.send(&value).await;
+                        let res = self.base.send(&value).await;
+                        if res.is_ok() {
+                            let _ = self.base.send_peek_message().await;
+                        }
+                        return res;
                     }
                 }
                 "ins_query" => {
@@ -724,6 +1026,11 @@ impl TqQuoteWebsocket {
                         let mut pending_guard = self.pending_ins_query.write().unwrap();
                         pending_guard.insert(query_id.to_string(), value.clone());
                     }
+                    let res = self.base.send(&value).await;
+                    if res.is_ok() {
+                        let _ = self.base.send_peek_message().await;
+                    }
+                    return res;
                 }
                 _ => {}
             }
@@ -767,10 +1074,22 @@ impl TqTradingStatusWebsocket {
         base.on_message({
             let dm = Arc::clone(&dm_clone);
             let option_underlyings = Arc::clone(&option_underlyings);
+            let subscribe_trading_status = Arc::clone(&subscribe_trading_status);
+            let base_clone = Arc::clone(&base);
             move |data: Value| {
                 if let Some(aid) = data.get("aid").and_then(|v| v.as_str()) {
                     if aid == "rtn_data" {
                         if let Some(payload) = data.get("data").and_then(|v| v.as_array()) {
+                            if payload.iter().any(has_reconnect_notify) {
+                                let sub = subscribe_trading_status.read().unwrap().clone();
+                                let base_for_send = Arc::clone(&base_clone);
+                                tokio::spawn(async move {
+                                    if let Some(sub) = sub {
+                                        let _ = base_for_send.send(&sub).await;
+                                    }
+                                    let _ = base_for_send.send_peek_message().await;
+                                });
+                            }
                             let mut diffs = payload.clone();
                             let mut received: HashMap<String, String> = HashMap::new();
                             for diff in diffs.iter_mut() {
@@ -823,16 +1142,12 @@ impl TqTradingStatusWebsocket {
         });
 
         {
-            let subscribe_clone = Arc::clone(&subscribe_trading_status);
             let base_clone = Arc::clone(&base);
-            base.on_open(move || {
-                if let Some(sub) = subscribe_clone.read().unwrap().as_ref() {
-                    let base_for_send = Arc::clone(&base_clone);
-                    let sub_clone = sub.clone();
-                    tokio::spawn(async move {
-                        let _ = base_for_send.send(&sub_clone).await;
-                    });
-                }
+            base.on_close(move || {
+                let base_for_reconnect = Arc::clone(&base_clone);
+                tokio::spawn(async move {
+                    base_for_reconnect.reconnect().await;
+                });
             });
         }
 
@@ -868,8 +1183,13 @@ impl TqTradingStatusWebsocket {
                 }
                 drop(subscribe_guard);
                 if should_send {
-                    return self.base.send(&value).await;
+                    let res = self.base.send(&value).await;
+                    if res.is_ok() {
+                        let _ = self.base.send_peek_message().await;
+                    }
+                    return res;
                 }
+                let _ = self.base.send_peek_message().await;
                 return Ok(());
             }
         }
@@ -898,6 +1218,7 @@ pub struct TqTradeWebsocket {
     base: Arc<TqWebsocket>,
     _dm: Arc<DataManager>,
     req_login: Arc<RwLock<Option<Value>>>,
+    confirm_settlement: Arc<RwLock<Option<Value>>>,
     on_notify: Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>>,
 }
 
@@ -907,13 +1228,26 @@ impl TqTradeWebsocket {
         let base = Arc::new(TqWebsocket::new(url, config));
         let dm_clone = Arc::clone(&dm);
         let req_login: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
+        let confirm_settlement: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
         let on_notify: Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>> =
             Arc::new(RwLock::new(None));
+        let reconnect_pending = Arc::new(AtomicBool::new(false));
+        let reconnect_diffs: Arc<RwLock<Vec<Value>>> = Arc::new(RwLock::new(Vec::new()));
+        let reconnect_dm: Arc<RwLock<Option<Arc<DataManager>>>> = Arc::new(RwLock::new(None));
+        let reconnect_prev_positions: Arc<RwLock<HashMap<String, HashSet<String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         // 注册消息处理
         {
             let dm = Arc::clone(&dm_clone);
             let on_notify_clone = Arc::clone(&on_notify);
+            let reconnect_pending = Arc::clone(&reconnect_pending);
+            let reconnect_diffs = Arc::clone(&reconnect_diffs);
+            let reconnect_dm = Arc::clone(&reconnect_dm);
+            let reconnect_prev_positions = Arc::clone(&reconnect_prev_positions);
+            let base_clone = Arc::clone(&base);
+            let req_login_clone = Arc::clone(&req_login);
+            let confirm_settlement_clone = Arc::clone(&confirm_settlement);
 
             base.on_message(move |data: Value| {
                 if let Some(aid) = data.get("aid").and_then(|v| v.as_str()) {
@@ -922,6 +1256,9 @@ impl TqTradeWebsocket {
                             if let Some(payload) = data.get("data") {
                                 // 分离通知
                                 if let Some(array) = payload.as_array() {
+                                    let reconnect_index = array
+                                        .iter()
+                                        .position(|item| has_reconnect_notify(item));
                                     let (notifies, cleaned_data) =
                                         Self::separate_notifies(array.clone());
                                     debug!("notifies: {:?}", notifies);
@@ -934,7 +1271,86 @@ impl TqTradeWebsocket {
                                         }
                                     }
 
-                                    // 合并清理后的数据
+                                    if let Some(index) = reconnect_index {
+                                        reconnect_pending.store(true, Ordering::SeqCst);
+                                        *reconnect_prev_positions.write().unwrap() =
+                                            extract_trade_positions(&dm);
+                                        let mut diffs = reconnect_diffs.write().unwrap();
+                                        diffs.clear();
+                                        diffs.extend(cleaned_data[index..].iter().cloned());
+                                        let dm_temp = Arc::new(DataManager::new(
+                                            HashMap::new(),
+                                            DataManagerConfig::default(),
+                                        ));
+                                        dm_temp.merge_data(Value::Array(diffs.clone()), true, true);
+                                        *reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
+                                        let base_for_send = Arc::clone(&base_clone);
+                                        let req_login = req_login_clone.read().unwrap().clone();
+                                        let confirm_settlement =
+                                            confirm_settlement_clone.read().unwrap().clone();
+                                        tokio::spawn(async move {
+                                            if let Some(login) = req_login {
+                                                let _ = base_for_send.send(&login).await;
+                                            }
+                                            if let Some(confirm) = confirm_settlement {
+                                                let _ = base_for_send.send(&confirm).await;
+                                            }
+                                            let _ = base_for_send.send_peek_message().await;
+                                        });
+                                    } else if reconnect_pending.load(Ordering::SeqCst) {
+                                        let mut diffs = reconnect_diffs.write().unwrap();
+                                        diffs.extend(cleaned_data.iter().cloned());
+                                        if let Some(dm_temp) =
+                                            reconnect_dm.read().unwrap().as_ref().cloned()
+                                        {
+                                            dm_temp.merge_data(
+                                                Value::Array(cleaned_data.clone()),
+                                                true,
+                                                true,
+                                            );
+                                        }
+                                    }
+
+                                    if reconnect_pending.load(Ordering::SeqCst) {
+                                        let dm_temp =
+                                            reconnect_dm.read().unwrap().as_ref().cloned();
+                                        let prev_positions =
+                                            reconnect_prev_positions.read().unwrap().clone();
+                                        if let Some(dm_temp) = dm_temp {
+                                            if let Some(removal_diffs) =
+                                                is_trade_reconnect_complete(
+                                                    &dm_temp,
+                                                    &prev_positions,
+                                                )
+                                            {
+                                                let mut diffs =
+                                                    reconnect_diffs.write().unwrap();
+                                                let mut pending = diffs.clone();
+                                                diffs.clear();
+                                                reconnect_pending
+                                                    .store(false, Ordering::SeqCst);
+                                                *reconnect_dm.write().unwrap() = None;
+                                                if !removal_diffs.is_empty() {
+                                                    pending.extend(removal_diffs);
+                                                }
+                                                dm.merge_data(
+                                                    Value::Array(pending),
+                                                    true,
+                                                    true,
+                                                );
+                                            } else {
+                                                let base_for_peek =
+                                                    Arc::clone(&base_clone);
+                                                tokio::spawn(async move {
+                                                    let _ = base_for_peek
+                                                        .send_peek_message()
+                                                        .await;
+                                                });
+                                            }
+                                        }
+                                        return;
+                                    }
+
                                     dm.merge_data(Value::Array(cleaned_data), true, true);
                                 } else {
                                     dm.merge_data(payload.clone(), true, true);
@@ -980,20 +1396,21 @@ impl TqTradeWebsocket {
             });
         }
 
-        // 注册重连回调：重连时重发登录请求
         {
-            let req_login_clone = Arc::clone(&req_login);
             let base_clone = Arc::clone(&base);
-
-            base.on_open(move || {
-                if let Some(login) = req_login_clone.read().unwrap().as_ref() {
-                    debug!("重连后重发登录请求");
-                    let base_for_send = Arc::clone(&base_clone);
-                    let login_clone = login.clone();
-                    tokio::spawn(async move {
-                        let _ = base_for_send.send(&login_clone).await;
-                    });
-                }
+            let reconnect_pending = Arc::clone(&reconnect_pending);
+            let reconnect_diffs = Arc::clone(&reconnect_diffs);
+            let reconnect_dm = Arc::clone(&reconnect_dm);
+            let reconnect_prev_positions = Arc::clone(&reconnect_prev_positions);
+            base.on_close(move || {
+                reconnect_pending.store(false, Ordering::SeqCst);
+                reconnect_diffs.write().unwrap().clear();
+                *reconnect_dm.write().unwrap() = None;
+                reconnect_prev_positions.write().unwrap().clear();
+                let base_for_reconnect = Arc::clone(&base_clone);
+                tokio::spawn(async move {
+                    base_for_reconnect.reconnect().await;
+                });
             });
         }
 
@@ -1001,6 +1418,7 @@ impl TqTradeWebsocket {
             base,
             _dm: dm_clone,
             req_login,
+            confirm_settlement,
             on_notify,
         }
     }
@@ -1099,6 +1517,8 @@ impl TqTradeWebsocket {
             if aid == "req_login" {
                 debug!("记录登录请求 {:?}", value);
                 *self.req_login.write().unwrap() = Some(value.clone());
+            } else if aid == "confirm_settlement" {
+                *self.confirm_settlement.write().unwrap() = Some(value.clone());
             }
         }
 
