@@ -130,6 +130,14 @@ impl TradeSession {
         Ok(())
     }
 
+    async fn send_confirm_settlement(&self) -> Result<()> {
+        let confirm_req = serde_json::json!({
+            "aid": "confirm_settlement"
+        });
+        self.ws.send(&confirm_req).await?;
+        Ok(())
+    }
+
     /// 启动数据监听
     async fn start_watching(&self) {
         let dm_clone = Arc::clone(&self.dm);
@@ -670,6 +678,7 @@ impl TradeSession {
 
         // 再发送登录请求（避免错过初始数据）
         self.send_login().await?;
+        self.send_confirm_settlement().await?;
 
         Ok(())
     }
