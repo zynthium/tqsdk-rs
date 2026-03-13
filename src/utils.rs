@@ -132,18 +132,18 @@ pub async fn fetch_json_with_headers(url: &str, headers: HeaderMap) -> Result<Va
 ///
 /// # 返回
 ///
-/// DateTime<Utc> 对象
+/// `DateTime<Utc>` 对象
 pub fn nanos_to_datetime(nanos: i64) -> DateTime<Utc> {
     let secs = nanos / 1_000_000_000;
     let nsecs = (nanos % 1_000_000_000) as u32;
-    DateTime::from_timestamp(secs, nsecs).unwrap_or_else(|| Utc::now())
+    DateTime::from_timestamp(secs, nsecs).unwrap_or_else(Utc::now)
 }
 
 /// 将 DateTime 转换为纳秒时间戳
 ///
 /// # 参数
 ///
-/// * `dt` - DateTime<Utc> 对象
+/// * `dt` - `DateTime<Utc>` 对象
 ///
 /// # 返回
 ///
@@ -300,7 +300,7 @@ mod tests {
         let now = Utc::now();
         let nanos = datetime_to_nanos(&now);
         let dt = nanos_to_datetime(nanos);
-        
+
         // 允许少量误差（纳秒精度可能有损失）
         let diff = (dt.timestamp() - now.timestamp()).abs();
         assert!(diff <= 1);
@@ -310,7 +310,7 @@ mod tests {
     fn test_generate_chart_id() {
         let id1 = generate_chart_id("TQGO_kline");
         let id2 = generate_chart_id("TQGO_kline");
-        
+
         assert!(id1.starts_with("TQGO_kline_"));
         assert!(id2.starts_with("TQGO_kline_"));
         assert_ne!(id1, id2); // 应该是不同的 ID

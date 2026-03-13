@@ -17,6 +17,8 @@ use std::sync::{Arc, RwLock};
 use async_channel::{Sender, Receiver, unbounded};
 use tracing::{debug, error};
 
+type DataCallbacks = Arc<RwLock<Vec<Arc<dyn Fn() + Send + Sync>>>>;
+
 /// 数据管理器配置
 #[derive(Debug, Clone)]
 pub struct DataManagerConfig {
@@ -57,7 +59,7 @@ pub struct DataManager {
     /// 路径监听器
     watchers: Arc<RwLock<HashMap<String, PathWatcher>>>,
     /// 数据更新回调（使用 Arc 以支持异步触发）
-    on_data_callbacks: Arc<RwLock<Vec<Arc<dyn Fn() + Send + Sync>>>>,
+    on_data_callbacks: DataCallbacks,
 }
 
 impl DataManager {
@@ -616,18 +618,14 @@ impl DataManager {
         let duration_str = duration.to_string();
 
         // 获取 Chart 信息
-        let (left_id, right_id) = if let Some(chart_data) = self.get_by_path(&["charts", chart_id])
-        {
-            if let Value::Object(chart_map) = chart_data {
+        let (left_id, right_id) =
+            if let Some(Value::Object(chart_map)) = self.get_by_path(&["charts", chart_id]) {
                 let left = value_to_i64(chart_map.get("left_id").unwrap_or(&Value::Null));
                 let right = value_to_i64(chart_map.get("right_id").unwrap_or(&Value::Null));
                 (left, right)
             } else {
                 (-1, -1)
-            }
-        } else {
-            (-1, -1)
-        };
+            };
 
         let mut result = MultiKlineSeriesData {
             chart_id: chart_id.to_string(),
@@ -644,111 +642,111 @@ impl DataManager {
 
         // 获取每个合约的元数据
         for symbol in symbols.iter() {
-            if let Some(kline_data) = self.get_by_path(&["klines", symbol, &duration_str]) {
-                if let Value::Object(kline_map) = kline_data {
-                    let metadata = KlineMetadata {
-                        symbol: symbol.clone(),
-                        last_id: value_to_i64(kline_map.get("last_id").unwrap_or(&Value::Null)),
-                        trading_day_start_id: value_to_i64(
-                            kline_map
-                                .get("trading_day_start_id")
-                                .unwrap_or(&Value::Null),
-                        ),
-                        trading_day_end_id: value_to_i64(
-                            kline_map.get("trading_day_end_id").unwrap_or(&Value::Null),
-                        ),
-                    };
-                    result.metadata.insert(symbol.clone(), metadata);
-                }
+            if let Some(Value::Object(kline_map)) =
+                self.get_by_path(&["klines", symbol, &duration_str])
+            {
+                let metadata = KlineMetadata {
+                    symbol: symbol.clone(),
+                    last_id: value_to_i64(kline_map.get("last_id").unwrap_or(&Value::Null)),
+                    trading_day_start_id: value_to_i64(
+                        kline_map
+                            .get("trading_day_start_id")
+                            .unwrap_or(&Value::Null),
+                    ),
+                    trading_day_end_id: value_to_i64(
+                        kline_map.get("trading_day_end_id").unwrap_or(&Value::Null),
+                    ),
+                };
+                result.metadata.insert(symbol.clone(), metadata);
             }
         }
 
         // 获取主合约的 K线数据
-        if let Some(main_kline_data) = self.get_by_path(&["klines", main_symbol, &duration_str]) {
-            if let Value::Object(main_kline_map) = main_kline_data {
-                // 获取 binding 信息
-                let mut bindings: HashMap<String, HashMap<i64, i64>> = HashMap::new();
-                if let Some(Value::Object(binding_map)) = main_kline_map.get("binding") {
-                    for (symbol, binding_info) in binding_map.iter() {
-                        if let Value::Object(binding_id_map) = binding_info {
-                            let mut id_map: HashMap<i64, i64> = HashMap::new();
-                            for (main_id_str, other_id) in binding_id_map.iter() {
-                                if let Ok(main_id) = main_id_str.parse::<i64>() {
-                                    id_map.insert(main_id, value_to_i64(other_id));
-                                }
+        if let Some(Value::Object(main_kline_map)) =
+            self.get_by_path(&["klines", main_symbol, &duration_str])
+        {
+            // 获取 binding 信息
+            let mut bindings: HashMap<String, HashMap<i64, i64>> = HashMap::new();
+            if let Some(Value::Object(binding_map)) = main_kline_map.get("binding") {
+                for (symbol, binding_info) in binding_map.iter() {
+                    if let Value::Object(binding_id_map) = binding_info {
+                        let mut id_map: HashMap<i64, i64> = HashMap::new();
+                        for (main_id_str, other_id) in binding_id_map.iter() {
+                            if let Ok(main_id) = main_id_str.parse::<i64>() {
+                                id_map.insert(main_id, value_to_i64(other_id));
                             }
-                            bindings.insert(symbol.clone(), id_map);
                         }
+                        bindings.insert(symbol.clone(), id_map);
+                    }
+                }
+            }
+
+            // 获取主合约的 K线 map
+            if let Some(Value::Object(main_data_map)) = main_kline_map.get("data") {
+                let mut main_ids: Vec<i64> = main_data_map
+                    .keys()
+                    .filter_map(|k| k.parse::<i64>().ok())
+                    .collect();
+                main_ids.sort();
+
+                // 过滤超出 right_id 的数据
+                if right_id > 0 {
+                    main_ids.retain(|&id| id <= right_id);
+                }
+
+                // 应用 ViewWidth 限制
+                if view_width > 0 && main_ids.len() > view_width {
+                    let split_index = main_ids.len() - view_width;
+                    main_ids.drain(0..split_index);
+                    if let Some(first) = main_ids.first() {
+                        result.left_id = *first;
+                    }
+                    if let Some(last) = main_ids.last() {
+                        result.right_id = *last;
                     }
                 }
 
-                // 获取主合约的 K线 map
-                if let Some(Value::Object(main_data_map)) = main_kline_map.get("data") {
-                    let mut main_ids: Vec<i64> = main_data_map
-                        .keys()
-                        .filter_map(|k| k.parse::<i64>().ok())
-                        .collect();
-                    main_ids.sort();
+                // 对齐所有合约的 K线
+                for main_id in main_ids {
+                    let main_id_str = main_id.to_string();
+                    let mut set = AlignedKlineSet {
+                        main_id,
+                        timestamp: Utc::now(),
+                        klines: HashMap::new(),
+                    };
 
-                    // 过滤超出 right_id 的数据
-                    if right_id > 0 {
-                        main_ids.retain(|&id| id <= right_id);
-                    }
-
-                    // 应用 ViewWidth 限制
-                    if view_width > 0 && main_ids.len() > view_width {
-                        let split_index = main_ids.len() - view_width;
-                        main_ids.drain(0..split_index);
-                        if let Some(first) = main_ids.first() {
-                            result.left_id = *first;
-                        }
-                        if let Some(last) = main_ids.last() {
-                            result.right_id = *last;
+                    // 添加主合约 K线
+                    if let Some(kline_data) = main_data_map.get(&main_id_str) {
+                        if let Ok(mut kline) = self.convert_to_struct::<Kline>(kline_data) {
+                            kline.id = main_id;
+                            set.timestamp = nanos_to_datetime(kline.datetime);
+                            set.klines.insert(main_symbol.clone(), kline);
                         }
                     }
 
-                    // 对齐所有合约的 K线
-                    for main_id in main_ids {
-                        let main_id_str = main_id.to_string();
-                        let mut set = AlignedKlineSet {
-                            main_id,
-                            timestamp: Utc::now(),
-                            klines: HashMap::new(),
-                        };
-
-                        // 添加主合约 K线
-                        if let Some(kline_data) = main_data_map.get(&main_id_str) {
-                            if let Ok(mut kline) = self.convert_to_struct::<Kline>(kline_data) {
-                                kline.id = main_id;
-                                set.timestamp = nanos_to_datetime(kline.datetime);
-                                set.klines.insert(main_symbol.clone(), kline);
-                            }
-                        }
-
-                        // 添加其他合约的对齐 K线
-                        for symbol in symbols.iter().skip(1) {
-                            if let Some(binding) = bindings.get(symbol) {
-                                if let Some(&mapped_id) = binding.get(&main_id) {
-                                    if let Some(other_kline_data) = self.get_by_path(&[
-                                        "klines",
-                                        symbol,
-                                        &duration_str,
-                                        "data",
-                                        &mapped_id.to_string(),
-                                    ]) {
-                                        if let Ok(mut kline) =
-                                            self.convert_to_struct::<Kline>(&other_kline_data)
-                                        {
-                                            kline.id = mapped_id;
-                                            set.klines.insert(symbol.clone(), kline);
-                                        }
+                    // 添加其他合约的对齐 K线
+                    for symbol in symbols.iter().skip(1) {
+                        if let Some(binding) = bindings.get(symbol) {
+                            if let Some(&mapped_id) = binding.get(&main_id) {
+                                if let Some(other_kline_data) = self.get_by_path(&[
+                                    "klines",
+                                    symbol,
+                                    &duration_str,
+                                    "data",
+                                    &mapped_id.to_string(),
+                                ]) {
+                                    if let Ok(mut kline) =
+                                        self.convert_to_struct::<Kline>(&other_kline_data)
+                                    {
+                                        kline.id = mapped_id;
+                                        set.klines.insert(symbol.clone(), kline);
                                     }
                                 }
                             }
                         }
-
-                        result.data.push(set);
                     }
+
+                    result.data.push(set);
                 }
             }
         }

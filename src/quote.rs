@@ -12,6 +12,9 @@ use async_channel::{Receiver, Sender, unbounded};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+type QuoteCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<Quote>) + Send + Sync>>>>;
+type QuoteErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
+
 /// Quote 订阅
 pub struct QuoteSubscription {
     dm: Arc<DataManager>,
@@ -19,8 +22,8 @@ pub struct QuoteSubscription {
     symbols: Arc<RwLock<HashSet<String>>>,
     quote_tx: Sender<Quote>,
     quote_rx: Receiver<Quote>,
-    on_quote: Arc<RwLock<Option<Arc<dyn Fn(Arc<Quote>) + Send + Sync>>>>,
-    on_error: Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>,
+    on_quote: QuoteCallback,
+    on_error: QuoteErrorCallback,
     running: Arc<RwLock<bool>>,
 }
 

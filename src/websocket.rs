@@ -21,6 +21,12 @@ use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 use yawc::frame::{FrameView, OpCode};
 
+type MessageCallback = Arc<RwLock<Option<Box<dyn Fn(Value) + Send + Sync>>>>;
+type OpenCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
+type CloseCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
+type ErrorCallback = Arc<RwLock<Option<Box<dyn Fn(String) + Send + Sync>>>>;
+type NotifyCallback = Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>>;
+
 /// WebSocket 状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WebSocketStatus {
@@ -81,10 +87,10 @@ pub struct TqWebsocket {
     ws: Arc<Mutex<Option<yawc::WebSocket>>>,
 
     // 回调函数
-    on_message: Arc<RwLock<Option<Box<dyn Fn(Value) + Send + Sync>>>>,
-    on_open: Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>,
-    on_close: Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>,
-    on_error: Arc<RwLock<Option<Box<dyn Fn(String) + Send + Sync>>>>,
+    on_message: MessageCallback,
+    on_open: OpenCallback,
+    on_close: CloseCallback,
+    on_error: ErrorCallback,
 }
 
 impl TqWebsocket {
@@ -458,27 +464,26 @@ impl TqWebsocket {
                                         }
                                     }
 
-                                    if auto_peek {
-                                        if !pending_peek_for_recv.swap(true, Ordering::SeqCst) {
-                                            let frame = FrameView::text(
-                                                r#"{"aid": "peek_message"}"#.as_bytes(),
-                                            );
-                                            match ws_instance.send(frame).await {
-                                                Ok(_) => {
-                                                    if let Ok(mut t) = last_peek_sent.lock() {
-                                                        *t = std::time::Instant::now();
-                                                    }
-                                                    debug!("Websocket Send -> peek_message");
+                                    if auto_peek
+                                        && !pending_peek_for_recv.swap(true, Ordering::SeqCst)
+                                    {
+                                        let frame =
+                                            FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                                        match ws_instance.send(frame).await {
+                                            Ok(_) => {
+                                                if let Ok(mut t) = last_peek_sent.lock() {
+                                                    *t = std::time::Instant::now();
                                                 }
-                                                Err(e) => {
-                                                    pending_peek_for_recv
-                                                        .store(false, Ordering::SeqCst);
-                                                    error!(
-                                                        "Websocket Send `peek_message` failed: {}",
-                                                        e
-                                                    );
-                                                    break;
-                                                }
+                                                debug!("Websocket Send -> peek_message");
+                                            }
+                                            Err(e) => {
+                                                pending_peek_for_recv
+                                                    .store(false, Ordering::SeqCst);
+                                                error!(
+                                                    "Websocket Send `peek_message` failed: {}",
+                                                    e
+                                                );
+                                                break;
                                             }
                                         }
                                     }
@@ -918,9 +923,8 @@ impl TqQuoteWebsocket {
                                         }
                                     }
 
-                                    let reconnect_index = array
-                                        .iter()
-                                        .position(|item| has_reconnect_notify(item));
+                                    let reconnect_index =
+                                        array.iter().position(has_reconnect_notify);
                                     if let Some(index) = reconnect_index {
                                         reconnect_pending.store(true, Ordering::SeqCst);
                                         let mut diffs = reconnect_diffs.write().unwrap();
@@ -1309,19 +1313,20 @@ impl TqTradingStatusWebsocket {
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
             if aid == "subscribe_trading_status" {
                 let mut should_send = false;
-                let mut subscribe_guard = self.subscribe_trading_status.write().unwrap();
-                if let Some(old_sub) = subscribe_guard.as_ref() {
-                    let old_list = old_sub.get("ins_list");
-                    let new_list = value.get("ins_list");
-                    if old_list != new_list {
+                {
+                    let mut subscribe_guard = self.subscribe_trading_status.write().unwrap();
+                    if let Some(old_sub) = subscribe_guard.as_ref() {
+                        let old_list = old_sub.get("ins_list");
+                        let new_list = value.get("ins_list");
+                        if old_list != new_list {
+                            *subscribe_guard = Some(value.clone());
+                            should_send = true;
+                        }
+                    } else {
                         *subscribe_guard = Some(value.clone());
                         should_send = true;
                     }
-                } else {
-                    *subscribe_guard = Some(value.clone());
-                    should_send = true;
                 }
-                drop(subscribe_guard);
                 if should_send {
                     let res = self.base.send(&value).await;
                     if res.is_ok() {
@@ -1359,7 +1364,7 @@ pub struct TqTradeWebsocket {
     _dm: Arc<DataManager>,
     req_login: Arc<RwLock<Option<Value>>>,
     confirm_settlement: Arc<RwLock<Option<Value>>>,
-    on_notify: Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>>,
+    on_notify: NotifyCallback,
 }
 
 impl TqTradeWebsocket {
@@ -1369,8 +1374,7 @@ impl TqTradeWebsocket {
         let dm_clone = Arc::clone(&dm);
         let req_login: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
         let confirm_settlement: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
-        let on_notify: Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>> =
-            Arc::new(RwLock::new(None));
+        let on_notify: NotifyCallback = Arc::new(RwLock::new(None));
         let reconnect_pending = Arc::new(AtomicBool::new(false));
         let reconnect_diffs: Arc<RwLock<Vec<Value>>> = Arc::new(RwLock::new(Vec::new()));
         let reconnect_dm: Arc<RwLock<Option<Arc<DataManager>>>> = Arc::new(RwLock::new(None));
@@ -1396,9 +1400,8 @@ impl TqTradeWebsocket {
                             if let Some(payload) = data.get("data") {
                                 // 分离通知
                                 if let Some(array) = payload.as_array() {
-                                    let reconnect_index = array
-                                        .iter()
-                                        .position(|item| has_reconnect_notify(item));
+                                    let reconnect_index =
+                                        array.iter().position(has_reconnect_notify);
                                     let (notifies, cleaned_data) =
                                         Self::separate_notifies(array.clone());
                                     debug!("notifies: {:?}", notifies);

@@ -1,3 +1,7 @@
+//! 合约与基础数据查询接口
+//!
+//! 提供合约列表、期权筛选、结算价、持仓排名、EDB 指标、交易日历与交易状态等能力。
+
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
 use crate::auth::Authenticator;
@@ -17,6 +21,7 @@ use tokio::time::{Duration, Instant, MissedTickBehavior};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+/// 合约查询与基础数据接口
 pub struct InsAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
@@ -557,6 +562,9 @@ fn parse_query_symbol_info_result(
 }
 
 impl InsAPI {
+    /// 创建合约与基础数据查询接口
+    ///
+    /// `stock` 用于区分期货与股票行情系统。
     pub fn new(
         dm: Arc<DataManager>,
         ws: Arc<TqQuoteWebsocket>,
@@ -574,6 +582,7 @@ impl InsAPI {
         }
     }
 
+    /// 关闭交易状态通道
     pub async fn close(&self) -> Result<()> {
         if let Some(ws) = &self.trading_status_ws {
             ws.close().await?;
@@ -642,6 +651,9 @@ impl InsAPI {
         }
     }
 
+    /// 发送 GraphQL 查询并等待结果
+    ///
+    /// `query` 为 GraphQL 文本，`variables` 为变量对象。
     pub async fn query_graphql(
         &self,
         query: &str,
@@ -652,6 +664,9 @@ impl InsAPI {
             .await
     }
 
+    /// 查询合约列表
+    ///
+    /// 支持按合约类型、交易所、品种、是否到期与夜盘筛选。
     pub async fn query_quotes(
         &self,
         ins_class: Option<&str>,
@@ -712,6 +727,9 @@ impl InsAPI {
         Ok(parse_query_quotes_result(&res, target_ex.as_deref()))
     }
 
+    /// 查询主连合约列表
+    ///
+    /// 仅在股票行情系统下可用。
     pub async fn query_cont_quotes(
         &self,
         exchange_id: Option<&str>,
@@ -769,6 +787,10 @@ impl InsAPI {
         Ok(parse_query_cont_quotes_result(&res, exchange_id, product_id))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    /// 查询期权列表
+    ///
+    /// `underlying_symbol` 为标的合约，其余参数用于筛选期权集合。
     pub async fn query_options(
         &self,
         underlying_symbol: &str,
@@ -831,6 +853,9 @@ impl InsAPI {
         ))
     }
 
+    /// 查询合约基础信息
+    ///
+    /// 入参为合约代码列表，返回每个合约的基础字段对象。
     pub async fn query_symbol_info(&self, symbols: &[&str]) -> Result<Vec<Value>> {
         if symbols.is_empty() {
             return Err(TqError::InvalidParameter("symbol 不能为空列表".to_string()));
@@ -979,6 +1004,9 @@ impl InsAPI {
         ))
     }
 
+    /// 查询结算价数据
+    ///
+    /// `days` 控制返回的交易日数量，`start_dt` 可指定起始日期。
     pub async fn query_symbol_settlement(
         &self,
         symbols: &[&str],
@@ -1045,6 +1073,9 @@ impl InsAPI {
         Ok(rows)
     }
 
+    /// 查询持仓排名数据
+    ///
+    /// `ranking_type` 支持 VOLUME/LONG/SHORT。
     pub async fn query_symbol_ranking(
         &self,
         symbol: &str,
@@ -1200,6 +1231,9 @@ impl InsAPI {
         Ok(list)
     }
 
+    /// 查询 EDB 指标数据
+    ///
+    /// `n` 表示返回的天数，`align` 与 `fill` 控制对齐和填充方式。
     pub async fn query_edb_data(
         &self,
         ids: &[i32],
@@ -1391,6 +1425,9 @@ impl InsAPI {
         Ok(result)
     }
 
+    /// 获取交易日历
+    ///
+    /// 返回指定日期区间内的交易日标记列表。
     pub async fn get_trading_calendar(
         &self,
         start_dt: NaiveDate,
@@ -1432,6 +1469,9 @@ impl InsAPI {
         Ok(result)
     }
 
+    /// 订阅合约交易状态
+    ///
+    /// 需要账号具备交易状态权限，返回异步接收器。
     pub async fn get_trading_status(&self, symbol: &str) -> Result<Receiver<TradingStatus>> {
         if symbol.is_empty() {
             return Err(TqError::InvalidParameter(
@@ -1473,7 +1513,7 @@ impl InsAPI {
         }
         if need_query {
             if let Ok(info_list) = self.query_symbol_info(&[symbol]).await {
-                if let Some(Value::Object(info)) = info_list.get(0) {
+                if let Some(Value::Object(info)) = info_list.first() {
                     if let Some(Value::String(class_str)) = info.get("ins_class") {
                         if class_str == "OPTION" {
                             if let Some(Value::String(underlying)) =

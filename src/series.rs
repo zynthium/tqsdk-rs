@@ -18,6 +18,11 @@ use uuid::Uuid;
 
 use crate::auth::Authenticator;
 
+type UpdateCallback =
+    Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync>>>>;
+type SeriesCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>;
+type SeriesErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
+
 /// Series API
 #[derive(Clone)]
 pub struct SeriesAPI {
@@ -207,10 +212,10 @@ pub struct SeriesSubscription {
     has_chart_sync: Arc<RwLock<bool>>,
 
     // 回调（使用 Arc 避免数据克隆）
-    on_update: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync>>>>,
-    on_new_bar: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>,
-    on_bar_update: Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>,
-    on_error: Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>,
+    on_update: UpdateCallback,
+    on_new_bar: SeriesCallback,
+    on_bar_update: SeriesCallback,
+    on_error: SeriesErrorCallback,
 
     running: Arc<RwLock<bool>>,
 }

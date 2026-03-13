@@ -1,3 +1,5 @@
+//! 回测控制与时间推进接口
+
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
 use crate::utils::{datetime_to_nanos, nanos_to_datetime};
@@ -11,30 +13,42 @@ use tokio::sync::RwLock;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
+/// 回测起止时间配置
 pub struct BacktestConfig {
+    /// 回测开始时间（UTC）
     pub start_dt: DateTime<Utc>,
+    /// 回测结束时间（UTC）
     pub end_dt: DateTime<Utc>,
 }
 
 impl BacktestConfig {
+    /// 创建回测配置
     pub fn new(start_dt: DateTime<Utc>, end_dt: DateTime<Utc>) -> Self {
         BacktestConfig { start_dt, end_dt }
     }
 }
 
 #[derive(Debug, Clone)]
+/// 回测时间状态（纳秒时间戳）
 pub struct BacktestTime {
+    /// 回测开始时间戳（纳秒）
     pub start_dt: i64,
+    /// 回测结束时间戳（纳秒）
     pub end_dt: i64,
+    /// 当前回测时间戳（纳秒）
     pub current_dt: i64,
 }
 
 #[derive(Debug, Clone)]
+/// 回测推进事件
 pub enum BacktestEvent {
+    /// 回测推进到下一个时间点
     Tick { current_dt: DateTime<Utc> },
+    /// 回测已完成
     Finished { current_dt: DateTime<Utc> },
 }
 
+/// 回测控制句柄
 pub struct BacktestHandle {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
@@ -45,6 +59,7 @@ pub struct BacktestHandle {
 }
 
 impl BacktestHandle {
+    /// 初始化回测并注册数据推进监听
     pub fn new(dm: Arc<DataManager>, ws: Arc<TqQuoteWebsocket>, config: BacktestConfig) -> Self {
         let start_dt = datetime_to_nanos(&config.start_dt);
         let end_dt = datetime_to_nanos(&config.end_dt);
@@ -76,6 +91,9 @@ impl BacktestHandle {
         }
     }
 
+    /// 推进回测并返回下一事件
+    ///
+    /// 若内部未收到数据更新，会触发 peek_message 并等待回测推进。
     pub async fn next(&self) -> Result<BacktestEvent> {
         if self.rx.try_recv().is_err() {
             loop {
@@ -114,24 +132,29 @@ impl BacktestHandle {
         Err(TqError::InternalError("Failed to parse backtest time".to_string()))
     }
 
+    /// 主动触发一次回测推进
     pub async fn peek(&self) -> Result<()> {
         self.ws.send(&json!({ "aid": "peek_message" })).await?;
         Ok(())
     }
 
+    /// 获取当前回测时间
     pub async fn current_dt(&self) -> DateTime<Utc> {
         let current = self.current_dt.read().await;
         nanos_to_datetime(*current)
     }
 
+    /// 获取回测开始时间
     pub fn start_dt(&self) -> DateTime<Utc> {
         nanos_to_datetime(self.start_dt)
     }
 
+    /// 获取回测结束时间
     pub fn end_dt(&self) -> DateTime<Utc> {
         nanos_to_datetime(self.end_dt)
     }
 
+    /// 获取内部数据管理器
     pub fn dm(&self) -> Arc<DataManager> {
         Arc::clone(&self.dm)
     }

@@ -15,7 +15,12 @@ use async_channel::{Receiver, Sender, unbounded};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 
+type AccountCallback = Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>;
+type PositionCallback = Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>;
+type OrderCallback = Arc<RwLock<Option<Arc<dyn Fn(Order) + Send + Sync>>>>;
 type TradeCallback = Arc<RwLock<Option<Arc<dyn Fn(Trade) + Send + Sync>>>>;
+type NotificationCallback = Arc<RwLock<Option<Arc<dyn Fn(Notification) + Send + Sync>>>>;
+type ErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>;
 
 /// 交易会话
 #[allow(unused)]
@@ -39,12 +44,12 @@ pub struct TradeSession {
     notification_rx: Receiver<Notification>,
 
     // 回调
-    on_account: Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>,
-    on_position: Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>,
-    on_order: Arc<RwLock<Option<Arc<dyn Fn(Order) + Send + Sync>>>>,
+    on_account: AccountCallback,
+    on_position: PositionCallback,
+    on_order: OrderCallback,
     on_trade: TradeCallback,
-    on_notification: Arc<RwLock<Option<Arc<dyn Fn(Notification) + Send + Sync>>>>,
-    on_error: Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>,
+    on_notification: NotificationCallback,
+    on_error: ErrorCallback,
 
     // 状态（使用 Arc<AtomicBool> 避免锁开销，支持跨线程共享）
     logged_in: Arc<AtomicBool>,
@@ -186,25 +191,19 @@ impl TradeSession {
                 }
 
                 // 检查登录状态
-                if let Some(session_data) = dm.get_by_path(&["trade", &user_id, "session"]) {
-                    if let serde_json::Value::Object(session_map) = session_data {
-                        if let Some(trading_day) = session_map.get("trading_day") {
-                            if !trading_day.is_null() {
-                                // 使用 compare_exchange 实现原子的 check-and-set
-                                // 只有当 logged_in 从 false 变为 true 时才打印日志
-                                if logged_in
-                                    .compare_exchange(
-                                        false,
-                                        true,
-                                        Ordering::SeqCst,
-                                        Ordering::SeqCst,
-                                    )
-                                    .is_ok()
-                                {
-                                    info!("交易会话已登录: user_id={}", user_id);
-                                }
-                            }
-                        }
+                if let Some(serde_json::Value::Object(session_map)) =
+                    dm.get_by_path(&["trade", &user_id, "session"])
+                {
+                    // 使用 compare_exchange 实现原子的 check-and-set
+                    // 只有当 logged_in 从 false 变为 true 时才打印日志
+                    if session_map
+                        .get("trading_day")
+                        .is_some_and(|trading_day| !trading_day.is_null())
+                        && logged_in
+                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                            .is_ok()
+                    {
+                        info!("交易会话已登录: user_id={}", user_id);
                     }
                 }
 
@@ -252,42 +251,42 @@ impl TradeSession {
         dm: &Arc<DataManager>,
         user_id: &str,
         position_tx: &Sender<PositionUpdate>,
-        on_position: &Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>,
+        on_position: &PositionCallback,
     ) {
-        if let Some(positions_data) = dm.get_by_path(&["trade", user_id, "positions"]) {
-            if let serde_json::Value::Object(positions_map) = positions_data {
-                for (symbol, _) in positions_map.iter() {
-                    // 跳过内部元数据字段（以 _ 开头）
-                    if symbol.starts_with('_') {
-                        continue;
-                    }
+        if let Some(serde_json::Value::Object(positions_map)) =
+            dm.get_by_path(&["trade", user_id, "positions"])
+        {
+            for (symbol, _) in positions_map.iter() {
+                // 跳过内部元数据字段（以 _ 开头）
+                if symbol.starts_with('_') {
+                    continue;
+                }
 
-                    // 检查单个持仓是否有更新
-                    if dm.is_changing(&["trade", user_id, "positions", symbol]) {
-                        match dm.get_position_data(user_id, symbol) {
-                            Ok(position) => {
-                                debug!("持仓更新: symbol={}", symbol);
+                // 检查单个持仓是否有更新
+                if dm.is_changing(&["trade", user_id, "positions", symbol]) {
+                    match dm.get_position_data(user_id, symbol) {
+                        Ok(position) => {
+                            debug!("持仓更新: symbol={}", symbol);
 
-                                let update = PositionUpdate {
-                                    symbol: symbol.clone(),
-                                    position: position.clone(),
-                                };
+                            let update = PositionUpdate {
+                                symbol: symbol.clone(),
+                                position: position.clone(),
+                            };
 
-                                // 发送到 async-channel
-                                let _ = position_tx.send(update).await;
+                            // 发送到 async-channel
+                            let _ = position_tx.send(update).await;
 
-                                // 调用回调
-                                if let Some(callback) = on_position.read().await.as_ref() {
-                                    let cb = Arc::clone(callback);
-                                    let symbol = symbol.clone();
-                                    tokio::spawn(async move {
-                                        cb(symbol, position);
-                                    });
-                                }
+                            // 调用回调
+                            if let Some(callback) = on_position.read().await.as_ref() {
+                                let cb = Arc::clone(callback);
+                                let symbol = symbol.clone();
+                                tokio::spawn(async move {
+                                    cb(symbol, position);
+                                });
                             }
-                            Err(e) => {
-                                error!("获取持仓数据失败: symbol={}, error={}", symbol, e);
-                            }
+                        }
+                        Err(e) => {
+                            error!("获取持仓数据失败: symbol={}, error={}", symbol, e);
                         }
                     }
                 }
@@ -300,7 +299,7 @@ impl TradeSession {
         dm: &Arc<DataManager>,
         user_id: &str,
         order_tx: &Sender<Order>,
-        on_order: &Arc<RwLock<Option<Arc<dyn Fn(Order) + Send + Sync>>>>,
+        on_order: &OrderCallback,
     ) {
         if let Some(serde_json::Value::Object(orders_map)) =
             dm.get_by_path(&["trade", user_id, "orders"])
