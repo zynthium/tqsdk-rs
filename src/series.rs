@@ -24,7 +24,6 @@ pub struct SeriesAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     auth: Arc<RwLock<dyn Authenticator>>,
-    subscriptions: Arc<RwLock<HashMap<String, Arc<SeriesSubscription>>>>,
 }
 
 impl SeriesAPI {
@@ -38,7 +37,6 @@ impl SeriesAPI {
             dm,
             ws,
             auth,
-            subscriptions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -156,15 +154,6 @@ impl SeriesAPI {
             options.chart_id = generate_chart_id(&options);
         }
 
-        // 检查是否已存在
-        {
-            let subs = self.subscriptions.read().await;
-            if let Some(sub) = subs.get(&options.chart_id) {
-                let _ = sub.refresh().await;
-                return Ok(Arc::clone(sub));
-            }
-        }
-
         // 创建新订阅
         let sub = Arc::new(SeriesSubscription::new(
             Arc::clone(&self.dm),
@@ -177,10 +166,6 @@ impl SeriesAPI {
 
         // // 再发送 set_chart 请求（避免错过初始数据）
         // sub.send_set_chart().await?;
-
-        // 保存订阅
-        let mut subs = self.subscriptions.write().await;
-        subs.insert(sub.options.chart_id.clone(), Arc::clone(&sub));
 
         Ok(sub)
     }
@@ -546,6 +531,39 @@ impl SeriesSubscription {
 
         self.ws.send(&cancel_req).await?;
         Ok(())
+    }
+}
+
+impl Drop for SeriesSubscription {
+    fn drop(&mut self) {
+        let ws = self.ws.clone();
+        let chart_id = self.options.chart_id.clone();
+        let duration = self.options.duration;
+        let running = self.running.clone();
+
+        tokio::spawn(async move {
+            // 尝试设置 running 为 false
+            {
+                let mut r = running.write().await;
+                if !*r {
+                    return; // 已经被 close 调用过
+                }
+                *r = false;
+            }
+
+            info!("Drop SeriesSubscription: closing {}", chart_id);
+            let cancel_req = serde_json::json!({
+                "aid": "set_chart",
+                "chart_id": chart_id,
+                "ins_list": "",
+                "duration": duration,
+                "view_width": 0
+            });
+
+            if let Err(e) = ws.send(&cancel_req).await {
+                warn!("Failed to close subscription {}: {}", chart_id, e);
+            }
+        });
     }
 }
 

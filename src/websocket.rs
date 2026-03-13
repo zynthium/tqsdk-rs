@@ -57,7 +57,7 @@ impl Default for WebSocketConfig {
             reconnect_max_times: usize::MAX,
             auto_peek: true,
             auto_peek_interval: Duration::from_secs(15),
-            peek_timeout: None,
+            peek_timeout: Some(Duration::from_secs(20)),
         }
     }
 }
@@ -74,6 +74,7 @@ pub struct TqWebsocket {
     should_reconnect: Arc<RwLock<bool>>,
     connecting: Arc<AtomicBool>,
     pending_peek: Arc<AtomicBool>,
+    connection_id: Arc<RwLock<u64>>,
 
     // WebSocket 连接实例
     ws: Arc<Mutex<Option<yawc::WebSocket>>>,
@@ -97,6 +98,7 @@ impl TqWebsocket {
             should_reconnect: Arc::new(RwLock::new(true)),
             connecting: Arc::new(AtomicBool::new(false)),
             pending_peek: Arc::new(AtomicBool::new(false)),
+            connection_id: Arc::new(RwLock::new(0)),
             ws: Arc::new(Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
             on_open: Arc::new(RwLock::new(None)),
@@ -180,7 +182,12 @@ impl TqWebsocket {
         }
 
         // 启动消息接收循环
-        self.start_receive_loop().await;
+        let id = {
+            let mut guard = self.connection_id.write().unwrap();
+            *guard += 1;
+            *guard
+        };
+        self.start_receive_loop(id).await;
         // 发送队列中的消息
         self.flush_queue().await;
         self.send_peek_message().await?;
@@ -358,7 +365,7 @@ impl TqWebsocket {
     }
 
     /// 启动消息接收循环
-    async fn start_receive_loop(&self) {
+    async fn start_receive_loop(&self, connection_id: u64) {
         let status = Arc::clone(&self.status);
         let ws = Arc::clone(&self.ws);
         let status_for_peek = Arc::clone(&self.status);
@@ -374,14 +381,21 @@ impl TqWebsocket {
         let peek_timeout = self.config.peek_timeout;
         let pending_peek_for_recv = Arc::clone(&self.pending_peek);
         let pending_peek_for_timer = Arc::clone(&self.pending_peek);
-        let last_peek_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-        let last_peek_time_for_recv = Arc::clone(&last_peek_time);
-        let last_peek_time_for_timer = Arc::clone(&last_peek_time);
+        // last_recv_time: 上次收到消息的时间
+        let last_recv_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let last_recv_time_for_recv = Arc::clone(&last_recv_time);
+        let last_recv_time_for_timer = Arc::clone(&last_recv_time);
+        let current_connection_id = Arc::clone(&self.connection_id);
+        let current_connection_id_for_peek = Arc::clone(&self.connection_id);
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
 
             loop {
+                if *current_connection_id.read().unwrap() != connection_id {
+                    debug!("WebSocket 连接 ID 不匹配，退出接收循环");
+                    break;
+                }
                 // 检查连接状态
                 let current_status = *status.read().unwrap();
                 if current_status != WebSocketStatus::Open {
@@ -399,10 +413,15 @@ impl TqWebsocket {
                         tokio::time::timeout(timeout_duration, ws_instance.next()).await;
 
                     match next_result {
-                        Ok(Some(frame)) => {
-                            // 处理不同类型的帧
-                            match frame.opcode {
-                                OpCode::Text | OpCode::Binary => {
+                    Ok(Some(frame)) => {
+                        // 收到任何消息都更新 last_recv_time
+                        if let Ok(mut t) = last_recv_time_for_recv.lock() {
+                            *t = std::time::Instant::now();
+                        }
+
+                        // 处理不同类型的帧
+                        match frame.opcode {
+                            OpCode::Text | OpCode::Binary => {
                                     // 将 payload 转换为字符串
                                     match String::from_utf8(frame.payload.to_vec()) {
                                         Ok(text) => {
@@ -443,9 +462,6 @@ impl TqWebsocket {
                                             match ws_instance.send(frame).await {
                                                 Ok(_) => {
                                                     debug!("Websocket Send -> peek_message");
-                                                    if let Ok(mut t) = last_peek_time_for_recv.lock() {
-                                                        *t = std::time::Instant::now();
-                                                    }
                                                 }
                                                 Err(e) => {
                                                     pending_peek_for_recv
@@ -518,16 +534,27 @@ impl TqWebsocket {
             let mut ticker = tokio::time::interval(auto_peek_interval);
             loop {
                 ticker.tick().await;
+
+                if *current_connection_id_for_peek.read().unwrap() != connection_id {
+                    debug!("WebSocket 连接 ID 不匹配，退出 peek 循环");
+                    break;
+                }
+
                 let current_status = *status_for_peek.read().unwrap();
                 if current_status != WebSocketStatus::Open {
                     break;
                 }
                 if pending_peek_for_timer.load(Ordering::SeqCst) {
                     if let Some(timeout) = peek_timeout {
-                        if let Ok(last_time) = last_peek_time_for_timer.lock() {
+                        if let Ok(last_time) = last_recv_time_for_timer.lock() {
                             if last_time.elapsed() > timeout {
-                                warn!("Peek message timeout (elapsed {:?}), forcing reset", last_time.elapsed());
+                                warn!("WebSocket recv timeout (elapsed {:?}), reconnecting...", last_time.elapsed());
+                                *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
                                 pending_peek_for_timer.store(false, Ordering::SeqCst);
+                                if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
+                                    callback();
+                                }
+                                break;
                             } else {
                                 continue;
                             }
@@ -538,8 +565,11 @@ impl TqWebsocket {
                         continue;
                     }
                 }
+
+                // 主动发送 peek message
                 let mut ws_guard = ws_for_peek.lock().await;
                 if let Some(ws_instance) = ws_guard.as_mut() {
+                    // 如果已经有 pending 的 peek（在获取锁的过程中被设置），则跳过
                     if pending_peek_for_timer.swap(true, Ordering::SeqCst) {
                         drop(ws_guard);
                         continue;
@@ -554,9 +584,7 @@ impl TqWebsocket {
                         }
                         break;
                     }
-                    if let Ok(mut t) = last_peek_time_for_timer.lock() {
-                        *t = std::time::Instant::now();
-                    }
+                    debug!("Websocket Timer Send -> peek_message");
                 } else {
                     break;
                 }
@@ -601,10 +629,25 @@ impl TqWebsocket {
         if !*self.should_reconnect.read().unwrap() {
             return;
         }
-        if !self.handle_reconnect().await {
-            return;
+
+        loop {
+            if !self.handle_reconnect().await {
+                error!("已达到最大重连次数，放弃重连");
+                break;
+            }
+
+            match self.init(true).await {
+                Ok(_) => {
+                    info!("重连成功");
+                    // 重置重连次数
+                    *self.reconnect_times.write().unwrap() = 0;
+                    break;
+                }
+                Err(e) => {
+                    error!("重连失败: {}, 继续尝试...", e);
+                }
+            }
         }
-        let _ = self.init(true).await;
     }
 }
 
@@ -967,6 +1010,39 @@ impl TqQuoteWebsocket {
             });
         }
 
+        {
+            let base_clone = Arc::clone(&base);
+            let subscribe_quote = Arc::clone(&subscribe_quote);
+            let charts = Arc::clone(&charts);
+            let pending_ins_query = Arc::clone(&pending_ins_query);
+            base.on_open(move || {
+                debug!("WebSocket 连接建立，重新发送订阅和图表请求");
+                let base = Arc::clone(&base_clone);
+                let sub = subscribe_quote.read().unwrap().clone();
+                let charts = charts.read().unwrap().clone();
+                let pending_queries = pending_ins_query.read().unwrap().clone();
+                tokio::spawn(async move {
+                    // 重新发送订阅
+                    if let Some(sub) = sub {
+                        debug!("重新发送订阅: {:?}", sub);
+                        let _ = base.send(&sub).await;
+                    }
+                    // 重新发送图表
+                    for (id, chart) in charts {
+                        debug!("重新发送图表: {} -> {:?}", id, chart);
+                        let _ = base.send(&chart).await;
+                    }
+                    // 重新发送未完成的合约查询
+                    for (id, query) in pending_queries {
+                        debug!("重新发送合约查询: {} -> {:?}", id, query);
+                        let _ = base.send(&query).await;
+                    }
+                    // 发送 peek
+                    let _ = base.send_peek_message().await;
+                });
+            });
+        }
+
         TqQuoteWebsocket {
             base,
             _dm: dm_clone,
@@ -990,28 +1066,29 @@ impl TqQuoteWebsocket {
             match aid {
                 "subscribe_quote" => {
                     // 检查是否需要更新订阅
-                    let mut should_send = false;
-                    let mut subscribe_guard = self.subscribe_quote.write().unwrap();
+                    let should_send = {
+                        let mut subscribe_guard = self.subscribe_quote.write().unwrap();
+                        let mut should = false;
 
-                    if let Some(old_sub) = subscribe_guard.as_ref() {
-                        // 比较 ins_list
-                        let old_list = old_sub.get("ins_list");
-                        let new_list = value.get("ins_list");
+                        if let Some(old_sub) = subscribe_guard.as_ref() {
+                            // 比较 ins_list
+                            let old_list = old_sub.get("ins_list");
+                            let new_list = value.get("ins_list");
 
-                        if old_list != new_list {
-                            debug!("订阅列表变化，更新订阅");
-                            *subscribe_guard = Some(value.clone());
-                            should_send = true;
+                            if old_list != new_list {
+                                debug!("订阅列表变化，更新订阅");
+                                *subscribe_guard = Some(value.clone());
+                                should = true;
+                            } else {
+                                debug!("订阅列表未变化，跳过");
+                            }
                         } else {
-                            debug!("订阅列表未变化，跳过");
+                            debug!("首次订阅");
+                            *subscribe_guard = Some(value.clone());
+                            should = true;
                         }
-                    } else {
-                        debug!("首次订阅");
-                        *subscribe_guard = Some(value.clone());
-                        should_send = true;
-                    }
-
-                    drop(subscribe_guard);
+                        should
+                    };
 
                     if should_send {
                         let res = self.base.send(&value).await;
@@ -1026,19 +1103,20 @@ impl TqQuoteWebsocket {
                 "set_chart" => {
                     // 记录图表请求
                     if let Some(chart_id) = value.get("chart_id").and_then(|v| v.as_str()) {
-                        let mut charts_guard = self.charts.write().unwrap();
+                        {
+                            let mut charts_guard = self.charts.write().unwrap();
 
-                        if let Some(view_width) = value.get("view_width").and_then(|v| v.as_f64()) {
-                            if view_width == 0.0 {
-                                trace!("删除图表: {}", chart_id);
-                                charts_guard.remove(chart_id);
-                            } else {
-                                trace!("保存图表请求: {}", chart_id);
-                                charts_guard.insert(chart_id.to_string(), value.clone());
+                            if let Some(view_width) = value.get("view_width").and_then(|v| v.as_f64()) {
+                                if view_width == 0.0 {
+                                    trace!("删除图表: {}", chart_id);
+                                    charts_guard.remove(chart_id);
+                                } else {
+                                    trace!("保存图表请求: {}", chart_id);
+                                    charts_guard.insert(chart_id.to_string(), value.clone());
+                                }
                             }
                         }
 
-                        drop(charts_guard);
                         let res = self.base.send(&value).await;
                         if res.is_ok() {
                             let _ = self.base.send_peek_message().await;
@@ -1048,8 +1126,10 @@ impl TqQuoteWebsocket {
                 }
                 "ins_query" => {
                     if let Some(query_id) = value.get("query_id").and_then(|v| v.as_str()) {
-                        let mut pending_guard = self.pending_ins_query.write().unwrap();
-                        pending_guard.insert(query_id.to_string(), value.clone());
+                        {
+                            let mut pending_guard = self.pending_ins_query.write().unwrap();
+                            pending_guard.insert(query_id.to_string(), value.clone());
+                        }
                     }
                     let res = self.base.send(&value).await;
                     if res.is_ok() {
@@ -1172,6 +1252,21 @@ impl TqTradingStatusWebsocket {
                 let base_for_reconnect = Arc::clone(&base_clone);
                 tokio::spawn(async move {
                     base_for_reconnect.reconnect().await;
+                });
+            });
+        }
+
+        {
+            let base_clone = Arc::clone(&base);
+            let subscribe_trading_status = Arc::clone(&subscribe_trading_status);
+            base.on_open(move || {
+                let base = Arc::clone(&base_clone);
+                let sub = subscribe_trading_status.read().unwrap().clone();
+                tokio::spawn(async move {
+                    if let Some(sub) = sub {
+                         let _ = base.send(&sub).await;
+                    }
+                    let _ = base.send_peek_message().await;
                 });
             });
         }
@@ -1435,6 +1530,26 @@ impl TqTradeWebsocket {
                 let base_for_reconnect = Arc::clone(&base_clone);
                 tokio::spawn(async move {
                     base_for_reconnect.reconnect().await;
+                });
+            });
+        }
+
+        {
+            let base_clone = Arc::clone(&base);
+            let req_login = Arc::clone(&req_login);
+            let confirm_settlement = Arc::clone(&confirm_settlement);
+            base.on_open(move || {
+                let base = Arc::clone(&base_clone);
+                let login = req_login.read().unwrap().clone();
+                let confirm = confirm_settlement.read().unwrap().clone();
+                tokio::spawn(async move {
+                    if let Some(login) = login {
+                        let _ = base.send(&login).await;
+                    }
+                    if let Some(confirm) = confirm {
+                        let _ = base.send(&confirm).await;
+                    }
+                    let _ = base.send_peek_message().await;
                 });
             });
         }
