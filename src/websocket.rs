@@ -57,7 +57,7 @@ impl Default for WebSocketConfig {
             reconnect_max_times: usize::MAX,
             auto_peek: true,
             auto_peek_interval: Duration::from_secs(15),
-            peek_timeout: Some(Duration::from_secs(20)),
+            peek_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -74,6 +74,7 @@ pub struct TqWebsocket {
     should_reconnect: Arc<RwLock<bool>>,
     connecting: Arc<AtomicBool>,
     pending_peek: Arc<AtomicBool>,
+    last_peek_sent: Arc<std::sync::Mutex<std::time::Instant>>,
     connection_id: Arc<RwLock<u64>>,
 
     // WebSocket 连接实例
@@ -98,6 +99,7 @@ impl TqWebsocket {
             should_reconnect: Arc::new(RwLock::new(true)),
             connecting: Arc::new(AtomicBool::new(false)),
             pending_peek: Arc::new(AtomicBool::new(false)),
+            last_peek_sent: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             connection_id: Arc::new(RwLock::new(0)),
             ws: Arc::new(Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
@@ -252,6 +254,11 @@ impl TqWebsocket {
             return Ok(());
         }
         let res = self.send(&json!({"aid": "peek_message"})).await;
+        if res.is_ok() {
+            if let Ok(mut t) = self.last_peek_sent.lock() {
+                *t = std::time::Instant::now();
+            }
+        }
         if res.is_err() {
             self.pending_peek.store(false, Ordering::SeqCst);
         }
@@ -387,6 +394,8 @@ impl TqWebsocket {
         let last_recv_time_for_timer = Arc::clone(&last_recv_time);
         let current_connection_id = Arc::clone(&self.connection_id);
         let current_connection_id_for_peek = Arc::clone(&self.connection_id);
+        let last_peek_sent = Arc::clone(&self.last_peek_sent);
+        let last_peek_sent_for_timer = Arc::clone(&self.last_peek_sent);
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
@@ -428,16 +437,11 @@ impl TqWebsocket {
                                             debug!("WebSocket Recv Text: {}", text);
 
                                             // 解析 JSON
+                                            if auto_peek {
+                                                pending_peek_for_recv.store(false, Ordering::SeqCst);
+                                            }
                                             match serde_json::from_str::<Value>(&text) {
                                                 Ok(json_value) => {
-                                                    if let Some(aid) =
-                                                        json_value.get("aid").and_then(|v| v.as_str())
-                                                    {
-                                                        if aid == "rtn_data" {
-                                                            pending_peek_for_recv
-                                                                .store(false, Ordering::SeqCst);
-                                                        }
-                                                    }
                                                     if let Some(callback) =
                                                         _on_message.read().unwrap().as_ref()
                                                     {
@@ -461,6 +465,9 @@ impl TqWebsocket {
                                             );
                                             match ws_instance.send(frame).await {
                                                 Ok(_) => {
+                                                    if let Ok(mut t) = last_peek_sent.lock() {
+                                                        *t = std::time::Instant::now();
+                                                    }
                                                     debug!("Websocket Send -> peek_message");
                                                 }
                                                 Err(e) => {
@@ -546,21 +553,31 @@ impl TqWebsocket {
                 }
                 if pending_peek_for_timer.load(Ordering::SeqCst) {
                     if let Some(timeout) = peek_timeout {
-                        if let Ok(last_time) = last_recv_time_for_timer.lock() {
-                            if last_time.elapsed() > timeout {
-                                warn!("WebSocket recv timeout (elapsed {:?}), reconnecting...", last_time.elapsed());
+                        let last_recv_elapsed = last_recv_time_for_timer
+                            .lock()
+                            .ok()
+                            .map(|t| t.elapsed());
+                        let last_peek_elapsed = last_peek_sent_for_timer
+                            .lock()
+                            .ok()
+                            .map(|t| t.elapsed());
+                        if let (Some(recv_elapsed), Some(peek_elapsed)) =
+                            (last_recv_elapsed, last_peek_elapsed)
+                        {
+                            if recv_elapsed > timeout && peek_elapsed > timeout {
+                                warn!(
+                                    "WebSocket recv timeout (elapsed {:?}), reconnecting...",
+                                    recv_elapsed
+                                );
                                 *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
                                 pending_peek_for_timer.store(false, Ordering::SeqCst);
                                 if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
                                     callback();
                                 }
                                 break;
-                            } else {
-                                continue;
                             }
-                        } else {
-                            continue;
                         }
+                        continue;
                     } else {
                         continue;
                     }
@@ -583,6 +600,9 @@ impl TqWebsocket {
                             callback();
                         }
                         break;
+                    }
+                    if let Ok(mut t) = last_peek_sent_for_timer.lock() {
+                        *t = std::time::Instant::now();
                     }
                     debug!("Websocket Timer Send -> peek_message");
                 } else {
