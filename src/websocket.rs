@@ -16,6 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
@@ -26,6 +28,12 @@ type OpenCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
 type CloseCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
 type ErrorCallback = Arc<RwLock<Option<Box<dyn Fn(String) + Send + Sync>>>>;
 type NotifyCallback = Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>>;
+
+struct SharedReconnectTimer {
+    next_reconnect_at: Instant,
+}
+
+static RECONNECT_TIMER: OnceLock<std::sync::Mutex<SharedReconnectTimer>> = OnceLock::new();
 
 /// WebSocket 状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +70,8 @@ impl Default for WebSocketConfig {
             reconnect_interval: Duration::from_secs(3),
             reconnect_max_times: usize::MAX,
             auto_peek: true,
-            auto_peek_interval: Duration::from_secs(15),
-            peek_timeout: Some(Duration::from_secs(60)),
+            auto_peek_interval: Duration::ZERO,
+            peek_timeout: None,
         }
     }
 }
@@ -79,9 +87,11 @@ pub struct TqWebsocket {
     reconnect_times: Arc<RwLock<usize>>,
     should_reconnect: Arc<RwLock<bool>>,
     connecting: Arc<AtomicBool>,
+    connected_once: Arc<AtomicBool>,
     pending_peek: Arc<AtomicBool>,
     last_peek_sent: Arc<std::sync::Mutex<std::time::Instant>>,
     connection_id: Arc<RwLock<u64>>,
+    last_disconnect_reason: Arc<RwLock<Option<String>>>,
 
     // WebSocket 连接实例
     ws: Arc<Mutex<Option<yawc::WebSocket>>>,
@@ -94,6 +104,17 @@ pub struct TqWebsocket {
 }
 
 impl TqWebsocket {
+    fn emit_connection_notify(&self, code: i64, level: &str, content: String) {
+        if let Some(callback) = self.on_message.read().unwrap().as_ref() {
+            callback(build_connection_notify(
+                code,
+                level,
+                content,
+                self.url.clone(),
+            ));
+        }
+    }
+
     /// 创建新的 WebSocket 连接
     pub fn new(url: String, config: WebSocketConfig) -> Self {
         TqWebsocket {
@@ -104,15 +125,25 @@ impl TqWebsocket {
             reconnect_times: Arc::new(RwLock::new(0)),
             should_reconnect: Arc::new(RwLock::new(true)),
             connecting: Arc::new(AtomicBool::new(false)),
+            connected_once: Arc::new(AtomicBool::new(false)),
             pending_peek: Arc::new(AtomicBool::new(false)),
             last_peek_sent: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             connection_id: Arc::new(RwLock::new(0)),
+            last_disconnect_reason: Arc::new(RwLock::new(None)),
             ws: Arc::new(Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
             on_open: Arc::new(RwLock::new(None)),
             on_close: Arc::new(RwLock::new(None)),
             on_error: Arc::new(RwLock::new(None)),
         }
+    }
+
+    fn set_disconnect_reason(&self, reason: impl Into<String>) {
+        *self.last_disconnect_reason.write().unwrap() = Some(reason.into());
+    }
+
+    fn take_disconnect_reason(&self) -> Option<String> {
+        self.last_disconnect_reason.write().unwrap().take()
     }
 
     /// 初始化连接
@@ -160,6 +191,11 @@ impl TqWebsocket {
                 if let Some(callback) = self.on_error.read().unwrap().as_ref() {
                     callback(format!("Connection failed: {}", e));
                 }
+                self.emit_connection_notify(
+                    2019112911,
+                    "WARNING",
+                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
+                );
 
                 // 尝试重连
                 if *self.should_reconnect.read().unwrap() {
@@ -178,6 +214,7 @@ impl TqWebsocket {
         }
 
         *self.status.write().unwrap() = WebSocketStatus::Open;
+        *self.last_disconnect_reason.write().unwrap() = None;
 
         // 重置重连次数
         if !is_reconnection {
@@ -187,6 +224,20 @@ impl TqWebsocket {
         // 触发 onOpen 回调
         if let Some(callback) = self.on_open.read().unwrap().as_ref() {
             callback();
+        }
+        let first_connected = !self.connected_once.swap(true, Ordering::SeqCst);
+        if first_connected && !is_reconnection {
+            self.emit_connection_notify(
+                2019112901,
+                "INFO",
+                format!("与 {} 的网络连接已建立", self.url),
+            );
+        } else {
+            self.emit_connection_notify(
+                2019112902,
+                "WARNING",
+                format!("与 {} 的网络连接已恢复", self.url),
+            );
         }
 
         // 启动消息接收循环
@@ -222,8 +273,14 @@ impl TqWebsocket {
                     }
                     Err(e) => {
                         error!("消息发送失败: {}", e);
+                        self.set_disconnect_reason(format!("send_frame_failed: {}", e));
                         *self.status.write().unwrap() = WebSocketStatus::Closed;
                         drop(ws_guard);
+                        self.emit_connection_notify(
+                            2019112911,
+                            "WARNING",
+                            format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
+                        );
                         if let Some(callback) = self.on_close.read().unwrap().as_ref() {
                             callback();
                         }
@@ -293,6 +350,7 @@ impl TqWebsocket {
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         *self.status.write().unwrap() = WebSocketStatus::Closed;
+        self.set_disconnect_reason("manual_close");
         self.connecting.store(false, Ordering::SeqCst);
         self.pending_peek.store(false, Ordering::SeqCst);
 
@@ -329,12 +387,18 @@ impl TqWebsocket {
                     }
                     Err(e) => {
                         error!("队列消息发送失败: {}", e);
+                        self.set_disconnect_reason(format!("flush_queue_send_failed: {}", e));
                         // 连接异常，恢复状态、回退消息到队列并触发关闭回调
                         *self.status.write().unwrap() = WebSocketStatus::Closed;
                         drop(ws_guard);
                         let mut q = self.queue.lock().await;
                         q.extend_from_slice(&pending[idx..]);
                         drop(q);
+                        self.emit_connection_notify(
+                            2019112911,
+                            "WARNING",
+                            format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
+                        );
                         if let Some(callback) = self.on_close.read().unwrap().as_ref() {
                             callback();
                         }
@@ -383,17 +447,21 @@ impl TqWebsocket {
         let ws = Arc::clone(&self.ws);
         let status_for_peek = Arc::clone(&self.status);
         let ws_for_peek = Arc::clone(&self.ws);
-        let _on_message = Arc::clone(&self.on_message);
+        let on_message_for_recv = Arc::clone(&self.on_message);
+        let on_message_for_peek = Arc::clone(&self.on_message);
         let _on_error = Arc::clone(&self.on_error);
         let _on_close = Arc::clone(&self.on_close);
         let _on_close_for_peek = Arc::clone(&self.on_close);
         let _should_reconnect = Arc::clone(&self.should_reconnect);
-        let _url = self.url.clone();
+        let url_for_recv = self.url.clone();
+        let url_for_peek = self.url.clone();
         let auto_peek = self.config.auto_peek;
         let auto_peek_interval = self.config.auto_peek_interval;
         let peek_timeout = self.config.peek_timeout;
         let pending_peek_for_recv = Arc::clone(&self.pending_peek);
         let pending_peek_for_timer = Arc::clone(&self.pending_peek);
+        let disconnect_reason_for_recv = Arc::clone(&self.last_disconnect_reason);
+        let disconnect_reason_for_peek = Arc::clone(&self.last_disconnect_reason);
         // last_recv_time: 上次收到消息的时间
         let last_recv_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
         let last_recv_time_for_recv = Arc::clone(&last_recv_time);
@@ -405,6 +473,7 @@ impl TqWebsocket {
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
+            let mut consecutive_none = 0u8;
 
             loop {
                 if *current_connection_id.read().unwrap() != connection_id {
@@ -423,15 +492,19 @@ impl TqWebsocket {
                 if let Some(ws_instance) = ws_guard.as_mut() {
                     // yawc 使用 Stream trait，使用 next() 接收消息
                     // 使用 timeout 避免无限等待
-                    let timeout_duration = tokio::time::Duration::from_secs(1);
+                    let timeout_duration = tokio::time::Duration::from_secs(15);
                     let next_result =
                         tokio::time::timeout(timeout_duration, ws_instance.next()).await;
 
                     match next_result {
                     Ok(Some(frame)) => {
+                        consecutive_none = 0;
                         // 收到任何消息都更新 last_recv_time
                         if let Ok(mut t) = last_recv_time_for_recv.lock() {
                             *t = std::time::Instant::now();
+                        }
+                        if auto_peek {
+                            pending_peek_for_recv.store(false, Ordering::SeqCst);
                         }
 
                         // 处理不同类型的帧
@@ -443,13 +516,10 @@ impl TqWebsocket {
                                             debug!("WebSocket Recv Text: {}", text);
 
                                             // 解析 JSON
-                                            if auto_peek {
-                                                pending_peek_for_recv.store(false, Ordering::SeqCst);
-                                            }
                                             match serde_json::from_str::<Value>(&text) {
                                                 Ok(json_value) => {
                                                     if let Some(callback) =
-                                                        _on_message.read().unwrap().as_ref()
+                                                        on_message_for_recv.read().unwrap().as_ref()
                                                     {
                                                         callback(json_value);
                                                     }
@@ -479,18 +549,53 @@ impl TqWebsocket {
                                             Err(e) => {
                                                 pending_peek_for_recv
                                                     .store(false, Ordering::SeqCst);
+                                                *disconnect_reason_for_recv.write().unwrap() =
+                                                    Some(format!(
+                                                        "recv_loop_send_peek_failed: {}",
+                                                        e
+                                                    ));
                                                 error!(
                                                     "Websocket Send `peek_message` failed: {}",
                                                     e
                                                 );
+                                                *status.write().unwrap() = WebSocketStatus::Closed;
+                                                if let Some(callback) =
+                                                    on_message_for_recv.read().unwrap().as_ref()
+                                                {
+                                                    callback(build_connection_notify(
+                                                        2019112911,
+                                                        "WARNING",
+                                                        format!(
+                                                            "与 {} 的网络连接断开，请检查客户端及网络是否正常",
+                                                            url_for_recv
+                                                        ),
+                                                        url_for_recv.clone(),
+                                                    ));
+                                                }
+                                                if let Some(callback) = _on_close.read().unwrap().as_ref() {
+                                                    callback();
+                                                }
                                                 break;
                                             }
                                         }
                                     }
                                 }
                                 OpCode::Close => {
+                                    *disconnect_reason_for_recv.write().unwrap() =
+                                        Some("server_close_frame".to_string());
                                     info!("WebSocket 收到关闭帧");
                                     *status.write().unwrap() = WebSocketStatus::Closed;
+                                    if let Some(callback) = on_message_for_recv.read().unwrap().as_ref() {
+                                        callback(build_connection_notify(
+                                            2019112911,
+                                            "WARNING",
+                                            format!(
+                                                "与 {} 的网络连接断开，请检查客户端及网络是否正常",
+                                                url_for_recv
+                                            ),
+                                            url_for_recv.clone(),
+                                        ));
+                                    }
 
                                     // 触发关闭回调
                                     if let Some(callback) = _on_close.read().unwrap().as_ref() {
@@ -512,9 +617,46 @@ impl TqWebsocket {
                             }
                         }
                         Ok(None) => {
-                            // Stream 结束，连接关闭
+                            consecutive_none = consecutive_none.saturating_add(1);
+                            if consecutive_none < 3 {
+                                warn!(
+                                    "WebSocket next() 返回 None（第 {} 次），等待确认后再断线处理",
+                                    consecutive_none
+                                );
+                                drop(ws_guard);
+                                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                                continue;
+                            }
+                            let probe = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                            match ws_instance.send(probe).await {
+                                Ok(_) => {
+                                    if let Ok(mut t) = last_peek_sent.lock() {
+                                        *t = std::time::Instant::now();
+                                    }
+                                    pending_peek_for_recv.store(true, Ordering::SeqCst);
+                                    consecutive_none = 0;
+                                    warn!(
+                                        "WebSocket next() 连续返回 None，但探测发送成功，继续保持连接"
+                                    );
+                                    drop(ws_guard);
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                    continue;
+                                }
+                                Err(e) => {
+                                    *disconnect_reason_for_recv.write().unwrap() =
+                                        Some(format!("stream_ended_probe_send_failed: {}", e));
+                                }
+                            }
                             info!("WebSocket Stream 结束，连接已关闭");
                             *status.write().unwrap() = WebSocketStatus::Closed;
+                            if let Some(callback) = on_message_for_recv.read().unwrap().as_ref() {
+                                callback(build_connection_notify(
+                                    2019112911,
+                                    "WARNING",
+                                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url_for_recv),
+                                    url_for_recv.clone(),
+                                ));
+                            }
 
                             if let Some(callback) = _on_close.read().unwrap().as_ref() {
                                 callback();
@@ -540,7 +682,7 @@ impl TqWebsocket {
         });
 
         tokio::spawn(async move {
-            if !auto_peek {
+            if !auto_peek || auto_peek_interval.is_zero() {
                 return;
             }
             let mut ticker = tokio::time::interval(auto_peek_interval);
@@ -570,16 +712,8 @@ impl TqWebsocket {
                             (last_recv_elapsed, last_peek_elapsed)
                         {
                             if recv_elapsed > timeout && peek_elapsed > timeout {
-                                warn!(
-                                    "WebSocket recv timeout (elapsed {:?}), reconnecting...",
-                                    recv_elapsed
-                                );
-                                *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
                                 pending_peek_for_timer.store(false, Ordering::SeqCst);
-                                if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
-                                    callback();
-                                }
-                                break;
+                                continue;
                             }
                         }
                         continue;
@@ -599,8 +733,18 @@ impl TqWebsocket {
                     let frame = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
                     if let Err(e) = ws_instance.send(frame).await {
                         error!("Websocket Send `peek_message` failed: {}", e);
+                        *disconnect_reason_for_peek.write().unwrap() =
+                            Some(format!("timer_send_peek_failed: {}", e));
                         *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
                         pending_peek_for_timer.store(false, Ordering::SeqCst);
+                        if let Some(callback) = on_message_for_peek.read().unwrap().as_ref() {
+                            callback(build_connection_notify(
+                                2019112911,
+                                "WARNING",
+                                format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url_for_peek),
+                                url_for_peek.clone(),
+                            ));
+                        }
                         if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
                             callback();
                         }
@@ -642,8 +786,10 @@ impl TqWebsocket {
                 times, self.config.reconnect_max_times
             );
 
-            // 等待重连间隔
-            sleep(self.config.reconnect_interval).await;
+            let wait_duration = next_shared_reconnect_delay(times as u32, self.config.reconnect_interval);
+            if wait_duration > Duration::ZERO {
+                sleep(wait_duration).await;
+            }
 
             info!("重连等待完成，准备重连");
         }
@@ -653,6 +799,11 @@ impl TqWebsocket {
     pub async fn reconnect(&self) {
         if !*self.should_reconnect.read().unwrap() {
             return;
+        }
+        if let Some(reason) = self.take_disconnect_reason() {
+            warn!("进入重连流程，最近一次断线原因: {}", reason);
+        } else {
+            warn!("进入重连流程，最近一次断线原因: unknown");
         }
 
         loop {
@@ -683,6 +834,84 @@ fn extract_notify_code(value: &Value) -> Option<i64> {
     value
         .as_str()
         .and_then(|s| s.parse::<i64>().ok())
+}
+
+fn build_connection_notify(code: i64, level: &str, content: String, url: String) -> Value {
+    let notify_id = uuid::Uuid::new_v4().to_string();
+    json!({
+        "aid": "rtn_data",
+        "data": [{
+            "notify": {
+                notify_id: {
+                    "type": "MESSAGE",
+                    "level": level,
+                    "code": code,
+                    "content": content,
+                    "url": url
+                }
+            }
+        }]
+    })
+}
+
+fn next_shared_reconnect_delay(reconnect_count: u32, fallback: Duration) -> Duration {
+    let timer = RECONNECT_TIMER.get_or_init(|| {
+        let initial = Duration::from_secs(10 + pseudo_jitter_seconds(11));
+        std::sync::Mutex::new(SharedReconnectTimer {
+            next_reconnect_at: Instant::now() + initial,
+        })
+    });
+    let now = Instant::now();
+    let mut guard = timer.lock().unwrap();
+    let wait = if guard.next_reconnect_at > now {
+        guard.next_reconnect_at.duration_since(now)
+    } else {
+        Duration::ZERO
+    };
+
+    if guard.next_reconnect_at <= now {
+        let exp = reconnect_count.min(6);
+        let base_secs = (1u64 << exp) * 10;
+        let lower = Duration::from_secs(base_secs).max(fallback);
+        let upper = lower.saturating_mul(2);
+        let jitter = pseudo_duration_between(lower, upper);
+        guard.next_reconnect_at = now + jitter;
+    }
+
+    wait.max(fallback)
+}
+
+fn pseudo_duration_between(lower: Duration, upper: Duration) -> Duration {
+    if upper <= lower {
+        return lower;
+    }
+    let range = upper - lower;
+    let nanos = range.as_nanos() as u64;
+    if nanos == 0 {
+        return lower;
+    }
+    let offset = pseudo_jitter_nanos(nanos);
+    lower + Duration::from_nanos(offset)
+}
+
+fn pseudo_jitter_seconds(max: u64) -> u64 {
+    if max == 0 {
+        return 0;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    (now.as_nanos() as u64) % max
+}
+
+fn pseudo_jitter_nanos(max: u64) -> u64 {
+    if max == 0 {
+        return 0;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    (now.as_nanos() as u64) % max
 }
 
 fn has_reconnect_notify(item: &Value) -> bool {
@@ -1023,10 +1252,39 @@ impl TqQuoteWebsocket {
             let reconnect_pending = Arc::clone(&reconnect_pending);
             let reconnect_diffs = Arc::clone(&reconnect_diffs);
             let reconnect_dm = Arc::clone(&reconnect_dm);
+            let subscribe_quote = Arc::clone(&subscribe_quote);
+            let charts = Arc::clone(&charts);
+            let pending_ins_query = Arc::clone(&pending_ins_query);
             base.on_close(move || {
                 reconnect_pending.store(false, Ordering::SeqCst);
                 reconnect_diffs.write().unwrap().clear();
                 *reconnect_dm.write().unwrap() = None;
+                let has_quote_interest = subscribe_quote
+                    .read()
+                    .unwrap()
+                    .as_ref()
+                    .and_then(|v| v.get("ins_list").and_then(|s| s.as_str()))
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                let has_chart_interest = charts.read().unwrap().values().any(|chart| {
+                    let width_ok = chart
+                        .get("view_width")
+                        .and_then(|v| v.as_f64())
+                        .map(|w| w > 0.0)
+                        .unwrap_or(false);
+                    let symbols_ok = chart
+                        .get("ins_list")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    width_ok && symbols_ok
+                });
+                let has_pending_query = !pending_ins_query.read().unwrap().is_empty();
+                let should_reconnect = has_quote_interest || has_chart_interest || has_pending_query;
+                if !should_reconnect {
+                    info!("无活跃订阅意图，跳过自动重连");
+                    return;
+                }
                 let base_for_reconnect = Arc::clone(&base_clone);
                 tokio::spawn(async move {
                     base_for_reconnect.reconnect().await;
@@ -1603,9 +1861,9 @@ impl TqTradeWebsocket {
                                 let notification = crate::types::Notification {
                                     code: n
                                         .get("code")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
+                                        .and_then(extract_notify_code)
+                                        .map(|v| v.to_string())
+                                        .unwrap_or_default(),
                                     level: n
                                         .get("level")
                                         .and_then(|v| v.as_str())

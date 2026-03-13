@@ -531,44 +531,11 @@ impl SeriesSubscription {
             "chart_id": self.options.chart_id,
             "ins_list": "",
             "duration": self.options.duration,
-            "view_width": 0
+            "view_width": 2000
         });
 
         self.ws.send(&cancel_req).await?;
         Ok(())
-    }
-}
-
-impl Drop for SeriesSubscription {
-    fn drop(&mut self) {
-        let ws = self.ws.clone();
-        let chart_id = self.options.chart_id.clone();
-        let duration = self.options.duration;
-        let running = self.running.clone();
-
-        tokio::spawn(async move {
-            // 尝试设置 running 为 false
-            {
-                let mut r = running.write().await;
-                if !*r {
-                    return; // 已经被 close 调用过
-                }
-                *r = false;
-            }
-
-            info!("Drop SeriesSubscription: closing {}", chart_id);
-            let cancel_req = serde_json::json!({
-                "aid": "set_chart",
-                "chart_id": chart_id,
-                "ins_list": "",
-                "duration": duration,
-                "view_width": 0
-            });
-
-            if let Err(e) = ws.send(&cancel_req).await {
-                warn!("Failed to close subscription {}: {}", chart_id, e);
-            }
-        });
     }
 }
 

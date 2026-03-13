@@ -19,6 +19,13 @@ use tracing::{debug, error};
 
 type DataCallbacks = Arc<RwLock<Vec<Arc<dyn Fn() + Send + Sync>>>>;
 
+#[derive(Debug, Clone, Default)]
+pub struct MergeSemanticsConfig {
+    pub persist: bool,
+    pub reduce_diff: bool,
+    pub prototype: Option<Value>,
+}
+
 /// 数据管理器配置
 #[derive(Debug, Clone)]
 pub struct DataManagerConfig {
@@ -26,6 +33,7 @@ pub struct DataManagerConfig {
     pub default_view_width: usize,
     /// 启用自动清理
     pub enable_auto_cleanup: bool,
+    pub merge_semantics: MergeSemanticsConfig,
 }
 
 impl Default for DataManagerConfig {
@@ -33,6 +41,7 @@ impl Default for DataManagerConfig {
         DataManagerConfig {
             default_view_width: 10000,
             enable_auto_cleanup: true,
+            merge_semantics: MergeSemanticsConfig::default(),
         }
     }
 }
@@ -60,6 +69,37 @@ pub struct DataManager {
     watchers: Arc<RwLock<HashMap<String, PathWatcher>>>,
     /// 数据更新回调（使用 Arc 以支持异步触发）
     on_data_callbacks: DataCallbacks,
+}
+
+#[derive(Clone)]
+struct MergeOptions {
+    delete_null: bool,
+    persist: bool,
+    reduce_diff: bool,
+    prototype: Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrototypeBranch {
+    Direct,
+    Star,
+    At,
+    Hash,
+    None,
+}
+
+impl MergeOptions {
+    fn new(delete_null: bool, semantics: MergeSemanticsConfig) -> Self {
+        let prototype = semantics
+            .prototype
+            .unwrap_or_else(|| Value::Object(Map::new()));
+        MergeOptions {
+            delete_null,
+            persist: semantics.persist,
+            reduce_diff: semantics.reduce_diff,
+            prototype,
+        }
+    }
 }
 
 impl DataManager {
@@ -91,6 +131,22 @@ impl DataManager {
     /// * `epoch_increase` - 是否增加版本号
     /// * `delete_null` - 是否删除 null 对象
     pub fn merge_data(&self, source: Value, epoch_increase: bool, delete_null: bool) {
+        self.merge_data_with_semantics(
+            source,
+            epoch_increase,
+            delete_null,
+            self.config.merge_semantics.clone(),
+        );
+    }
+
+    pub fn merge_data_with_semantics(
+        &self,
+        source: Value,
+        epoch_increase: bool,
+        delete_null: bool,
+        semantics: MergeSemanticsConfig,
+    ) {
+        let options = MergeOptions::new(delete_null, semantics);
         let should_notify_watchers = if epoch_increase {
             // 增加版本号（使用原子操作）
             let current_epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
@@ -110,10 +166,19 @@ impl DataManager {
             for item in source_arr.iter() {
                 if let Value::Object(obj) = item {
                     if !obj.is_empty() {
-                        self.merge_object(&mut data, obj, current_epoch, delete_null);
+                        self.merge_object(
+                            &mut data,
+                            obj,
+                            current_epoch,
+                            options.delete_null,
+                            Some(&options.prototype),
+                            &options,
+                            options.persist,
+                        );
                     }
                 }
             }
+            self.apply_python_data_semantics(&mut data, current_epoch);
             drop(data);
 
             // 异步触发回调（不阻塞数据合并）
@@ -141,10 +206,19 @@ impl DataManager {
             for item in source_arr.iter() {
                 if let Value::Object(obj) = item {
                     if !obj.is_empty() {
-                        self.merge_object(&mut data, obj, current_epoch, delete_null);
+                        self.merge_object(
+                            &mut data,
+                            obj,
+                            current_epoch,
+                            options.delete_null,
+                            Some(&options.prototype),
+                            &options,
+                            options.persist,
+                        );
                     }
                 }
             }
+            self.apply_python_data_semantics(&mut data, current_epoch);
 
             false
         };
@@ -155,52 +229,100 @@ impl DataManager {
         }
     }
 
-    /// 递归合并对象
     fn merge_object(
         &self,
         target: &mut HashMap<String, Value>,
         source: &serde_json::Map<String, Value>,
         epoch: i64,
         delete_null: bool,
-    ) {
+        prototype: Option<&Value>,
+        options: &MergeOptions,
+        persist_ctx: bool,
+    ) -> bool {
+        let mut changed = false;
         for (property, value) in source.iter() {
+            let (property_prototype, proto_branch) = resolve_child_prototype(prototype, property);
+            let transformed_value =
+                transform_value_by_prototype(value, property_prototype, proto_branch);
+            let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
+
             if value.is_null() {
-                if delete_null {
-                    target.remove(property);
+                if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
+                    continue;
+                }
+                if delete_null && target.remove(property).is_some() {
+                    changed = true;
                 }
                 continue;
             }
 
-            match value {
-                Value::String(s) if s == "NaN" || s == "-" => {
-                    // NaN 字符串处理
+            match transformed_value {
+                Value::String(ref s) if s == "NaN" || s == "-" => {
+                    if options.reduce_diff && target.get(property).is_some_and(|v| v.is_null()) {
+                        continue;
+                    }
                     target.insert(property.clone(), Value::Null);
+                    changed = true;
                 }
-                Value::Object(obj) => {
-                    // 递归合并对象
+                Value::Object(ref obj) => {
                     if property == "quotes" {
-                        // quotes 特殊处理
-                        self.merge_quotes(target, obj, epoch, delete_null);
+                        if self.merge_quotes(
+                            target,
+                            obj,
+                            epoch,
+                            delete_null,
+                            property_prototype,
+                            options,
+                            child_persist,
+                        ) {
+                            changed = true;
+                        }
                     } else {
-                        // 确保目标存在
+                        let existed = target.contains_key(property);
+                        if !existed {
+                            target.insert(
+                                property.clone(),
+                                default_object_by_branch(property_prototype, proto_branch),
+                            );
+                        }
                         let target_obj = target
                             .entry(property.clone())
                             .or_insert_with(|| Value::Object(serde_json::Map::new()));
-
+                        if !target_obj.is_object() {
+                            *target_obj = Value::Object(serde_json::Map::new());
+                        }
                         if let Value::Object(target_map) = target_obj {
-                            self.merge_object_map(target_map, obj, epoch, delete_null);
+                            let child_changed = self.merge_object_map(
+                                target_map,
+                                obj,
+                                epoch,
+                                delete_null,
+                                property_prototype,
+                                options,
+                                child_persist,
+                            );
+                            if child_changed {
+                                changed = true;
+                            } else if !existed && options.reduce_diff {
+                                target.remove(property);
+                            }
                         }
                     }
                 }
                 _ => {
-                    // 基本类型和数组直接赋值
-                    target.insert(property.clone(), value.clone());
+                    if options.reduce_diff && target.get(property) == Some(&transformed_value) {
+                        continue;
+                    }
+                    target.insert(property.clone(), transformed_value);
+                    changed = true;
                 }
             }
         }
 
-        // 设置 epoch
-        target.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        if changed || !options.reduce_diff {
+            target.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        }
+        changed
     }
 
     fn merge_object_map(
@@ -209,73 +331,160 @@ impl DataManager {
         source: &Map<String, Value>,
         epoch: i64,
         delete_null: bool,
-    ) {
+        prototype: Option<&Value>,
+        options: &MergeOptions,
+        persist_ctx: bool,
+    ) -> bool {
+        let mut changed = false;
         for (property, value) in source.iter() {
+            let (property_prototype, proto_branch) = resolve_child_prototype(prototype, property);
+            let transformed_value =
+                transform_value_by_prototype(value, property_prototype, proto_branch);
+            let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
+
             if value.is_null() {
-                if delete_null {
-                    target.remove(property);
+                if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
+                    continue;
+                }
+                if delete_null && target.remove(property).is_some() {
+                    changed = true;
                 }
                 continue;
             }
 
-            match value {
-                Value::String(s) if s == "NaN" || s == "-" => {
+            match transformed_value {
+                Value::String(ref s) if s == "NaN" || s == "-" => {
+                    if options.reduce_diff && target.get(property).is_some_and(|v| v.is_null()) {
+                        continue;
+                    }
                     target.insert(property.clone(), Value::Null);
+                    changed = true;
                 }
-                Value::Object(obj) => {
+                Value::Object(ref obj) => {
                     if property == "quotes" {
-                        self.merge_quotes_map(target, obj, epoch, delete_null);
+                        if self.merge_quotes_map(
+                            target,
+                            obj,
+                            epoch,
+                            delete_null,
+                            property_prototype,
+                            options,
+                            child_persist,
+                        ) {
+                            changed = true;
+                        }
                     } else {
+                        let existed = target.contains_key(property);
+                        if !existed {
+                            target.insert(
+                                property.clone(),
+                                default_object_by_branch(property_prototype, proto_branch),
+                            );
+                        }
                         let target_obj = target
                             .entry(property.clone())
                             .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        if !target_obj.is_object() {
+                            *target_obj = Value::Object(serde_json::Map::new());
+                        }
                         if let Value::Object(target_map) = target_obj {
-                            self.merge_object_map(target_map, obj, epoch, delete_null);
+                            let child_changed = self.merge_object_map(
+                                target_map,
+                                obj,
+                                epoch,
+                                delete_null,
+                                property_prototype,
+                                options,
+                                child_persist,
+                            );
+                            if child_changed {
+                                changed = true;
+                            } else if !existed && options.reduce_diff {
+                                target.remove(property);
+                            }
                         }
                     }
                 }
                 _ => {
-                    target.insert(property.clone(), value.clone());
+                    if options.reduce_diff && target.get(property) == Some(&transformed_value) {
+                        continue;
+                    }
+                    target.insert(property.clone(), transformed_value);
+                    changed = true;
                 }
             }
         }
 
-        target.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        if changed || !options.reduce_diff {
+            target.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        }
+        changed
     }
 
-    /// 特殊处理 quotes 对象
     fn merge_quotes(
         &self,
         target: &mut HashMap<String, Value>,
         quotes: &serde_json::Map<String, Value>,
         epoch: i64,
         delete_null: bool,
-    ) {
+        prototype: Option<&Value>,
+        options: &MergeOptions,
+        persist_ctx: bool,
+    ) -> bool {
+        let mut changed = false;
         let quotes_obj = target
             .entry("quotes".to_string())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
         if let Value::Object(quotes_map) = quotes_obj {
             for (symbol, quote_data) in quotes.iter() {
+                let (symbol_prototype, proto_branch) = resolve_child_prototype(prototype, symbol);
+                let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
                 if quote_data.is_null() {
-                    if delete_null {
-                        quotes_map.remove(symbol);
+                    if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
+                        continue;
+                    }
+                    if delete_null && quotes_map.remove(symbol).is_some() {
+                        changed = true;
                     }
                     continue;
                 }
 
                 if let Value::Object(quote_obj) = quote_data {
-                    // 确保目标存在
+                    let existed = quotes_map.contains_key(symbol);
+                    if !existed {
+                        quotes_map.insert(
+                            symbol.clone(),
+                            default_object_by_branch(symbol_prototype, proto_branch),
+                        );
+                    }
                     let target_quote = quotes_map
                         .entry(symbol.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !target_quote.is_object() {
+                        *target_quote = Value::Object(serde_json::Map::new());
+                    }
 
                     if let Value::Object(target_quote_map) = target_quote {
-                        self.merge_object_map(target_quote_map, quote_obj, epoch, delete_null);
+                        let child_changed = self.merge_object_map(
+                            target_quote_map,
+                            quote_obj,
+                            epoch,
+                            delete_null,
+                            symbol_prototype,
+                            options,
+                            child_persist,
+                        );
+                        if child_changed {
+                            changed = true;
+                        } else if !existed && options.reduce_diff {
+                            quotes_map.remove(symbol);
+                        }
                     }
                 }
             }
         }
+        changed
     }
 
     fn merge_quotes_map(
@@ -284,28 +493,181 @@ impl DataManager {
         quotes: &Map<String, Value>,
         epoch: i64,
         delete_null: bool,
-    ) {
+        prototype: Option<&Value>,
+        options: &MergeOptions,
+        persist_ctx: bool,
+    ) -> bool {
+        let mut changed = false;
         let quotes_obj = target
             .entry("quotes".to_string())
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
 
         if let Value::Object(quotes_map) = quotes_obj {
             for (symbol, quote_data) in quotes.iter() {
+                let (symbol_prototype, proto_branch) = resolve_child_prototype(prototype, symbol);
+                let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
                 if quote_data.is_null() {
-                    if delete_null {
-                        quotes_map.remove(symbol);
+                    if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
+                        continue;
+                    }
+                    if delete_null && quotes_map.remove(symbol).is_some() {
+                        changed = true;
                     }
                     continue;
                 }
 
                 if let Value::Object(quote_obj) = quote_data {
+                    let existed = quotes_map.contains_key(symbol);
+                    if !existed {
+                        quotes_map.insert(
+                            symbol.clone(),
+                            default_object_by_branch(symbol_prototype, proto_branch),
+                        );
+                    }
                     let target_quote = quotes_map
                         .entry(symbol.clone())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !target_quote.is_object() {
+                        *target_quote = Value::Object(serde_json::Map::new());
+                    }
 
                     if let Value::Object(target_quote_map) = target_quote {
-                        self.merge_object_map(target_quote_map, quote_obj, epoch, delete_null);
+                        let child_changed = self.merge_object_map(
+                            target_quote_map,
+                            quote_obj,
+                            epoch,
+                            delete_null,
+                            symbol_prototype,
+                            options,
+                            child_persist,
+                        );
+                        if child_changed {
+                            changed = true;
+                        } else if !existed && options.reduce_diff {
+                            quotes_map.remove(symbol);
+                        }
                     }
+                }
+            }
+        }
+        changed
+    }
+
+    fn apply_python_data_semantics(&self, root: &mut HashMap<String, Value>, epoch: i64) {
+        self.apply_quote_expire_rest_days(root, epoch);
+        self.apply_trade_derived_fields(root, epoch);
+    }
+
+    fn apply_quote_expire_rest_days(&self, root: &mut HashMap<String, Value>, epoch: i64) {
+        let now_ts = Utc::now().timestamp();
+        let Some(Value::Object(quotes)) = root.get_mut("quotes") else {
+            return;
+        };
+        for quote_val in quotes.values_mut() {
+            let Some(quote) = quote_val.as_object_mut() else {
+                continue;
+            };
+            let Some(expire_raw) = quote.get("expire_datetime").and_then(to_i64_any) else {
+                continue;
+            };
+            let expire_secs = normalize_ts_to_secs(expire_raw);
+            let days = (expire_secs / 86_400) - (now_ts / 86_400);
+            quote.insert("expire_rest_days".to_string(), Value::Number(days.into()));
+            quote.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        }
+    }
+
+    fn apply_trade_derived_fields(&self, root: &mut HashMap<String, Value>, epoch: i64) {
+        let Some(Value::Object(trade_map)) = root.get_mut("trade") else {
+            return;
+        };
+        for user_val in trade_map.values_mut() {
+            let Some(user_map) = user_val.as_object_mut() else {
+                continue;
+            };
+            self.apply_positions_derived(user_map, epoch);
+            self.apply_orders_derived(user_map, epoch);
+            self.apply_orders_trade_price(user_map, epoch);
+            user_map.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        }
+    }
+
+    fn apply_positions_derived(&self, user_map: &mut Map<String, Value>, epoch: i64) {
+        let Some(Value::Object(positions)) = user_map.get_mut("positions") else {
+            return;
+        };
+        for pos_val in positions.values_mut() {
+            let Some(pos) = pos_val.as_object_mut() else {
+                continue;
+            };
+            let long_his = pos.get("pos_long_his").and_then(to_i64_any).unwrap_or(0);
+            let long_today = pos.get("pos_long_today").and_then(to_i64_any).unwrap_or(0);
+            let short_his = pos.get("pos_short_his").and_then(to_i64_any).unwrap_or(0);
+            let short_today = pos.get("pos_short_today").and_then(to_i64_any).unwrap_or(0);
+            let pos_long = long_his + long_today;
+            let pos_short = short_his + short_today;
+            pos.insert("pos_long".to_string(), Value::Number(pos_long.into()));
+            pos.insert("pos_short".to_string(), Value::Number(pos_short.into()));
+            pos.insert("pos".to_string(), Value::Number((pos_long - pos_short).into()));
+            pos.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        }
+    }
+
+    fn apply_orders_derived(&self, user_map: &mut Map<String, Value>, epoch: i64) {
+        let Some(Value::Object(orders)) = user_map.get_mut("orders") else {
+            return;
+        };
+        for order_val in orders.values_mut() {
+            let Some(order) = order_val.as_object_mut() else {
+                continue;
+            };
+            let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
+            let exchange_order_id = order
+                .get("exchange_order_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let is_dead = status == "FINISHED";
+            let is_online = !exchange_order_id.is_empty() && status == "ALIVE";
+            let is_error = exchange_order_id.is_empty() && status == "FINISHED";
+            order.insert("is_dead".to_string(), Value::Bool(is_dead));
+            order.insert("is_online".to_string(), Value::Bool(is_online));
+            order.insert("is_error".to_string(), Value::Bool(is_error));
+            order.insert("_epoch".to_string(), Value::Number(epoch.into()));
+        }
+    }
+
+    fn apply_orders_trade_price(&self, user_map: &mut Map<String, Value>, epoch: i64) {
+        let trades_snapshot = user_map.get("trades").and_then(|v| v.as_object()).cloned();
+        let Some(trades_map) = trades_snapshot else {
+            return;
+        };
+        let Some(Value::Object(orders)) = user_map.get_mut("orders") else {
+            return;
+        };
+
+        for (order_id, order_val) in orders.iter_mut() {
+            let Some(order) = order_val.as_object_mut() else {
+                continue;
+            };
+            let mut sum_volume: i64 = 0;
+            let mut sum_amount: f64 = 0.0;
+            for trade_val in trades_map.values() {
+                let Some(trade) = trade_val.as_object() else {
+                    continue;
+                };
+                let trade_order_id = trade.get("order_id").and_then(|v| v.as_str()).unwrap_or("");
+                if trade_order_id != order_id {
+                    continue;
+                }
+                let volume = trade.get("volume").and_then(to_i64_any).unwrap_or(0);
+                let price = trade.get("price").and_then(to_f64_any).unwrap_or(0.0);
+                sum_volume += volume;
+                sum_amount += price * volume as f64;
+            }
+            if sum_volume > 0 {
+                if let Some(number) = serde_json::Number::from_f64(sum_amount / sum_volume as f64) {
+                    order.insert("trade_price".to_string(), Value::Number(number));
+                    order.insert("_epoch".to_string(), Value::Number(epoch.into()));
                 }
             }
         }
@@ -863,6 +1225,83 @@ impl DataManager {
     }
 }
 
+fn to_i64_any(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(num) => num
+            .as_i64()
+            .or_else(|| num.as_u64().map(|v| v as i64))
+            .or_else(|| num.as_f64().map(|v| v as i64)),
+        Value::String(s) => s.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn to_f64_any(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(num) => num.as_f64().or_else(|| num.as_i64().map(|v| v as f64)),
+        Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn normalize_ts_to_secs(ts: i64) -> i64 {
+    if ts.abs() >= 1_000_000_000_000_000_000 {
+        ts / 1_000_000_000
+    } else if ts.abs() >= 1_000_000_000_000 {
+        ts / 1_000
+    } else {
+        ts
+    }
+}
+
+fn resolve_child_prototype<'a>(
+    prototype: Option<&'a Value>,
+    key: &str,
+) -> (Option<&'a Value>, PrototypeBranch) {
+    let Some(Value::Object(proto_map)) = prototype else {
+        return (None, PrototypeBranch::None);
+    };
+    if let Some(p) = proto_map.get(key) {
+        return (Some(p), PrototypeBranch::Direct);
+    }
+    if let Some(p) = proto_map.get("*") {
+        return (Some(p), PrototypeBranch::Star);
+    }
+    if let Some(p) = proto_map.get("@") {
+        return (Some(p), PrototypeBranch::At);
+    }
+    if let Some(p) = proto_map.get("#") {
+        return (Some(p), PrototypeBranch::Hash);
+    }
+    (None, PrototypeBranch::None)
+}
+
+fn has_hash_prototype(prototype: Option<&Value>) -> bool {
+    matches!(prototype, Some(Value::Object(map)) if map.contains_key("#"))
+}
+
+fn transform_value_by_prototype(
+    value: &Value,
+    prototype: Option<&Value>,
+    branch: PrototypeBranch,
+) -> Value {
+    match (value, prototype, branch) {
+        (Value::String(_), Some(proto), PrototypeBranch::Direct) if !proto.is_string() => {
+            proto.clone()
+        }
+        _ => value.clone(),
+    }
+}
+
+fn default_object_by_branch(prototype: Option<&Value>, branch: PrototypeBranch) -> Value {
+    if matches!(branch, PrototypeBranch::At | PrototypeBranch::Hash)
+        && prototype.is_some_and(Value::is_object)
+    {
+        return prototype.cloned().unwrap_or_else(|| Value::Object(Map::new()));
+    }
+    Value::Object(Map::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,5 +1351,220 @@ mod tests {
 
         assert!(dm.is_changing(&["quotes", "SHFE.au2602"]));
         assert!(!dm.is_changing(&["quotes", "SHFE.ag2512"]));
+    }
+
+    #[test]
+    fn test_merge_persist_mode() {
+        let initial_data = HashMap::new();
+        let mut config = DataManagerConfig::default();
+        config.merge_semantics.persist = true;
+        config.merge_semantics.reduce_diff = true;
+        let dm = DataManager::new(initial_data, config);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": null
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
+        assert_eq!(quote.get("last_price"), Some(&json!(500.0)));
+    }
+
+    #[test]
+    fn test_merge_prototype_mode() {
+        let initial_data = HashMap::new();
+        let mut config = DataManagerConfig::default();
+        config.merge_semantics.prototype = Some(json!({
+            "quotes": {
+                "*": {
+                    "price_tick": 0.2
+                }
+            }
+        }));
+        let dm = DataManager::new(initial_data, config);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "price_tick": "invalid"
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
+        assert_eq!(quote.get("price_tick"), Some(&json!(0.2)));
+    }
+
+    #[test]
+    fn test_merge_reduce_diff_mode() {
+        let initial_data = HashMap::new();
+        let mut config = DataManagerConfig::default();
+        config.merge_semantics.reduce_diff = true;
+        let dm = DataManager::new(initial_data, config);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        assert!(!dm.is_changing(&["quotes", "SHFE.au2602"]));
+    }
+
+    #[test]
+    fn test_merge_prototype_at_branch_default_path() {
+        let initial_data = HashMap::new();
+        let mut config = DataManagerConfig::default();
+        config.merge_semantics.prototype = Some(json!({
+            "quotes": {
+                "@": {
+                    "ins_class": "FUTURE",
+                    "price_tick": 0.2
+                }
+            }
+        }));
+        let dm = DataManager::new(initial_data, config);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
+        assert_eq!(quote.get("ins_class"), Some(&json!("FUTURE")));
+        assert_eq!(quote.get("price_tick"), Some(&json!(0.2)));
+        assert_eq!(quote.get("last_price"), Some(&json!(500.0)));
+    }
+
+    #[test]
+    fn test_merge_prototype_hash_branch_persist_with_reduce_diff() {
+        let initial_data = HashMap::new();
+        let mut config = DataManagerConfig::default();
+        config.merge_semantics.reduce_diff = true;
+        config.merge_semantics.prototype = Some(json!({
+            "quotes": {
+                "#": {
+                    "price_tick": 0.2
+                }
+            }
+        }));
+        let dm = DataManager::new(initial_data, config);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": null
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
+        assert_eq!(quote.get("last_price"), Some(&json!(500.0)));
+    }
+
+    #[test]
+    fn test_merge_prototype_hash_branch_delete_without_reduce_diff() {
+        let initial_data = HashMap::new();
+        let mut config = DataManagerConfig::default();
+        config.merge_semantics.reduce_diff = false;
+        config.merge_semantics.prototype = Some(json!({
+            "quotes": {
+                "#": {
+                    "price_tick": 0.2
+                }
+            }
+        }));
+        let dm = DataManager::new(initial_data, config);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": null
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
+        assert!(quote.get("last_price").is_none());
     }
 }

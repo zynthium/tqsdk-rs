@@ -155,6 +155,7 @@ impl ClientBuilder {
         let dm_config = DataManagerConfig {
             default_view_width: self.config.view_width,
             enable_auto_cleanup: true,
+            ..DataManagerConfig::default()
         };
         let initial_data = HashMap::new();
         let dm = Arc::new(DataManager::new(initial_data, dm_config));
