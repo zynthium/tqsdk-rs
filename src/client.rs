@@ -689,6 +689,69 @@ impl Client {
             .await
     }
 
+    pub async fn query_atm_options(
+        &self,
+        underlying_symbol: &str,
+        underlying_price: f64,
+        price_level: &[i32],
+        option_class: &str,
+        exercise_year: Option<i32>,
+        exercise_month: Option<i32>,
+        has_a: Option<bool>,
+    ) -> Result<Vec<Option<String>>> {
+        self.ins()?
+            .query_atm_options(
+                underlying_symbol,
+                underlying_price,
+                price_level,
+                option_class,
+                exercise_year,
+                exercise_month,
+                has_a,
+            )
+            .await
+    }
+
+    pub async fn query_all_level_options(
+        &self,
+        underlying_symbol: &str,
+        underlying_price: f64,
+        option_class: &str,
+        exercise_year: Option<i32>,
+        exercise_month: Option<i32>,
+        has_a: Option<bool>,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+        self.ins()?
+            .query_all_level_options(
+                underlying_symbol,
+                underlying_price,
+                option_class,
+                exercise_year,
+                exercise_month,
+                has_a,
+            )
+            .await
+    }
+
+    pub async fn query_all_level_finance_options(
+        &self,
+        underlying_symbol: &str,
+        underlying_price: f64,
+        option_class: &str,
+        nearbys: &[i32],
+        has_a: Option<bool>,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+        self.ins()?
+            .query_all_level_finance_options(
+                underlying_symbol,
+                underlying_price,
+                option_class,
+                nearbys,
+                has_a,
+            )
+            .await
+    }
+
     pub async fn query_symbol_info(&self, symbols: &[&str]) -> Result<Vec<serde_json::Value>> {
         self.ins()?.query_symbol_info(symbols).await
     }

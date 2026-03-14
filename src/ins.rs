@@ -15,6 +15,7 @@ use chrono::{Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
 use chrono::Duration as ChronoDuration;
 use reqwest::Client;
 use serde_json::{json, Map, Value};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::time::{Duration, Instant, MissedTickBehavior};
@@ -236,6 +237,252 @@ fn parse_query_options_result(
         }
     }
     options
+}
+
+#[derive(Debug, Clone)]
+struct OptionNode {
+    instrument_id: String,
+    english_name: String,
+    call_or_put: String,
+    strike_price: f64,
+    expired: bool,
+    last_exercise_datetime: i64,
+    exercise_year: i32,
+    exercise_month: i32,
+}
+
+fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
+    let mut options = Vec::new();
+    if let Some(result_obj) = res.get("result") {
+        if let Some(arr) = result_obj.get("multi_symbol_info").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(der) = item.get("derivatives") {
+                    if let Some(edges) = der.get("edges").and_then(|v| v.as_array()) {
+                        for edge in edges {
+                            let Some(node) = edge.get("node").and_then(|v| v.as_object()) else {
+                                continue;
+                            };
+                            let Some(instrument_id) =
+                                node.get("instrument_id").and_then(|v| v.as_str())
+                            else {
+                                continue;
+                            };
+                            let Some(call_or_put) =
+                                node.get("call_or_put").and_then(|v| v.as_str())
+                            else {
+                                continue;
+                            };
+                            let Some(strike_price) =
+                                node.get("strike_price").and_then(|v| v.as_f64())
+                            else {
+                                continue;
+                            };
+                            let expired = node
+                                .get("expired")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let Some(ts) = node.get("last_exercise_datetime").and_then(|v| v.as_i64())
+                            else {
+                                continue;
+                            };
+                            let english_name = node
+                                .get("english_name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let dt = chrono::DateTime::<Utc>::from_timestamp(
+                                ts / 1_000_000_000,
+                                (ts % 1_000_000_000) as u32,
+                            )
+                            .unwrap_or_else(|| chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+                            options.push(OptionNode {
+                                instrument_id: instrument_id.to_string(),
+                                english_name,
+                                call_or_put: call_or_put.to_string(),
+                                strike_price,
+                                expired,
+                                last_exercise_datetime: ts,
+                                exercise_year: dt.year(),
+                                exercise_month: dt.month() as i32,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    options
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BisectPriority {
+    Left,
+    Right,
+}
+
+fn bisect_value_index(a: &[f64], x: f64, priority: BisectPriority) -> usize {
+    let insert_index = a.partition_point(|v| *v <= x);
+    if 0 < insert_index && insert_index < a.len() {
+        let left_dis = x - a[insert_index - 1];
+        let right_dis = a[insert_index] - x;
+        if left_dis == right_dis {
+            match priority {
+                BisectPriority::Left => insert_index - 1,
+                BisectPriority::Right => insert_index,
+            }
+        } else if left_dis < right_dis {
+            insert_index - 1
+        } else {
+            insert_index
+        }
+    } else {
+        if insert_index == 0 {
+            0
+        } else {
+            a.len().saturating_sub(1)
+        }
+    }
+}
+
+fn validate_option_class(option_class: &str) -> Result<()> {
+    if option_class != "CALL" && option_class != "PUT" {
+        return Err(TqError::InvalidParameter(
+            "option_class 参数错误，option_class 必须是 'CALL' 或者 'PUT'".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_price_level(price_level: &[i32]) -> Result<()> {
+    if !price_level.iter().all(|pl| (-100..=100).contains(pl)) {
+        return Err(TqError::InvalidParameter(
+            "price_level 必须为 -100 ~ 100 之间的整数".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_finance_underlying(underlying_symbol: &str) -> Result<()> {
+    let allowed = [
+        "SSE.000300",
+        "SSE.510050",
+        "SSE.510300",
+        "SZSE.159919",
+        "SZSE.159915",
+        "SZSE.159922",
+        "SSE.510500",
+        "SSE.000016",
+        "SSE.000852",
+    ];
+    if !allowed.contains(&underlying_symbol) {
+        return Err(TqError::InvalidParameter("不支持的标的合约".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_finance_nearbys(underlying_symbol: &str, nearbys: &[i32]) -> Result<()> {
+    let is_index = matches!(underlying_symbol, "SSE.000300" | "SSE.000852" | "SSE.000016");
+    if is_index {
+        if nearbys.iter().any(|v| !matches!(v, 0 | 1 | 2 | 3 | 4 | 5)) {
+            return Err(TqError::InvalidParameter(format!(
+                "股指期权标的为：{}，exercise_date 参数应该是在 [0, 1, 2, 3, 4, 5] 之间。",
+                underlying_symbol
+            )));
+        }
+    } else if nearbys.iter().any(|v| !matches!(v, 0 | 1 | 2 | 3)) {
+        return Err(TqError::InvalidParameter(format!(
+            "ETF 期权标的为：{}，exercise_date 参数应该是在 [0, 1, 2, 3] 之间。",
+            underlying_symbol
+        )));
+    }
+    Ok(())
+}
+
+fn filter_option_nodes(
+    options: Vec<OptionNode>,
+    option_class: Option<&str>,
+    exercise_year: Option<i32>,
+    exercise_month: Option<i32>,
+    has_a: Option<bool>,
+    nearbys: Option<&[i32]>,
+) -> Vec<OptionNode> {
+    let mut filtered: Vec<OptionNode> = options
+        .into_iter()
+        .filter(|o| {
+            let mut ok = true;
+            if let Some(cls) = option_class {
+                ok = ok && o.call_or_put == cls;
+            }
+            if let Some(a) = has_a {
+                let cnt = o.english_name.matches('A').count();
+                ok = ok && ((a && cnt > 0) || (!a && cnt == 0));
+            }
+            if let Some(y) = exercise_year {
+                ok = ok && o.exercise_year == y;
+            }
+            if let Some(m) = exercise_month {
+                ok = ok && o.exercise_month == m;
+            }
+            ok
+        })
+        .collect();
+
+    if let Some(nearbys) = nearbys {
+        filtered.retain(|o| !o.expired);
+        let mut uniq: Vec<i64> = filtered.iter().map(|o| o.last_exercise_datetime).collect();
+        uniq.sort();
+        uniq.dedup();
+        let selected: HashSet<i64> = nearbys
+            .iter()
+            .filter_map(|idx| uniq.get(*idx as usize).copied())
+            .collect();
+        filtered.retain(|o| selected.contains(&o.last_exercise_datetime));
+    }
+
+    filtered
+}
+
+fn sort_options_and_get_atm_index(
+    options: &mut Vec<OptionNode>,
+    underlying_price: f64,
+    option_class: &str,
+) -> Result<usize> {
+    if options.is_empty() {
+        return Err(TqError::InvalidParameter("options 为空".to_string()));
+    }
+    options.sort_by(|a, b| a.last_exercise_datetime.cmp(&b.last_exercise_datetime));
+    options.sort_by(|a, b| {
+        a.strike_price
+            .partial_cmp(&b.strike_price)
+            .unwrap_or(Ordering::Equal)
+    });
+
+    let strikes: Vec<f64> = options.iter().map(|o| o.strike_price).collect();
+    let priority = if option_class == "CALL" {
+        BisectPriority::Right
+    } else {
+        BisectPriority::Left
+    };
+    let mid_idx = bisect_value_index(&strikes, underlying_price, priority);
+    let mid_strike = strikes[mid_idx];
+    let mid_instrument = options
+        .iter()
+        .find(|o| o.strike_price == mid_strike)
+        .map(|o| o.instrument_id.clone())
+        .ok_or_else(|| TqError::InternalError("未找到平值期权".to_string()))?;
+
+    if option_class == "PUT" {
+        options.sort_by(|a, b| {
+            b.strike_price
+                .partial_cmp(&a.strike_price)
+                .unwrap_or(Ordering::Equal)
+        });
+    }
+
+    options
+        .iter()
+        .position(|o| o.instrument_id == mid_instrument)
+        .ok_or_else(|| TqError::InternalError("未找到平值期权下标".to_string()))
 }
 
 fn timestamp_nano_to_seconds(ts: &Value) -> Option<i64> {
@@ -851,6 +1098,254 @@ impl InsAPI {
             expired,
             has_a,
         ))
+    }
+
+    pub async fn query_atm_options(
+        &self,
+        underlying_symbol: &str,
+        underlying_price: f64,
+        price_level: &[i32],
+        option_class: &str,
+        exercise_year: Option<i32>,
+        exercise_month: Option<i32>,
+        has_a: Option<bool>,
+    ) -> Result<Vec<Option<String>>> {
+        if !self.stock {
+            return Err(TqError::InvalidParameter(
+                "期货行情系统(_stock = False)不支持当前接口调用".to_string(),
+            ));
+        }
+        if underlying_symbol.is_empty() {
+            return Err(TqError::InvalidParameter(
+                "underlying_symbol 不能为空字符串。".to_string(),
+            ));
+        }
+        validate_option_class(option_class)?;
+        validate_price_level(price_level)?;
+
+        let query = r#"query($instrument_id:[String], $derivative_class:[Class]){
+  multi_symbol_info(instrument_id: $instrument_id) {
+    ... on basic {
+      instrument_id
+      derivatives(class: $derivative_class) {
+        edges {
+          node {
+            ... on basic {
+              instrument_id
+              english_name
+            }
+            ... on option {
+              expired
+              last_exercise_datetime
+              strike_price
+              call_or_put
+            }
+          }
+        }
+      }
+    }
+  }
+}"#;
+        let mut vars = Map::new();
+        vars.insert(
+            "instrument_id".to_string(),
+            Value::Array(vec![json!(underlying_symbol)]),
+        );
+        vars.insert("derivative_class".to_string(), json!(["OPTION"]));
+
+        let res = self
+            .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
+            .await?;
+        let nodes = parse_option_nodes(&res);
+        let mut nodes = filter_option_nodes(
+            nodes,
+            Some(option_class),
+            exercise_year,
+            exercise_month,
+            has_a,
+            None,
+        );
+
+        if nodes.is_empty() {
+            return Ok(price_level.iter().map(|_| None).collect());
+        }
+
+        let atm_index = sort_options_and_get_atm_index(&mut nodes, underlying_price, option_class)?;
+        let mut result = Vec::with_capacity(price_level.len());
+        for pl in price_level {
+            let idx = atm_index as i64 - *pl as i64;
+            if idx >= 0 && (idx as usize) < nodes.len() {
+                result.push(Some(nodes[idx as usize].instrument_id.clone()));
+            } else {
+                result.push(None);
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn query_all_level_options(
+        &self,
+        underlying_symbol: &str,
+        underlying_price: f64,
+        option_class: &str,
+        exercise_year: Option<i32>,
+        exercise_month: Option<i32>,
+        has_a: Option<bool>,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+        if !self.stock {
+            return Err(TqError::InvalidParameter(
+                "期货行情系统(_stock = False)不支持当前接口调用".to_string(),
+            ));
+        }
+        if underlying_symbol.is_empty() {
+            return Err(TqError::InvalidParameter(
+                "underlying_symbol 不能为空字符串。".to_string(),
+            ));
+        }
+        validate_option_class(option_class)?;
+
+        let query = r#"query($instrument_id:[String], $derivative_class:[Class]){
+  multi_symbol_info(instrument_id: $instrument_id) {
+    ... on basic {
+      instrument_id
+      derivatives(class: $derivative_class) {
+        edges {
+          node {
+            ... on basic {
+              instrument_id
+              english_name
+            }
+            ... on option {
+              expired
+              last_exercise_datetime
+              strike_price
+              call_or_put
+            }
+          }
+        }
+      }
+    }
+  }
+}"#;
+        let mut vars = Map::new();
+        vars.insert(
+            "instrument_id".to_string(),
+            Value::Array(vec![json!(underlying_symbol)]),
+        );
+        vars.insert("derivative_class".to_string(), json!(["OPTION"]));
+
+        let res = self
+            .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
+            .await?;
+        let nodes = parse_option_nodes(&res);
+        let mut nodes = filter_option_nodes(
+            nodes,
+            Some(option_class),
+            exercise_year,
+            exercise_month,
+            has_a,
+            None,
+        );
+
+        if nodes.is_empty() {
+            return Ok((vec![], vec![], vec![]));
+        }
+
+        let atm_index = sort_options_and_get_atm_index(&mut nodes, underlying_price, option_class)?;
+
+        let in_money = nodes[..atm_index]
+            .iter()
+            .map(|o| o.instrument_id.clone())
+            .collect::<Vec<_>>();
+        let at_money = vec![nodes[atm_index].instrument_id.clone()];
+        let out_money = nodes[atm_index + 1..]
+            .iter()
+            .map(|o| o.instrument_id.clone())
+            .collect::<Vec<_>>();
+        Ok((in_money, at_money, out_money))
+    }
+
+    pub async fn query_all_level_finance_options(
+        &self,
+        underlying_symbol: &str,
+        underlying_price: f64,
+        option_class: &str,
+        nearbys: &[i32],
+        has_a: Option<bool>,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
+        if !self.stock {
+            return Err(TqError::InvalidParameter(
+                "期货行情系统(_stock = False)不支持当前接口调用".to_string(),
+            ));
+        }
+        if underlying_symbol.is_empty() {
+            return Err(TqError::InvalidParameter(
+                "underlying_symbol 不能为空字符串。".to_string(),
+            ));
+        }
+        validate_finance_underlying(underlying_symbol)?;
+        validate_option_class(option_class)?;
+        validate_finance_nearbys(underlying_symbol, nearbys)?;
+
+        let query = r#"query($instrument_id:[String], $derivative_class:[Class]){
+  multi_symbol_info(instrument_id: $instrument_id) {
+    ... on basic {
+      instrument_id
+      derivatives(class: $derivative_class) {
+        edges {
+          node {
+            ... on basic {
+              instrument_id
+              english_name
+            }
+            ... on option {
+              expired
+              last_exercise_datetime
+              strike_price
+              call_or_put
+            }
+          }
+        }
+      }
+    }
+  }
+}"#;
+        let mut vars = Map::new();
+        vars.insert(
+            "instrument_id".to_string(),
+            Value::Array(vec![json!(underlying_symbol)]),
+        );
+        vars.insert("derivative_class".to_string(), json!(["OPTION"]));
+
+        let res = self
+            .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
+            .await?;
+        let nodes = parse_option_nodes(&res);
+        let mut nodes = filter_option_nodes(
+            nodes,
+            Some(option_class),
+            None,
+            None,
+            has_a,
+            Some(nearbys),
+        );
+
+        if nodes.is_empty() {
+            return Ok((vec![], vec![], vec![]));
+        }
+
+        let atm_index = sort_options_and_get_atm_index(&mut nodes, underlying_price, option_class)?;
+
+        let in_money = nodes[..atm_index]
+            .iter()
+            .map(|o| o.instrument_id.clone())
+            .collect::<Vec<_>>();
+        let at_money = vec![nodes[atm_index].instrument_id.clone()];
+        let out_money = nodes[atm_index + 1..]
+            .iter()
+            .map(|o| o.instrument_id.clone())
+            .collect::<Vec<_>>();
+        Ok((in_money, at_money, out_money))
     }
 
     /// 查询合约基础信息
@@ -1704,6 +2199,118 @@ mod tests {
             Some(true),
         );
         assert_eq!(has_a, vec!["SHFE.cu2405C3000"]);
+    }
+
+    fn make_option(
+        instrument_id: &str,
+        strike_price: f64,
+        call_or_put: &str,
+        last_exercise_datetime: i64,
+        english_name: &str,
+        expired: bool,
+    ) -> OptionNode {
+        let dt = chrono::DateTime::<Utc>::from_timestamp(
+            last_exercise_datetime / 1_000_000_000,
+            (last_exercise_datetime % 1_000_000_000) as u32,
+        )
+        .unwrap_or_else(|| chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        OptionNode {
+            instrument_id: instrument_id.to_string(),
+            english_name: english_name.to_string(),
+            call_or_put: call_or_put.to_string(),
+            strike_price,
+            expired,
+            last_exercise_datetime,
+            exercise_year: dt.year(),
+            exercise_month: dt.month() as i32,
+        }
+    }
+
+    #[test]
+    fn bisect_value_index_tie_priority() {
+        let a = vec![100.0, 110.0];
+        assert_eq!(
+            a[bisect_value_index(&a, 105.0, BisectPriority::Right)],
+            110.0
+        );
+        assert_eq!(
+            a[bisect_value_index(&a, 105.0, BisectPriority::Left)],
+            100.0
+        );
+    }
+
+    #[test]
+    fn atm_equal_distance_rule_call_put() -> Result<()> {
+        let ts = Utc
+            .with_ymd_and_hms(2024, 12, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp()
+            * 1_000_000_000;
+
+        let mut calls = vec![
+            make_option("C90", 90.0, "CALL", ts, "", false),
+            make_option("C110", 110.0, "CALL", ts, "", false),
+        ];
+        let idx = sort_options_and_get_atm_index(&mut calls, 100.0, "CALL")?;
+        assert_eq!(calls[idx].instrument_id, "C110");
+
+        let mut puts = vec![
+            make_option("P90", 90.0, "PUT", ts, "", false),
+            make_option("P110", 110.0, "PUT", ts, "", false),
+        ];
+        let idx = sort_options_and_get_atm_index(&mut puts, 100.0, "PUT")?;
+        assert_eq!(puts[idx].instrument_id, "P90");
+        Ok(())
+    }
+
+    #[test]
+    fn price_level_validation_rejects_out_of_range() {
+        let err = validate_price_level(&[-101]).unwrap_err();
+        assert!(matches!(err, TqError::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn finance_underlying_validation() {
+        let err = validate_finance_underlying("SHFE.au2405").unwrap_err();
+        assert!(matches!(err, TqError::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn finance_nearbys_validation_matches_python_ranges() {
+        validate_finance_nearbys("SSE.000300", &[0, 5]).unwrap();
+        let err = validate_finance_nearbys("SSE.000300", &[6]).unwrap_err();
+        assert!(matches!(err, TqError::InvalidParameter(_)));
+
+        validate_finance_nearbys("SSE.510300", &[0, 3]).unwrap();
+        let err = validate_finance_nearbys("SSE.510300", &[4]).unwrap_err();
+        assert!(matches!(err, TqError::InvalidParameter(_)));
+    }
+
+    #[test]
+    fn filter_nearbys_keeps_only_selected_expiries() {
+        let ts1 = Utc
+            .with_ymd_and_hms(2024, 11, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp()
+            * 1_000_000_000;
+        let ts2 = Utc
+            .with_ymd_and_hms(2024, 12, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp()
+            * 1_000_000_000;
+
+        let opts = vec![
+            make_option("A1", 100.0, "CALL", ts1, "", false),
+            make_option("A2", 110.0, "CALL", ts1, "", false),
+            make_option("B1", 100.0, "CALL", ts2, "", false),
+            make_option("B2", 110.0, "CALL", ts2, "", false),
+        ];
+        let filtered = filter_option_nodes(opts, Some("CALL"), None, None, None, Some(&[1]));
+        let ids: HashSet<String> = filtered.into_iter().map(|o| o.instrument_id).collect();
+        assert!(ids.contains("B1"));
+        assert!(ids.contains("B2"));
+        assert!(!ids.contains("A1"));
+        assert!(!ids.contains("A2"));
     }
 
     #[test]
