@@ -286,6 +286,7 @@ impl Client {
         let ws_config = WebSocketConfig {
             headers: auth.base_header(),
             auto_peek: false,
+            quote_subscribe_only_add: true,
             ..Default::default()
         };
 

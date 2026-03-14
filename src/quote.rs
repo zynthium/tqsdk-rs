@@ -11,12 +11,14 @@ use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 type QuoteCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<Quote>) + Send + Sync>>>>;
 type QuoteErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
 
 /// Quote 订阅
 pub struct QuoteSubscription {
+    id: String,
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     symbols: Arc<RwLock<HashSet<String>>>,
@@ -40,6 +42,7 @@ impl QuoteSubscription {
         let (quote_tx, quote_rx) = unbounded();
 
         QuoteSubscription {
+            id: Uuid::new_v4().to_string(),
             dm,
             ws,
             symbols: Arc::new(RwLock::new(symbols)),
@@ -103,21 +106,14 @@ impl QuoteSubscription {
 
     /// 发送订阅请求
     async fn send_subscription(&self) -> Result<()> {
-        let symbols = self.symbols.read().await;
-        let ins_list: Vec<String> = symbols.iter().cloned().collect();
-        let ins_list_str = ins_list.join(",");
-        drop(symbols);
-
-        debug!("发送 Quote 订阅请求: {} 个合约", ins_list.len());
-        debug!("订阅合约列表: {}", ins_list_str);
-
-        let req = serde_json::json!({
-            "aid": "subscribe_quote",
-            "ins_list": ins_list_str
-        });
-
-        self.ws.send(&req).await?;
-        Ok(())
+        let ins_list: HashSet<String> = {
+            let symbols = self.symbols.read().await;
+            symbols.iter().cloned().collect()
+        };
+        debug!("同步 Quote 订阅请求: {} 个合约", ins_list.len());
+        self.ws
+            .update_quote_subscription(&self.id, ins_list)
+            .await
     }
 
     /// 获取 Quote 更新通道（克隆接收端）
@@ -212,13 +208,36 @@ impl QuoteSubscription {
 
     /// 关闭订阅
     pub async fn close(&self) -> Result<()> {
-        let mut running = self.running.write().await;
-        if !*running {
-            return Ok(());
+        {
+            let mut running = self.running.write().await;
+            *running = false;
         }
-        *running = false;
 
         info!("关闭 Quote 订阅");
-        Ok(())
+        self.ws.remove_quote_subscription(&self.id).await
+    }
+}
+
+impl Drop for QuoteSubscription {
+    fn drop(&mut self) {
+        info!("销毁 Quote 订阅: id={}", self.id);
+        let ws = Arc::clone(&self.ws);
+        let id = self.id.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = ws.remove_quote_subscription(&id).await;
+            });
+        } else {
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    rt.block_on(async move {
+                        let _ = ws.remove_quote_subscription(&id).await;
+                    });
+                }
+            });
+        }
     }
 }

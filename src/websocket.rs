@@ -61,6 +61,7 @@ pub struct WebSocketConfig {
     pub auto_peek: bool,
     pub auto_peek_interval: Duration,
     pub peek_timeout: Option<Duration>,
+    pub quote_subscribe_only_add: bool,
 }
 
 impl Default for WebSocketConfig {
@@ -72,6 +73,7 @@ impl Default for WebSocketConfig {
             auto_peek: true,
             auto_peek_interval: Duration::ZERO,
             peek_timeout: None,
+            quote_subscribe_only_add: false,
         }
     }
 }
@@ -1100,7 +1102,9 @@ fn is_trade_reconnect_complete(
 pub struct TqQuoteWebsocket {
     base: Arc<TqWebsocket>,
     _dm: Arc<DataManager>,
+    quote_subscribe_only_add: bool,
     subscribe_quote: Arc<RwLock<Option<Value>>>,
+    quote_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     charts: Arc<RwLock<std::collections::HashMap<String, Value>>>,
     pending_ins_query: Arc<RwLock<std::collections::HashMap<String, Value>>>,
     login_ready: Arc<std::sync::atomic::AtomicBool>,
@@ -1109,9 +1113,12 @@ pub struct TqQuoteWebsocket {
 impl TqQuoteWebsocket {
     /// 创建行情 WebSocket
     pub fn new(url: String, dm: Arc<DataManager>, config: WebSocketConfig) -> Self {
+        let quote_subscribe_only_add = config.quote_subscribe_only_add;
         let base = Arc::new(TqWebsocket::new(url, config));
         let dm_clone = Arc::clone(&dm);
         let subscribe_quote: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
+        let quote_subscriptions: Arc<RwLock<HashMap<String, HashSet<String>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
         let charts: Arc<RwLock<std::collections::HashMap<String, Value>>> =
             Arc::new(RwLock::new(std::collections::HashMap::new()));
         let pending_ins_query: Arc<RwLock<std::collections::HashMap<String, Value>>> =
@@ -1328,7 +1335,9 @@ impl TqQuoteWebsocket {
         TqQuoteWebsocket {
             base,
             _dm: dm_clone,
+            quote_subscribe_only_add,
             subscribe_quote,
+            quote_subscriptions,
             charts,
             pending_ins_query,
             login_ready,
@@ -1340,13 +1349,78 @@ impl TqQuoteWebsocket {
         self.base.init(is_reconnection).await
     }
 
+    pub async fn update_quote_subscription(
+        &self,
+        subscription_id: &str,
+        symbols: HashSet<String>,
+    ) -> Result<()> {
+        {
+            let mut guard = self.quote_subscriptions.write().unwrap();
+            guard.insert(subscription_id.to_string(), symbols);
+        }
+        self.sync_quote_subscriptions().await
+    }
+
+    pub async fn remove_quote_subscription(&self, subscription_id: &str) -> Result<()> {
+        {
+            let mut guard = self.quote_subscriptions.write().unwrap();
+            guard.remove(subscription_id);
+        }
+        self.sync_quote_subscriptions().await
+    }
+
+    async fn sync_quote_subscriptions(&self) -> Result<()> {
+        let mut all_symbols: Vec<String> = {
+            let guard = self.quote_subscriptions.read().unwrap();
+            guard
+                .values()
+                .flat_map(|symbols| symbols.iter().cloned())
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect()
+        };
+        all_symbols.sort();
+        let req = json!({
+            "aid": "subscribe_quote",
+            "ins_list": all_symbols.join(",")
+        });
+        self.send(&req).await
+    }
+
     /// 发送消息（重写以记录订阅和图表请求）
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
-        let value = serde_json::to_value(obj)?;
+        let mut value = serde_json::to_value(obj)?;
 
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
             match aid {
                 "subscribe_quote" => {
+                    if self.quote_subscribe_only_add {
+                        let old_ins_list = self
+                            .subscribe_quote
+                            .read()
+                            .unwrap()
+                            .as_ref()
+                            .and_then(|v| v.get("ins_list"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let new_ins_list = value
+                            .get("ins_list")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mut merged = old_ins_list
+                            .split(',')
+                            .chain(new_ins_list.split(','))
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        merged.sort();
+                        value["ins_list"] = Value::String(merged.join(","));
+                    }
                     // 检查是否需要更新订阅
                     let should_send = {
                         let mut subscribe_guard = self.subscribe_quote.write().unwrap();
@@ -1387,15 +1461,22 @@ impl TqQuoteWebsocket {
                     if let Some(chart_id) = value.get("chart_id").and_then(|v| v.as_str()) {
                         {
                             let mut charts_guard = self.charts.write().unwrap();
-
-                            if let Some(view_width) = value.get("view_width").and_then(|v| v.as_f64()) {
-                                if view_width == 0.0 {
-                                    trace!("删除图表: {}", chart_id);
-                                    charts_guard.remove(chart_id);
-                                } else {
-                                    trace!("保存图表请求: {}", chart_id);
-                                    charts_guard.insert(chart_id.to_string(), value.clone());
-                                }
+                            let empty_ins_list = value
+                                .get("ins_list")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.trim().is_empty())
+                                .unwrap_or(false);
+                            let width_is_zero = value
+                                .get("view_width")
+                                .and_then(|v| v.as_f64())
+                                .map(|w| w == 0.0)
+                                .unwrap_or(false);
+                            if empty_ins_list || width_is_zero {
+                                trace!("删除图表: {}", chart_id);
+                                charts_guard.remove(chart_id);
+                            } else {
+                                trace!("保存图表请求: {}", chart_id);
+                                charts_guard.insert(chart_id.to_string(), value.clone());
                             }
                         }
 

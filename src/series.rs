@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use futures::Stream;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
 use tracing::{info, trace, warn};
@@ -218,6 +219,7 @@ pub struct SeriesSubscription {
     on_error: SeriesErrorCallback,
 
     running: Arc<RwLock<bool>>,
+    unsubscribe_sent: Arc<AtomicBool>,
 }
 
 impl SeriesSubscription {
@@ -246,6 +248,7 @@ impl SeriesSubscription {
             on_bar_update: Arc::new(RwLock::new(None)),
             on_error: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
+            unsubscribe_sent: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -316,6 +319,7 @@ impl SeriesSubscription {
         }
         *running = true;
         drop(running);
+        self.unsubscribe_sent.store(false, Ordering::SeqCst);
 
         info!("启动 Series 订阅: {}", self.options.chart_id);
 
@@ -337,7 +341,25 @@ impl SeriesSubscription {
         *self.chart_ready.write().await = false;
         *self.has_chart_sync.write().await = false;
         *self.running.write().await = true;
+        self.unsubscribe_sent.store(false, Ordering::SeqCst);
         self.send_set_chart().await
+    }
+
+    fn build_cancel_chart_request(&self) -> serde_json::Value {
+        let view_width = if self.options.view_width == 0 {
+            1
+        } else if self.options.view_width > 10000 {
+            10000
+        } else {
+            self.options.view_width
+        };
+        serde_json::json!({
+            "aid": "set_chart",
+            "chart_id": self.options.chart_id,
+            "ins_list": "",
+            "duration": self.options.duration,
+            "view_width": view_width
+        })
     }
 
     /// 启动监听数据更新
@@ -517,25 +539,50 @@ impl SeriesSubscription {
 
     /// 关闭订阅
     pub async fn close(&self) -> Result<()> {
-        let mut running = self.running.write().await;
-        if !*running {
-            return Ok(());
+        {
+            let mut running = self.running.write().await;
+            *running = false;
         }
-        *running = false;
 
         info!("关闭 Series 订阅: {}", self.options.chart_id);
 
-        // 发送取消请求
-        let cancel_req = serde_json::json!({
-            "aid": "set_chart",
-            "chart_id": self.options.chart_id,
-            "ins_list": "",
-            "duration": self.options.duration,
-            "view_width": 2000
-        });
+        if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
 
+        let cancel_req = self.build_cancel_chart_request();
         self.ws.send(&cancel_req).await?;
         Ok(())
+    }
+}
+
+impl Drop for SeriesSubscription {
+    fn drop(&mut self) {
+        if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        info!(
+            "销毁 Series 订阅: chart_id={}, symbols={:?}, duration={}",
+            self.options.chart_id, self.options.symbols, self.options.duration
+        );
+        let ws = Arc::clone(&self.ws);
+        let cancel_req = self.build_cancel_chart_request();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = ws.send(&cancel_req).await;
+            });
+        } else {
+            std::thread::spawn(move || {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    rt.block_on(async move {
+                        let _ = ws.send(&cancel_req).await;
+                    });
+                }
+            });
+        }
     }
 }
 
