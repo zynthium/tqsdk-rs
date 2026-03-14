@@ -10,14 +10,22 @@ use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
+use crate::utils::fetch_json_with_headers;
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
 use crate::types::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use async_channel::Receiver;
 use chrono::NaiveDate;
-use serde_json::json;
+use reqwest::header::HeaderMap;
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+pub const TQ_INS_URL_DEFAULT: &str = "https://openmd.shinnytech.com/t/md/symbols/latest.json";
+
+fn default_ins_url() -> String {
+    std::env::var("TQ_INS_URL").unwrap_or_else(|_| TQ_INS_URL_DEFAULT.to_string())
+}
 
 /// 客户端配置
 #[derive(Debug, Clone)]
@@ -29,6 +37,7 @@ pub struct ClientConfig {
     /// 开发模式
     pub development: bool,
     pub stock: bool,
+    pub ins_url: String,
 }
 
 impl Default for ClientConfig {
@@ -38,6 +47,7 @@ impl Default for ClientConfig {
             view_width: 10000,
             development: false,
             stock: true,
+            ins_url: default_ins_url(),
         }
     }
 }
@@ -99,6 +109,11 @@ impl ClientBuilder {
     /// 设置开发模式
     pub fn development(mut self, dev: bool) -> Self {
         self.config.development = dev;
+        self
+    }
+
+    pub fn ins_url(mut self, url: impl Into<String>) -> Self {
+        self.config.ins_url = url.into();
         self
     }
 
@@ -186,6 +201,193 @@ pub struct Client {
 }
 
 impl Client {
+    async fn preload_symbol_info(&self, headers: HeaderMap) -> Result<()> {
+        if self._config.stock {
+            return Ok(());
+        }
+
+        let url = self._config.ins_url.trim();
+        if url.is_empty() {
+            return Ok(());
+        }
+
+        let content = fetch_json_with_headers(url, headers).await?;
+        let symbols = content
+            .as_object()
+            .ok_or_else(|| TqError::ParseError("合约信息格式错误，应为对象".to_string()))?;
+
+        let mut quotes = Map::new();
+        for (symbol, item) in symbols {
+            let Some(source) = item.as_object() else {
+                continue;
+            };
+            let mut quote = Map::new();
+
+            quote.insert(
+                "ins_class".to_string(),
+                Value::String(
+                    source
+                        .get("class")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            );
+            quote.insert(
+                "instrument_id".to_string(),
+                Value::String(
+                    source
+                        .get("instrument_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            );
+            quote.insert(
+                "exchange_id".to_string(),
+                Value::String(
+                    source
+                        .get("exchange_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            );
+            quote.insert(
+                "margin".to_string(),
+                source.get("margin").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "commission".to_string(),
+                source.get("commission").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "price_tick".to_string(),
+                source.get("price_tick").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "price_decs".to_string(),
+                source.get("price_decs").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "volume_multiple".to_string(),
+                source
+                    .get("volume_multiple")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "max_limit_order_volume".to_string(),
+                source
+                    .get("max_limit_order_volume")
+                    .cloned()
+                    .unwrap_or_else(|| json!(0)),
+            );
+            quote.insert(
+                "max_market_order_volume".to_string(),
+                source
+                    .get("max_market_order_volume")
+                    .cloned()
+                    .unwrap_or_else(|| json!(0)),
+            );
+            quote.insert(
+                "min_limit_order_volume".to_string(),
+                source
+                    .get("min_limit_order_volume")
+                    .cloned()
+                    .unwrap_or_else(|| json!(0)),
+            );
+            quote.insert(
+                "min_market_order_volume".to_string(),
+                source
+                    .get("min_market_order_volume")
+                    .cloned()
+                    .unwrap_or_else(|| json!(0)),
+            );
+            quote.insert(
+                "underlying_symbol".to_string(),
+                Value::String(
+                    source
+                        .get("underlying_symbol")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            );
+            quote.insert(
+                "strike_price".to_string(),
+                source.get("strike_price").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "expired".to_string(),
+                source.get("expired").cloned().unwrap_or(json!(false)),
+            );
+            quote.insert(
+                "trading_time".to_string(),
+                source.get("trading_time").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "expire_datetime".to_string(),
+                source.get("expire_datetime").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "delivery_month".to_string(),
+                source.get("delivery_month").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "delivery_year".to_string(),
+                source.get("delivery_year").cloned().unwrap_or(Value::Null),
+            );
+            quote.insert(
+                "option_class".to_string(),
+                Value::String(
+                    source
+                        .get("option_class")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            );
+            quote.insert(
+                "product_id".to_string(),
+                Value::String(
+                    source
+                        .get("product_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+            );
+
+            quotes.insert(symbol.clone(), Value::Object(quote));
+        }
+
+        if let Some(mut quote) = quotes.remove("CSI.000300") {
+            if let Some(obj) = quote.as_object_mut() {
+                obj.insert("exchange_id".to_string(), Value::String("SSE".to_string()));
+            }
+            quotes.insert("SSE.000300".to_string(), quote);
+        }
+
+        for (symbol, quote_value) in quotes.iter_mut() {
+            if symbol.starts_with("CFFEX.IO") {
+                if let Some(obj) = quote_value.as_object_mut() {
+                    if obj.get("ins_class").and_then(Value::as_str) == Some("OPTION") {
+                        obj.insert(
+                            "underlying_symbol".to_string(),
+                            Value::String("SSE.000300".to_string()),
+                        );
+                    }
+                }
+            }
+        }
+
+        let mut payload = Map::new();
+        payload.insert("quotes".to_string(), Value::Object(quotes));
+        self.dm.merge_data(Value::Object(payload), true, true);
+        Ok(())
+    }
+
     /// 创建新的客户端（使用默认配置）
     ///
     /// 这是一个便捷方法，等同于：
@@ -229,13 +431,22 @@ impl Client {
         ClientBuilder::new(username, password)
     }
 
+    pub fn ins_url(&self) -> &str {
+        &self._config.ins_url
+    }
+
     /// 初始化行情功能
     pub async fn init_market(&mut self) -> Result<()> {
         let auth = self.auth.read().await;
         let md_url = auth.get_md_url(self._config.stock, false).await?;
+        let headers = auth.base_header();
+        let enable_trading_status = auth.has_feature("tq_trading_status");
+        drop(auth);
+
+        self.preload_symbol_info(headers.clone()).await?;
 
         let ws_config = WebSocketConfig {
-            headers: auth.base_header(),
+            headers,
             ..Default::default()
         };
 
@@ -256,7 +467,7 @@ impl Client {
             Arc::clone(&self.auth),
         ));
         self.series_api = Some(series_api);
-        let trading_status_ws = if auth.has_feature("tq_trading_status") {
+        let trading_status_ws = if enable_trading_status {
             let ts_ws = Arc::new(TqTradingStatusWebsocket::new(
                 "wss://trading-status.shinnytech.com/status".to_string(),
                 Arc::clone(&self.dm),
@@ -282,9 +493,14 @@ impl Client {
     pub async fn init_market_backtest(&mut self, config: BacktestConfig) -> Result<BacktestHandle> {
         let auth = self.auth.read().await;
         let md_url = auth.get_md_url(self._config.stock, true).await?;
+        let headers = auth.base_header();
+        let enable_trading_status = auth.has_feature("tq_trading_status");
+        drop(auth);
+
+        self.preload_symbol_info(headers.clone()).await?;
 
         let ws_config = WebSocketConfig {
-            headers: auth.base_header(),
+            headers,
             auto_peek: false,
             quote_subscribe_only_add: true,
             ..Default::default()
@@ -307,7 +523,7 @@ impl Client {
         ));
         self.series_api = Some(series_api);
 
-        let trading_status_ws = if auth.has_feature("tq_trading_status") {
+        let trading_status_ws = if enable_trading_status {
             let mut status_config = ws_config.clone();
             status_config.auto_peek = true; // Status server likely needs auto-peek
 

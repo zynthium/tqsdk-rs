@@ -14,8 +14,9 @@ use tracing::{debug, info};
 
 /// 版本号
 pub const VERSION: &str = "3.8.1";
-/// 认证服务器地址
 pub const TQ_AUTH_URL: &str = "https://auth.shinnytech.com";
+pub const TQ_NS_URL: &str = "https://api.shinnytech.com/ns";
+pub const TQ_MD_URL_ENV: &str = "TQ_MD_URL";
 /// 客户端 ID
 pub const CLIENT_ID: &str = "shinny_tq";
 /// 客户端密钥
@@ -282,17 +283,29 @@ impl Authenticator for TqAuth {
     }
 
     async fn get_md_url(&self, stock: bool, backtest: bool) -> Result<String> {
-        let url = format!(
-            "https://api.shinnytech.com/ns?stock={}&backtest={}",
-            stock, backtest
-        );
+        if let Ok(md_url) = std::env::var(TQ_MD_URL_ENV) {
+            let trimmed = md_url.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+
+        let ns_url = std::env::var("TQ_NS_URL").unwrap_or_else(|_| TQ_NS_URL.to_string());
 
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(30))
             .build()?;
 
-        let response = client.get(&url).headers(self.base_header()).send().await?;
+        let response = client
+            .get(&ns_url)
+            .query(&[
+                ("stock", stock.to_string()),
+                ("backtest", backtest.to_string()),
+            ])
+            .headers(self.base_header())
+            .send()
+            .await?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -304,7 +317,11 @@ impl Authenticator for TqAuth {
         }
 
         let md_url_resp: MdUrlResponse = response.json().await?;
-        Ok(md_url_resp.mdurl)
+        let md_url = md_url_resp.mdurl.trim();
+        if md_url.is_empty() {
+            return Err(TqError::NetworkError("名称服务返回空行情地址".to_string()));
+        }
+        Ok(md_url.to_string())
     }
 
     fn has_feature(&self, feature: &str) -> bool {
