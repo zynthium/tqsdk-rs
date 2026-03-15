@@ -149,6 +149,7 @@ impl QuoteSubscription {
         let running = Arc::clone(&self.running);
         let worker_running = Arc::new(AtomicBool::new(false));
         let worker_dirty = Arc::new(AtomicBool::new(false));
+        let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
 
         info!("QuoteSubscription 开始监听数据更新");
 
@@ -166,6 +167,7 @@ impl QuoteSubscription {
             let running = Arc::clone(&running);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
+            let last_processed_epoch = Arc::clone(&last_processed_epoch);
 
             tokio::spawn(async move {
                 loop {
@@ -177,9 +179,15 @@ impl QuoteSubscription {
                             s.iter().cloned().collect()
                         };
 
+                        let current_global_epoch = dm.get_epoch();
+                        let last_epoch = {
+                            *last_processed_epoch.lock().unwrap()
+                        };
+
                         for symbol in symbol_list {
                             let path: Vec<&str> = vec!["quotes", &symbol];
-                            if dm.is_changing(&path) {
+                            let path_epoch = dm.get_path_epoch(&path);
+                            if path_epoch > last_epoch {
                                 match dm.get_quote_data(&symbol) {
                                     Ok(quote) => {
                                         debug!(
@@ -198,6 +206,7 @@ impl QuoteSubscription {
                                 }
                             }
                         }
+                        *last_processed_epoch.lock().unwrap() = current_global_epoch;
                     }
                     if !worker_dirty.load(Ordering::SeqCst) {
                         worker_running.store(false, Ordering::SeqCst);

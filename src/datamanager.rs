@@ -685,6 +685,33 @@ impl DataManager {
         get_by_path_ref(&data, path).cloned()
     }
 
+    /// 获取指定路径的数据更新版本号
+    pub fn get_path_epoch(&self, path: &[&str]) -> i64 {
+        let data = self.data.read().unwrap();
+        if path.is_empty() {
+            return 0;
+        }
+
+        let mut current_value = data.get(path[0]);
+        for &key in path[1..].iter() {
+            if let Some(Value::Object(map)) = current_value {
+                current_value = map.get(key);
+            } else {
+                return 0;
+            }
+        }
+
+        if let Some(Value::Object(map)) = current_value {
+            if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
+                if let Some(epoch) = epoch_val.as_i64() {
+                    return epoch;
+                }
+            }
+        }
+
+        0
+    }
+
     /// 判断指定路径的数据是否在最近一次更新中发生了变化
     pub fn is_changing(&self, path: &[&str]) -> bool {
         let current_epoch = self.epoch.load(Ordering::SeqCst);

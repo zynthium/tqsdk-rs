@@ -159,6 +159,7 @@ impl TradeSession {
         let on_trade = Arc::clone(&self.on_trade);
         let worker_running = Arc::new(AtomicBool::new(false));
         let worker_dirty = Arc::new(AtomicBool::new(false));
+        let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
 
         info!("TradeSession 开始监听数据更新");
 
@@ -184,11 +185,15 @@ impl TradeSession {
             let on_trade = Arc::clone(&on_trade);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
+            let last_processed_epoch = Arc::clone(&last_processed_epoch);
 
             tokio::spawn(async move {
                 loop {
                     worker_dirty.store(false, Ordering::SeqCst);
                     if running.load(Ordering::SeqCst) {
+                        let current_global_epoch = dm.get_epoch();
+                        let last_epoch = { *last_processed_epoch.lock().unwrap() };
+
                         if let Some(serde_json::Value::Object(session_map)) =
                             dm.get_by_path(&["trade", &user_id, "session"])
                         {
@@ -203,7 +208,7 @@ impl TradeSession {
                             }
                         }
 
-                        if dm.is_changing(&["trade", &user_id, "accounts", "CNY"]) {
+                        if dm.get_path_epoch(&["trade", &user_id, "accounts", "CNY"]) > last_epoch {
                             match dm.get_account_data(&user_id, "CNY") {
                                 Ok(account) => {
                                     debug!("账户更新: balance={}", account.balance);
@@ -218,17 +223,19 @@ impl TradeSession {
                             }
                         }
 
-                        if dm.is_changing(&["trade", &user_id, "positions"]) {
-                            Self::process_position_update(&dm, &user_id, &position_tx, &on_position).await;
+                        if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_epoch {
+                            Self::process_position_update(&dm, &user_id, &position_tx, &on_position, last_epoch).await;
                         }
 
-                        if dm.is_changing(&["trade", &user_id, "orders"]) {
-                            Self::process_order_update(&dm, &user_id, &order_tx, &on_order).await;
+                        if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_epoch {
+                            Self::process_order_update(&dm, &user_id, &order_tx, &on_order, last_epoch).await;
                         }
 
-                        if dm.is_changing(&["trade", &user_id, "trades"]) {
-                            Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade).await;
+                        if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_epoch {
+                            Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade, last_epoch).await;
                         }
+
+                        *last_processed_epoch.lock().unwrap() = current_global_epoch;
                     }
                     if !worker_dirty.load(Ordering::SeqCst) {
                         worker_running.store(false, Ordering::SeqCst);
@@ -250,6 +257,7 @@ impl TradeSession {
         user_id: &str,
         position_tx: &Sender<PositionUpdate>,
         on_position: &PositionCallback,
+        last_epoch: i64,
     ) {
         if let Some(serde_json::Value::Object(positions_map)) =
             dm.get_by_path(&["trade", user_id, "positions"])
@@ -261,7 +269,7 @@ impl TradeSession {
                 }
 
                 // 检查单个持仓是否有更新
-                if dm.is_changing(&["trade", user_id, "positions", symbol]) {
+                if dm.get_path_epoch(&["trade", user_id, "positions", symbol]) > last_epoch {
                     match dm.get_position_data(user_id, symbol) {
                         Ok(position) => {
                             debug!("持仓更新: symbol={}", symbol);
@@ -294,6 +302,7 @@ impl TradeSession {
         user_id: &str,
         order_tx: &Sender<Order>,
         on_order: &OrderCallback,
+        last_epoch: i64,
     ) {
         if let Some(serde_json::Value::Object(orders_map)) =
             dm.get_by_path(&["trade", user_id, "orders"])
@@ -305,7 +314,7 @@ impl TradeSession {
                 }
 
                 // 检查单个订单是否有更新
-                if dm.is_changing(&["trade", user_id, "orders", order_id]) {
+                if dm.get_path_epoch(&["trade", user_id, "orders", order_id]) > last_epoch {
                     if let Ok(order) = serde_json::from_value::<Order>(order_data.clone()) {
                         debug!("订单更新: order_id={}", order_id);
 
@@ -328,6 +337,7 @@ impl TradeSession {
         user_id: &str,
         trade_tx: &Sender<Trade>,
         on_trade: &TradeCallback,
+        last_epoch: i64,
     ) {
         if let Some(serde_json::Value::Object(trades_map)) =
             dm.get_by_path(&["trade", user_id, "trades"])
@@ -339,7 +349,7 @@ impl TradeSession {
                 }
 
                 // 检查单个成交是否有更新
-                if dm.is_changing(&["trade", user_id, "trades", trade_id]) {
+                if dm.get_path_epoch(&["trade", user_id, "trades", trade_id]) > last_epoch {
                     if let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone()) {
                         debug!("成交更新: trade_id={}", trade_id);
 

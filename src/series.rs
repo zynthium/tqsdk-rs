@@ -379,24 +379,24 @@ impl SeriesSubscription {
         let running = Arc::clone(&self.running);
         let worker_running = Arc::new(AtomicBool::new(false));
         let worker_dirty = Arc::new(AtomicBool::new(false));
+        let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
         dm_clone.on_data(move || {
-            // 快速路径：检查该订阅相关的路径是否发生了变化
-            // 如果图表路径和数据路径都没有变化，直接跳过
             let chart_id = &options.chart_id;
             let symbol = &options.symbols[0];
             let duration_str = options.duration.to_string();
 
-            let has_chart_changed = dm_for_callback.is_changing(&["charts", chart_id]);
-            let has_data_changed = if options.duration == 0 {
-                dm_for_callback.is_changing(&["ticks", symbol])
+            let last_epoch = *last_processed_epoch.lock().unwrap();
+            let chart_epoch = dm_for_callback.get_path_epoch(&["charts", chart_id]);
+            let data_epoch = if options.duration == 0 {
+                dm_for_callback.get_path_epoch(&["ticks", symbol])
             } else {
-                dm_for_callback.is_changing(&["klines", symbol, &duration_str])
+                dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str])
             };
 
-            if !has_chart_changed && !has_data_changed {
+            if chart_epoch <= last_epoch && data_epoch <= last_epoch {
                 return;
             }
 
@@ -418,6 +418,7 @@ impl SeriesSubscription {
             let running = Arc::clone(&running);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
+            let last_processed_epoch = Arc::clone(&last_processed_epoch);
 
             tokio::spawn(async move {
                 loop {
@@ -425,54 +426,71 @@ impl SeriesSubscription {
                     let is_running = *running.read().await;
                     if is_running {
                         let chart_id = &options.chart_id;
-                        if let Some(chart_data) = dm.get_by_path(&["charts", chart_id]) {
-                            if let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data) {
-                                if chart_info.ready && !chart_info.more_data {
-                                    match process_series_update(
-                                        &dm,
-                                        &options,
-                                        &last_ids,
-                                        &last_left_id,
-                                        &last_right_id,
-                                        &chart_ready,
-                                        &has_chart_sync,
-                                    )
-                                    .await
-                                    {
-                                        Ok((series_data, update_info)) => {
-                                            if update_info.chart_ready {
-                                                let series_data = Arc::new(series_data);
-                                                let update_info = Arc::new(update_info);
+                        let duration_str = options.duration.to_string();
+                        let symbol = &options.symbols[0];
 
-                                                if let Some(callback) = on_update.read().await.as_ref() {
-                                                    callback(Arc::clone(&series_data), Arc::clone(&update_info));
-                                                }
+                        let current_global_epoch = dm.get_epoch();
+                        let last_epoch = *last_processed_epoch.lock().unwrap();
 
-                                                if update_info.has_new_bar {
-                                                    if let Some(callback) = on_new_bar.read().await.as_ref() {
-                                                        callback(Arc::clone(&series_data));
+                        let chart_epoch = dm.get_path_epoch(&["charts", chart_id]);
+                        let data_epoch = if options.duration == 0 {
+                            dm.get_path_epoch(&["ticks", symbol])
+                        } else {
+                            dm.get_path_epoch(&["klines", symbol, &duration_str])
+                        };
+
+                        if chart_epoch > last_epoch || data_epoch > last_epoch {
+                            if let Some(chart_data) = dm.get_by_path(&["charts", chart_id]) {
+                                if let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data) {
+                                    if chart_info.ready && !chart_info.more_data {
+                                        match process_series_update(
+                                            &dm,
+                                            &options,
+                                            &last_ids,
+                                            &last_left_id,
+                                            &last_right_id,
+                                            &chart_ready,
+                                            &has_chart_sync,
+                                            last_epoch,
+                                        )
+                                        .await
+                                        {
+                                            Ok((series_data, update_info)) => {
+                                                if update_info.chart_ready {
+                                                    let series_data = Arc::new(series_data);
+                                                    let update_info = Arc::new(update_info);
+
+                                                    if let Some(callback) = on_update.read().await.as_ref() {
+                                                        callback(Arc::clone(&series_data), Arc::clone(&update_info));
                                                     }
-                                                }
 
-                                                if update_info.has_bar_update {
-                                                    if let Some(callback) = on_bar_update.read().await.as_ref() {
-                                                        callback(Arc::clone(&series_data));
+                                                    if update_info.has_new_bar {
+                                                        if let Some(callback) = on_new_bar.read().await.as_ref() {
+                                                            callback(Arc::clone(&series_data));
+                                                        }
+                                                    }
+
+                                                    if update_info.has_bar_update {
+                                                        if let Some(callback) = on_bar_update.read().await.as_ref() {
+                                                            callback(Arc::clone(&series_data));
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                        Err(e) => {
-                                            let err_str = e.to_string();
-                                            if !err_str.contains("数据未更新") {
-                                                warn!("处理 Series 更新失败: {}", e);
-                                                if let Some(callback) = on_error.read().await.as_ref() {
-                                                    callback(Arc::new(err_str));
+                                            Err(e) => {
+                                                let err_str = e.to_string();
+                                                if !err_str.contains("数据未更新") {
+                                                    warn!("处理 Series 更新失败: {}", e);
+                                                    if let Some(callback) = on_error.read().await.as_ref() {
+                                                        callback(Arc::new(err_str));
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
+                            *last_processed_epoch.lock().unwrap() = current_global_epoch;
                         }
                     }
                     if !worker_dirty.load(Ordering::SeqCst) {
@@ -600,33 +618,10 @@ async fn process_series_update(
     last_right_id: &Arc<RwLock<i64>>,
     chart_ready: &Arc<RwLock<bool>>,
     has_chart_sync: &Arc<RwLock<bool>>,
+    last_epoch: i64,
 ) -> Result<(SeriesData, UpdateInfo)> {
     let is_multi = options.symbols.len() > 1;
     let is_tick = options.duration == 0;
-
-    // let has_chart_changed = dm.is_changing(&["charts", &options.chart_id]);
-    // let has_data_changed = e
-    let duration_str = options.duration.to_string();
-    // 构建数据路径和图表路径
-    let (data_path, chart_path): (Vec<&str>, Vec<&str>) = if is_tick {
-        let data_path = vec!["ticks", &options.symbols[0]];
-        let chart_path = vec!["charts", &options.chart_id];
-        (data_path, chart_path)
-    } else {
-        let data_path = vec!["klines", &options.symbols[0], &duration_str];
-        let chart_path = vec!["charts", &options.chart_id];
-        (data_path, chart_path)
-    };
-    let has_chart_changed = dm.is_changing(&chart_path);
-    let has_data_changed = dm.is_changing(&data_path);
-
-    if has_chart_changed || has_data_changed {
-        trace!("Series update detected: chart_id={}, has_chart={}, has_data={}", options.chart_id, has_chart_changed, has_data_changed);
-    }
-
-    if !has_chart_changed && !has_data_changed {
-        return Err(TqError::Other("数据未更新".to_string()));
-    }
 
     // 获取数据
     let series_data: SeriesData = if is_tick {
@@ -651,7 +646,7 @@ async fn process_series_update(
         new_right_id: 0,
     };
     // 检测新 K线
-    detect_new_bars(dm, &series_data, last_ids, &mut update_info).await;
+    detect_new_bars(dm, &series_data, last_ids, &mut update_info, last_epoch).await;
 
     // 检测 Chart 范围变化
     detect_chart_range_change(
@@ -757,6 +752,7 @@ async fn detect_new_bars(
     data: &SeriesData,
     last_ids: &Arc<RwLock<HashMap<String, i64>>>,
     info: &mut UpdateInfo,
+    last_epoch: i64,
 ) {
     let mut ids = last_ids.write().await;
 
@@ -798,7 +794,7 @@ async fn detect_new_bars(
     }
     if !info.has_new_bar && !data.is_tick {
         for symbol in &data.symbols {
-            if dm.is_changing(&["klines", symbol, &duration_str]) {
+            if dm.get_path_epoch(&["klines", symbol, &duration_str]) > last_epoch {
                 info.has_bar_update = true;
                 break;
             }
