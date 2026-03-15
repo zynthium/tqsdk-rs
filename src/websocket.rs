@@ -14,7 +14,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use std::sync::OnceLock;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -22,6 +22,7 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 use yawc::frame::{FrameView, OpCode};
+use chrono::Timelike;
 
 type MessageCallback = Arc<RwLock<Option<Box<dyn Fn(Value) + Send + Sync>>>>;
 type OpenCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
@@ -83,6 +84,7 @@ impl Default for WebSocketConfig {
 /// 基于 yawc 库实现 WebSocket 连接
 pub struct TqWebsocket {
     url: String,
+    conn_id: String,
     config: WebSocketConfig,
     status: Arc<RwLock<WebSocketStatus>>,
     queue: Arc<Mutex<Vec<String>>>,
@@ -91,6 +93,10 @@ pub struct TqWebsocket {
     connecting: Arc<AtomicBool>,
     connected_once: Arc<AtomicBool>,
     pending_peek: Arc<AtomicBool>,
+    query_max_length: usize,
+    ins_list_max_length: usize,
+    subscribed_ins_list_throttle: usize,
+    subscribed_counts: AtomicUsize,
     last_peek_sent: Arc<std::sync::Mutex<std::time::Instant>>,
     connection_id: Arc<RwLock<u64>>,
     last_disconnect_reason: Arc<RwLock<Option<String>>>,
@@ -113,7 +119,46 @@ impl TqWebsocket {
                 level,
                 content,
                 self.url.clone(),
+                self.conn_id.clone(),
             ));
+        }
+    }
+
+    fn emit_send_guard_warnings(&self, value: &Value) {
+        let Some(aid) = value.get("aid").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if aid == "subscribe_quote" {
+            let ins_list = value
+                .get("ins_list")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if ins_list.len() > self.ins_list_max_length {
+                warn!(
+                    "订阅合约字符串总长度大于 {}，可能会引起服务器限制。",
+                    self.ins_list_max_length
+                );
+            }
+            let ins_list_counts = ins_list
+                .split(',')
+                .filter(|symbol| !symbol.trim().is_empty())
+                .count();
+            let subscribed_counts = self.subscribed_counts.fetch_add(1, Ordering::SeqCst) + 1;
+            if ins_list_counts > self.subscribed_ins_list_throttle
+                && (ins_list_counts as f64) / (subscribed_counts as f64) < 2.0
+            {
+                warn!("订阅多合约时建议合并为一次 subscribe_quote 调用。");
+            }
+            return;
+        }
+        if aid == "ins_query" {
+            let query = value.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            if query.len() > self.query_max_length {
+                warn!(
+                    "订阅合约信息字段总长度大于 {}，可能会引起服务器限制。",
+                    self.query_max_length
+                );
+            }
         }
     }
 
@@ -121,6 +166,7 @@ impl TqWebsocket {
     pub fn new(url: String, config: WebSocketConfig) -> Self {
         TqWebsocket {
             url,
+            conn_id: uuid::Uuid::new_v4().to_string(),
             config,
             status: Arc::new(RwLock::new(WebSocketStatus::Closed)),
             queue: Arc::new(Mutex::new(Vec::new())),
@@ -129,6 +175,10 @@ impl TqWebsocket {
             connecting: Arc::new(AtomicBool::new(false)),
             connected_once: Arc::new(AtomicBool::new(false)),
             pending_peek: Arc::new(AtomicBool::new(false)),
+            query_max_length: 50000,
+            ins_list_max_length: 100000,
+            subscribed_ins_list_throttle: 100,
+            subscribed_counts: AtomicUsize::new(0),
             last_peek_sent: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             connection_id: Arc::new(RwLock::new(0)),
             last_disconnect_reason: Arc::new(RwLock::new(None)),
@@ -161,6 +211,14 @@ impl TqWebsocket {
             "正在连接 WebSocket: {} (重连: {})",
             self.url, is_reconnection
         );
+        if is_reconnection {
+            debug!("websocket connection connecting");
+            self.emit_connection_notify(
+                2019112910,
+                "WARNING",
+                format!("开始与 {} 重新建立网络连接", self.url),
+            );
+        }
         *self.status.write().unwrap() = WebSocketStatus::Connecting;
 
         // 配置 WebSocket 选项，启用 deflate 压缩
@@ -188,6 +246,12 @@ impl TqWebsocket {
             Ok(ws) => ws,
             Err(e) => {
                 error!(url = %self.url, error = %e, "WebSocket 连接失败");
+                debug!(error = %e, "websocket connection closed");
+                let in_ops_time = is_ops_maintenance_window_cst();
+                let mut content = format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url);
+                if in_ops_time {
+                    content.push_str("，每日 19:00-19:30 为日常运维时间，请稍后再试");
+                }
 
                 // 触发错误回调
                 if let Some(callback) = self.on_error.read().unwrap().as_ref() {
@@ -196,8 +260,15 @@ impl TqWebsocket {
                 self.emit_connection_notify(
                     2019112911,
                     "WARNING",
-                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
+                    content,
                 );
+                if !is_reconnection && in_ops_time {
+                    self.connecting.store(false, Ordering::SeqCst);
+                    return Err(TqError::WebSocketError(format!(
+                        "与 {} 的连接失败，每日 19:00-19:30 为日常运维时间，请稍后再试",
+                        self.url
+                    )));
+                }
 
                 // 尝试重连
                 if *self.should_reconnect.read().unwrap() {
@@ -229,12 +300,14 @@ impl TqWebsocket {
         }
         let first_connected = !self.connected_once.swap(true, Ordering::SeqCst);
         if first_connected && !is_reconnection {
+            debug!("websocket connected");
             self.emit_connection_notify(
                 2019112901,
                 "INFO",
                 format!("与 {} 的网络连接已建立", self.url),
             );
         } else {
+            debug!("websocket reconnected");
             self.emit_connection_notify(
                 2019112902,
                 "WARNING",
@@ -261,6 +334,11 @@ impl TqWebsocket {
     /// 发送消息
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
         let json_str = serde_json::to_string(obj)?;
+        if let Ok(value) = serde_json::from_str::<Value>(&json_str) {
+            self.emit_send_guard_warnings(&value);
+        }
+        let log_pack = sanitize_log_pack_text(&json_str);
+        debug!(pack = %log_pack, "websocket send data");
 
         if self.is_ready() {
             debug!("WebSocket 发送消息: {}", json_str);
@@ -472,6 +550,8 @@ impl TqWebsocket {
         let current_connection_id_for_peek = Arc::clone(&self.connection_id);
         let last_peek_sent = Arc::clone(&self.last_peek_sent);
         let last_peek_sent_for_timer = Arc::clone(&self.last_peek_sent);
+        let conn_id_for_recv = self.conn_id.clone();
+        let conn_id_for_peek = self.conn_id.clone();
 
         tokio::spawn(async move {
             debug!("启动 WebSocket 消息接收循环");
@@ -520,6 +600,7 @@ impl TqWebsocket {
                                             // 解析 JSON
                                             match serde_json::from_str::<Value>(&text) {
                                                 Ok(json_value) => {
+                                                    debug!(pack = %text, "websocket received data");
                                                     if let Some(callback) =
                                                         on_message_for_recv.read().unwrap().as_ref()
                                                     {
@@ -572,6 +653,7 @@ impl TqWebsocket {
                                                             url_for_recv
                                                         ),
                                                         url_for_recv.clone(),
+                                                        conn_id_for_recv.clone(),
                                                     ));
                                                 }
                                                 if let Some(callback) = _on_close.read().unwrap().as_ref() {
@@ -596,6 +678,7 @@ impl TqWebsocket {
                                                 url_for_recv
                                             ),
                                             url_for_recv.clone(),
+                                            conn_id_for_recv.clone(),
                                         ));
                                     }
 
@@ -657,6 +740,7 @@ impl TqWebsocket {
                                     "WARNING",
                                     format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url_for_recv),
                                     url_for_recv.clone(),
+                                    conn_id_for_recv.clone(),
                                 ));
                             }
 
@@ -745,6 +829,7 @@ impl TqWebsocket {
                                 "WARNING",
                                 format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url_for_peek),
                                 url_for_peek.clone(),
+                                conn_id_for_peek.clone(),
                             ));
                         }
                         if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
@@ -838,7 +923,13 @@ fn extract_notify_code(value: &Value) -> Option<i64> {
         .and_then(|s| s.parse::<i64>().ok())
 }
 
-fn build_connection_notify(code: i64, level: &str, content: String, url: String) -> Value {
+fn build_connection_notify(
+    code: i64,
+    level: &str,
+    content: String,
+    url: String,
+    conn_id: String,
+) -> Value {
     let notify_id = uuid::Uuid::new_v4().to_string();
     json!({
         "aid": "rtn_data",
@@ -848,12 +939,35 @@ fn build_connection_notify(code: i64, level: &str, content: String, url: String)
                     "type": "MESSAGE",
                     "level": level,
                     "code": code,
+                    "conn_id": conn_id,
                     "content": content,
                     "url": url
                 }
             }
         }]
     })
+}
+
+fn is_ops_maintenance_window_cst() -> bool {
+    let cst_now = chrono::Utc::now() + chrono::Duration::hours(8);
+    cst_now.hour() == 19 && cst_now.minute() <= 30
+}
+
+fn sanitize_log_pack_text(json_str: &str) -> String {
+    if let Ok(mut value) = serde_json::from_str::<Value>(json_str) {
+        if value
+            .get("aid")
+            .and_then(|v| v.as_str())
+            .map(|aid| aid == "req_login")
+            .unwrap_or(false)
+        {
+            if let Some(obj) = value.as_object_mut() {
+                obj.remove("password");
+            }
+        }
+        return value.to_string();
+    }
+    json_str.to_string()
 }
 
 fn next_shared_reconnect_delay(reconnect_count: u32, fallback: Duration) -> Duration {
@@ -1177,6 +1291,7 @@ impl TqQuoteWebsocket {
                                         let base_for_send = Arc::clone(&base_clone);
                                         tokio::spawn(async move {
                                             if let Some(sub) = sub {
+                                                debug!(pack = ?sub, "resend request");
                                                 let _ = base_for_send.send(&sub).await;
                                             }
                                             for chart in charts.values() {
@@ -1184,6 +1299,7 @@ impl TqQuoteWebsocket {
                                                     chart.get("view_width").and_then(|v| v.as_f64())
                                                 {
                                                     if view_width > 0.0 {
+                                                        debug!(pack = ?chart, "resend request");
                                                         let _ = base_for_send.send(chart).await;
                                                     }
                                                 }
@@ -1229,7 +1345,9 @@ impl TqQuoteWebsocket {
                                                     true,
                                                     true,
                                                 );
+                                                debug!("data completed");
                                             } else {
+                                                debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
                                                 let base_for_peek =
                                                     Arc::clone(&base_clone);
                                                 tokio::spawn(async move {
@@ -1772,9 +1890,11 @@ impl TqTradeWebsocket {
                                             confirm_settlement_clone.read().unwrap().clone();
                                         tokio::spawn(async move {
                                             if let Some(login) = req_login {
+                                                debug!(pack = ?login, "resend request");
                                                 let _ = base_for_send.send(&login).await;
                                             }
                                             if let Some(confirm) = confirm_settlement {
+                                                debug!(pack = ?confirm, "resend request");
                                                 let _ = base_for_send.send(&confirm).await;
                                             }
                                             let _ = base_for_send.send_peek_message().await;
@@ -1820,7 +1940,9 @@ impl TqTradeWebsocket {
                                                     true,
                                                     true,
                                                 );
+                                                debug!("data completed");
                                             } else {
+                                                debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
                                                 let base_for_peek =
                                                     Arc::clone(&base_clone);
                                                 tokio::spawn(async move {

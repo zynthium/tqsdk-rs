@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
 use crate::auth::Authenticator;
@@ -279,7 +279,7 @@ impl SeriesSubscription {
             chart_req["focus_position"] = serde_json::json!(focus_position);
         }
 
-        info!(
+        debug!(
             "发送 set_chart 请求: chart_id={}, symbols={:?}, view_width={}, duration={}",
             self.options.chart_id, self.options.symbols, view_width, self.options.duration
         );
@@ -321,11 +321,11 @@ impl SeriesSubscription {
         drop(running);
         self.unsubscribe_sent.store(false, Ordering::SeqCst);
 
-        info!("启动 Series 订阅: {}", self.options.chart_id);
+        debug!("启动 Series 订阅: {}", self.options.chart_id);
 
         self.start_watching().await;
         self.send_set_chart().await?;
-        info!("send_set_chart done for {}", self.options.chart_id);
+        debug!("send_set_chart done for {}", self.options.chart_id);
         Ok(())
     }
 
