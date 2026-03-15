@@ -38,6 +38,9 @@ pub struct ClientConfig {
     pub development: bool,
     pub stock: bool,
     pub ins_url: String,
+    pub message_queue_capacity: usize,
+    pub message_backlog_warn_step: usize,
+    pub message_batch_max: usize,
 }
 
 impl Default for ClientConfig {
@@ -48,6 +51,9 @@ impl Default for ClientConfig {
             development: false,
             stock: true,
             ins_url: default_ins_url(),
+            message_queue_capacity: 2048,
+            message_backlog_warn_step: 1024,
+            message_batch_max: 32,
         }
     }
 }
@@ -114,6 +120,21 @@ impl ClientBuilder {
 
     pub fn ins_url(mut self, url: impl Into<String>) -> Self {
         self.config.ins_url = url.into();
+        self
+    }
+
+    pub fn message_queue_capacity(mut self, capacity: usize) -> Self {
+        self.config.message_queue_capacity = capacity.max(1);
+        self
+    }
+
+    pub fn message_backlog_warn_step(mut self, step: usize) -> Self {
+        self.config.message_backlog_warn_step = step.max(1);
+        self
+    }
+
+    pub fn message_batch_max(mut self, batch: usize) -> Self {
+        self.config.message_batch_max = batch.max(1);
         self
     }
 
@@ -447,6 +468,9 @@ impl Client {
 
         let ws_config = WebSocketConfig {
             headers,
+            message_queue_capacity: self._config.message_queue_capacity,
+            message_backlog_warn_step: self._config.message_backlog_warn_step,
+            message_batch_max: self._config.message_batch_max,
             ..Default::default()
         };
 
@@ -503,6 +527,9 @@ impl Client {
             headers,
             auto_peek: false,
             quote_subscribe_only_add: true,
+            message_queue_capacity: self._config.message_queue_capacity,
+            message_backlog_warn_step: self._config.message_backlog_warn_step,
+            message_batch_max: self._config.message_batch_max,
             ..Default::default()
         };
 
@@ -871,6 +898,9 @@ impl Client {
 
         let ws_config = WebSocketConfig {
             headers: auth.base_header(),
+            message_queue_capacity: self._config.message_queue_capacity,
+            message_backlog_warn_step: self._config.message_backlog_warn_step,
+            message_batch_max: self._config.message_batch_max,
             ..Default::default()
         };
         drop(auth);

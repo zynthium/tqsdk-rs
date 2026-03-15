@@ -7,6 +7,7 @@ use crate::errors::Result;
 use crate::types::Quote;
 use crate::websocket::TqQuoteWebsocket;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
 use tokio::sync::RwLock;
@@ -146,60 +147,66 @@ impl QuoteSubscription {
         let quote_tx = self.quote_tx.clone();
         let on_quote = Arc::clone(&self.on_quote);
         let running = Arc::clone(&self.running);
+        let worker_running = Arc::new(AtomicBool::new(false));
+        let worker_dirty = Arc::new(AtomicBool::new(false));
 
         info!("QuoteSubscription 开始监听数据更新");
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
         dm_clone.on_data(move || {
+            worker_dirty.store(true, Ordering::SeqCst);
+            if worker_running.swap(true, Ordering::SeqCst) {
+                return;
+            }
             let dm = Arc::clone(&dm_for_callback);
             let symbols = Arc::clone(&symbols);
             let quote_tx = quote_tx.clone();
             let on_quote = Arc::clone(&on_quote);
             let running = Arc::clone(&running);
+            let worker_running = Arc::clone(&worker_running);
+            let worker_dirty = Arc::clone(&worker_dirty);
 
             tokio::spawn(async move {
-                let is_running = *running.read().await;
-                if !is_running {
-                    return;
-                }
+                loop {
+                    worker_dirty.store(false, Ordering::SeqCst);
+                    let is_running = *running.read().await;
+                    if is_running {
+                        let symbol_list: Vec<String> = {
+                            let s = symbols.read().await;
+                            s.iter().cloned().collect()
+                        };
 
-                let symbol_list: Vec<String> = {
-                    let s = symbols.read().await;
-                    s.iter().cloned().collect()
-                };
-
-                for symbol in symbol_list {
-                    // 检查是否有更新
-                    let path: Vec<&str> = vec!["quotes", &symbol];
-                    if dm.is_changing(&path) {
-                        match dm.get_quote_data(&symbol) {
-                            Ok(quote) => {
-                                debug!(
-                                    "获取到 Quote 更新: symbol={}, last_price={}",
-                                    symbol, quote.last_price
-                                );
-
-                                // 包装为 Arc（零拷贝共享）
-                                let quote_arc = Arc::new(quote);
-
-                                // 发送到 async-channel（支持多个订阅者）
-                                // 注意：channel 仍然发送 Quote 而不是 Arc<Quote>，保持向后兼容
-                                let _ = quote_tx.send((*quote_arc).clone()).await;
-
-                                // 调用回调（使用 Arc）
-                                if let Some(callback) = on_quote.read().await.as_ref() {
-                                    let cb = Arc::clone(callback);
-                                    let q = Arc::clone(&quote_arc);
-                                    tokio::spawn(async move {
-                                        cb(q);
-                                    });
+                        for symbol in symbol_list {
+                            let path: Vec<&str> = vec!["quotes", &symbol];
+                            if dm.is_changing(&path) {
+                                match dm.get_quote_data(&symbol) {
+                                    Ok(quote) => {
+                                        debug!(
+                                            "获取到 Quote 更新: symbol={}, last_price={}",
+                                            symbol, quote.last_price
+                                        );
+                                        let quote_arc = Arc::new(quote);
+                                        let _ = quote_tx.send((*quote_arc).clone()).await;
+                                        if let Some(callback) = on_quote.read().await.as_ref() {
+                                            callback(Arc::clone(&quote_arc));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("获取 Quote 失败: symbol={}, error={}", symbol, e);
+                                    }
                                 }
                             }
-                            Err(e) => {
-                                warn!("获取 Quote 失败: symbol={}, error={}", symbol, e);
-                            }
                         }
+                    }
+                    if !worker_dirty.load(Ordering::SeqCst) {
+                        worker_running.store(false, Ordering::SeqCst);
+                        if worker_dirty.load(Ordering::SeqCst)
+                            && !worker_running.swap(true, Ordering::SeqCst)
+                        {
+                            continue;
+                        }
+                        break;
                     }
                 }
             });

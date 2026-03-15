@@ -377,10 +377,16 @@ impl SeriesSubscription {
         let on_bar_update = Arc::clone(&self.on_bar_update);
         let on_error = Arc::clone(&self.on_error);
         let running = Arc::clone(&self.running);
+        let worker_running = Arc::new(AtomicBool::new(false));
+        let worker_dirty = Arc::new(AtomicBool::new(false));
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
         dm_clone.on_data(move || {
+            worker_dirty.store(true, Ordering::SeqCst);
+            if worker_running.swap(true, Ordering::SeqCst) {
+                return;
+            }
             let dm = Arc::clone(&dm_for_callback);
             let options = options.clone();
             let last_ids = Arc::clone(&last_ids);
@@ -393,91 +399,73 @@ impl SeriesSubscription {
             let on_bar_update = Arc::clone(&on_bar_update);
             let on_error = Arc::clone(&on_error);
             let running = Arc::clone(&running);
+            let worker_running = Arc::clone(&worker_running);
+            let worker_dirty = Arc::clone(&worker_dirty);
 
             tokio::spawn(async move {
-                let is_running = *running.read().await;
-                if !is_running {
-                    return;
-                }
+                loop {
+                    worker_dirty.store(false, Ordering::SeqCst);
+                    let is_running = *running.read().await;
+                    if is_running {
+                        let chart_id = &options.chart_id;
+                        if let Some(chart_data) = dm.get_by_path(&["charts", chart_id]) {
+                            if let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data) {
+                                if chart_info.ready && !chart_info.more_data {
+                                    match process_series_update(
+                                        &dm,
+                                        &options,
+                                        &last_ids,
+                                        &last_left_id,
+                                        &last_right_id,
+                                        &chart_ready,
+                                        &has_chart_sync,
+                                    )
+                                    .await
+                                    {
+                                        Ok((series_data, update_info)) => {
+                                            if update_info.chart_ready {
+                                                let series_data = Arc::new(series_data);
+                                                let update_info = Arc::new(update_info);
 
-                let chart_id = &options.chart_id;
-                let chart_data = match dm.get_by_path(&["charts", chart_id]) {
-                    Some(data) => data,
-                    None => return,
-                };
-                let chart_info = match dm.convert_to_struct::<ChartInfo>(&chart_data) {
-                    Ok(info) => info,
-                    Err(_) => return,
-                };
-                if !chart_info.ready || chart_info.more_data {
-                    return;
-                }
+                                                if let Some(callback) = on_update.read().await.as_ref() {
+                                                    callback(Arc::clone(&series_data), Arc::clone(&update_info));
+                                                }
 
-                // 处理更新
-                match process_series_update(
-                    &dm,
-                    &options,
-                    &last_ids,
-                    &last_left_id,
-                    &last_right_id,
-                    &chart_ready,
-                    &has_chart_sync,
-                )
-                .await
-                {
-                    Ok((series_data, update_info)) => {
-                        if !update_info.chart_ready {
-                            return;
-                        }
-                        // 包装为 Arc（零拷贝共享）
-                        let series_data = Arc::new(series_data);
-                        let update_info = Arc::new(update_info);
+                                                if update_info.has_new_bar {
+                                                    if let Some(callback) = on_new_bar.read().await.as_ref() {
+                                                        callback(Arc::clone(&series_data));
+                                                    }
+                                                }
 
-                        // 调用回调
-                        if let Some(callback) = on_update.read().await.as_ref() {
-                            let cb = Arc::clone(callback);
-                            let sd = Arc::clone(&series_data);
-                            let ui = Arc::clone(&update_info);
-                            tokio::spawn(async move {
-                                cb(sd, ui);
-                            });
-                        }
-
-                        if update_info.has_new_bar {
-                            if let Some(callback) = on_new_bar.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                let sd = Arc::clone(&series_data);
-                                tokio::spawn(async move {
-                                    cb(sd);
-                                });
-                            }
-                        }
-
-                        if update_info.has_bar_update {
-                            if let Some(callback) = on_bar_update.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                let sd = Arc::clone(&series_data);
-                                tokio::spawn(async move {
-                                    cb(sd);
-                                });
+                                                if update_info.has_bar_update {
+                                                    if let Some(callback) = on_bar_update.read().await.as_ref() {
+                                                        callback(Arc::clone(&series_data));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let err_str = e.to_string();
+                                            if !err_str.contains("数据未更新") {
+                                                warn!("处理 Series 更新失败: {}", e);
+                                                if let Some(callback) = on_error.read().await.as_ref() {
+                                                    callback(Arc::new(err_str));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        // 忽略"数据未更新"的错误，这是正常现象（收到不相关的更新）
-                        if err_str.contains("数据未更新") {
-                            // trace!("Series update skipped: no data change");
-                        } else {
-                            warn!("处理 Series 更新失败: {}", e);
-                            if let Some(callback) = on_error.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                let err_msg = Arc::new(err_str);
-                                tokio::spawn(async move {
-                                    cb(err_msg);
-                                });
-                            }
+                    if !worker_dirty.load(Ordering::SeqCst) {
+                        worker_running.store(false, Ordering::SeqCst);
+                        if worker_dirty.load(Ordering::SeqCst)
+                            && !worker_running.swap(true, Ordering::SeqCst)
+                        {
+                            continue;
                         }
+                        break;
                     }
                 }
             });

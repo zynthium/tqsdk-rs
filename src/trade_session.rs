@@ -157,17 +157,19 @@ impl TradeSession {
         let on_position = Arc::clone(&self.on_position);
         let on_order = Arc::clone(&self.on_order);
         let on_trade = Arc::clone(&self.on_trade);
+        let worker_running = Arc::new(AtomicBool::new(false));
+        let worker_dirty = Arc::new(AtomicBool::new(false));
 
         info!("TradeSession 开始监听数据更新");
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
 
-        // 使用 Mutex 防止多个任务并发访问数据，避免竞态条件
-        // 这确保了 is_changing() 和数据处理是串行的
-        let processing_lock = Arc::new(tokio::sync::Mutex::new(()));
-
         dm_clone.on_data(move || {
+            worker_dirty.store(true, Ordering::SeqCst);
+            if worker_running.swap(true, Ordering::SeqCst) {
+                return;
+            }
             let dm = Arc::clone(&dm_for_callback);
             let user_id = user_id.clone();
             let logged_in = Arc::clone(&logged_in);
@@ -180,67 +182,63 @@ impl TradeSession {
             let on_position = Arc::clone(&on_position);
             let on_order = Arc::clone(&on_order);
             let on_trade = Arc::clone(&on_trade);
-            let lock = Arc::clone(&processing_lock);
+            let worker_running = Arc::clone(&worker_running);
+            let worker_dirty = Arc::clone(&worker_dirty);
 
             tokio::spawn(async move {
-                // 获取锁，确保同一时刻只有一个任务在处理数据
-                let _guard = lock.lock().await;
-
-                if !running.load(Ordering::SeqCst) {
-                    return;
-                }
-
-                // 检查登录状态
-                if let Some(serde_json::Value::Object(session_map)) =
-                    dm.get_by_path(&["trade", &user_id, "session"])
-                {
-                    // 使用 compare_exchange 实现原子的 check-and-set
-                    // 只有当 logged_in 从 false 变为 true 时才打印日志
-                    if session_map
-                        .get("trading_day")
-                        .is_some_and(|trading_day| !trading_day.is_null())
-                        && logged_in
-                            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                            .is_ok()
-                    {
-                        info!("交易会话已登录: user_id={}", user_id);
-                    }
-                }
-
-                // 检查账户更新
-                if dm.is_changing(&["trade", &user_id, "accounts", "CNY"]) {
-                    match dm.get_account_data(&user_id, "CNY") {
-                        Ok(account) => {
-                            debug!("账户更新: balance={}", account.balance);
-                            let _ = account_tx.send(account.clone()).await;
-
-                            if let Some(callback) = on_account.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                tokio::spawn(async move {
-                                    cb(account);
-                                });
+                loop {
+                    worker_dirty.store(false, Ordering::SeqCst);
+                    if running.load(Ordering::SeqCst) {
+                        if let Some(serde_json::Value::Object(session_map)) =
+                            dm.get_by_path(&["trade", &user_id, "session"])
+                        {
+                            if session_map
+                                .get("trading_day")
+                                .is_some_and(|trading_day| !trading_day.is_null())
+                                && logged_in
+                                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                    .is_ok()
+                            {
+                                info!("交易会话已登录: user_id={}", user_id);
                             }
                         }
-                        Err(e) => {
-                            // 理论上不应该到这里，因为 is_changing 已经验证了数据存在
-                            error!("获取账户数据失败（这不应该发生）: {}", e);
+
+                        if dm.is_changing(&["trade", &user_id, "accounts", "CNY"]) {
+                            match dm.get_account_data(&user_id, "CNY") {
+                                Ok(account) => {
+                                    debug!("账户更新: balance={}", account.balance);
+                                    let _ = account_tx.send(account.clone()).await;
+                                    if let Some(callback) = on_account.read().await.as_ref() {
+                                        callback(account);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("获取账户数据失败（这不应该发生）: {}", e);
+                                }
+                            }
+                        }
+
+                        if dm.is_changing(&["trade", &user_id, "positions"]) {
+                            Self::process_position_update(&dm, &user_id, &position_tx, &on_position).await;
+                        }
+
+                        if dm.is_changing(&["trade", &user_id, "orders"]) {
+                            Self::process_order_update(&dm, &user_id, &order_tx, &on_order).await;
+                        }
+
+                        if dm.is_changing(&["trade", &user_id, "trades"]) {
+                            Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade).await;
                         }
                     }
-                }
-
-                // 检查持仓更新
-                if dm.is_changing(&["trade", &user_id, "positions"]) {
-                    Self::process_position_update(&dm, &user_id, &position_tx, &on_position).await;
-                }
-
-                // 检查委托单更新
-                if dm.is_changing(&["trade", &user_id, "orders"]) {
-                    Self::process_order_update(&dm, &user_id, &order_tx, &on_order).await;
-                }
-
-                // 检查成交更新
-                if dm.is_changing(&["trade", &user_id, "trades"]) {
-                    Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade).await;
+                    if !worker_dirty.load(Ordering::SeqCst) {
+                        worker_running.store(false, Ordering::SeqCst);
+                        if worker_dirty.load(Ordering::SeqCst)
+                            && !worker_running.swap(true, Ordering::SeqCst)
+                        {
+                            continue;
+                        }
+                        break;
+                    }
                 }
             });
         });
@@ -278,11 +276,7 @@ impl TradeSession {
 
                             // 调用回调
                             if let Some(callback) = on_position.read().await.as_ref() {
-                                let cb = Arc::clone(callback);
-                                let symbol = symbol.clone();
-                                tokio::spawn(async move {
-                                    cb(symbol, position);
-                                });
+                                callback(symbol.clone(), position);
                             }
                         }
                         Err(e) => {
@@ -320,10 +314,7 @@ impl TradeSession {
 
                         // 调用回调
                         if let Some(callback) = on_order.read().await.as_ref() {
-                            let cb = Arc::clone(callback);
-                            tokio::spawn(async move {
-                                cb(order);
-                            });
+                            callback(order);
                         }
                     }
                 }
@@ -357,10 +348,7 @@ impl TradeSession {
 
                         // 调用回调
                         if let Some(callback) = on_trade.read().await.as_ref() {
-                            let cb = Arc::clone(callback);
-                            tokio::spawn(async move {
-                                cb(trade);
-                            });
+                            callback(trade);
                         }
                     }
                 }

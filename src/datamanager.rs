@@ -182,13 +182,10 @@ impl DataManager {
             self.apply_python_data_semantics(&mut data, current_epoch);
             drop(data);
 
-            // 异步触发回调（不阻塞数据合并）
+            // 触发回调
             let callbacks = self.on_data_callbacks.read().unwrap();
             for callback in callbacks.iter() {
-                let cb = Arc::clone(callback);
-                tokio::spawn(async move {
-                    cb();
-                });
+                callback();
             }
             drop(callbacks);
 
@@ -792,10 +789,7 @@ impl DataManager {
         for watcher in watchers.values() {
             if is_path_epoch_changed(&data, &watcher.path, current_epoch) {
                 if let Some(data) = get_by_path_ref_strings(&data, &watcher.path).cloned() {
-                    let tx = watcher.tx.clone();
-                    tokio::spawn(async move {
-                        let _ = tx.send(data).await;
-                    });
+                    let _ = watcher.tx.try_send(data);
                 }
             }
         }
@@ -920,6 +914,7 @@ impl DataManager {
             metadata: HashMap::new(),
         };
 
+        let mut aligned_data_indexes: HashMap<String, HashMap<i64, &Value>> = HashMap::new();
         // 获取每个合约的元数据
         for symbol in symbols.iter() {
             if let Some(Value::Object(kline_map)) = get_by_path_ref(
@@ -940,6 +935,10 @@ impl DataManager {
                     ),
                 };
                 result.metadata.insert(symbol.clone(), metadata);
+                if let Some(Value::Object(symbol_data_map)) = kline_map.get("data") {
+                    aligned_data_indexes
+                        .insert(symbol.clone(), build_numeric_value_index(symbol_data_map));
+                }
             }
         }
 
@@ -967,10 +966,10 @@ impl DataManager {
 
             // 获取主合约的 K线 map
             if let Some(Value::Object(main_data_map)) = main_kline_map.get("data") {
-                let mut main_ids: Vec<i64> = main_data_map
-                    .keys()
-                    .filter_map(|k| k.parse::<i64>().ok())
-                    .collect();
+                let main_data_index = aligned_data_indexes
+                    .remove(main_symbol)
+                    .unwrap_or_else(|| build_numeric_value_index(main_data_map));
+                let mut main_ids: Vec<i64> = main_data_index.keys().copied().collect();
                 main_ids.sort();
 
                 // 过滤超出 right_id 的数据
@@ -992,7 +991,6 @@ impl DataManager {
 
                 // 对齐所有合约的 K线
                 for main_id in main_ids {
-                    let main_id_str = main_id.to_string();
                     let mut set = AlignedKlineSet {
                         main_id,
                         timestamp: Utc::now(),
@@ -1000,7 +998,7 @@ impl DataManager {
                     };
 
                     // 添加主合约 K线
-                    if let Some(kline_data) = main_data_map.get(&main_id_str) {
+                    if let Some(kline_data) = main_data_index.get(&main_id) {
                         if let Ok(mut kline) = self.convert_to_struct::<Kline>(kline_data) {
                             kline.id = main_id;
                             set.timestamp = nanos_to_datetime(kline.datetime);
@@ -1010,24 +1008,19 @@ impl DataManager {
 
                     // 添加其他合约的对齐 K线
                     for symbol in symbols.iter().skip(1) {
-                        if let Some(binding) = bindings.get(symbol) {
-                            if let Some(&mapped_id) = binding.get(&main_id) {
-                                let mapped_id_str = mapped_id.to_string();
-                                if let Some(other_kline_data) = get_by_path_ref(
-                                    &data_guard,
-                                    &[
-                                        "klines",
-                                        symbol.as_str(),
-                                        duration_str.as_str(),
-                                        "data",
-                                        mapped_id_str.as_str(),
-                                    ],
-                                ) {
-                                    if let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) {
-                                        kline.id = mapped_id;
-                                        set.klines.insert(symbol.clone(), kline);
-                                    }
-                                }
+                        let Some(binding) = bindings.get(symbol) else {
+                            continue;
+                        };
+                        let Some(other_index) = aligned_data_indexes.get(symbol) else {
+                            continue;
+                        };
+                        let Some(&mapped_id) = binding.get(&main_id) else {
+                            continue;
+                        };
+                        if let Some(other_kline_data) = other_index.get(&mapped_id) {
+                            if let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) {
+                                kline.id = mapped_id;
+                                set.klines.insert(symbol.clone(), kline);
                             }
                         }
                     }
@@ -1183,6 +1176,16 @@ fn collect_windowed_ids(
     ids
 }
 
+fn build_numeric_value_index(data_map: &Map<String, Value>) -> HashMap<i64, &Value> {
+    let mut index = HashMap::with_capacity(data_map.len());
+    for (id_str, value) in data_map {
+        if let Ok(id) = id_str.parse::<i64>() {
+            index.insert(id, value);
+        }
+    }
+    index
+}
+
 fn get_by_path_ref_strings<'a>(
     data: &'a HashMap<String, Value>,
     path: &[String],
@@ -1283,6 +1286,8 @@ fn default_object_by_branch(prototype: Option<&Value>, branch: PrototypeBranch) 
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::time::Instant;
 
     #[test]
     fn test_merge_data() {
@@ -1543,5 +1548,67 @@ mod tests {
 
         let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
         assert!(quote.get("last_price").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_on_data_spawn_layer_overhead_profile() {
+        let rounds = 10000usize;
+        let callback_count = 6usize;
+        let payload = json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0,
+                    "volume": 1000
+                }
+            }
+        });
+
+        let direct_counter = Arc::new(AtomicUsize::new(0));
+        let direct_dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
+        for _ in 0..callback_count {
+            let counter = Arc::clone(&direct_counter);
+            direct_dm.on_data(move || {
+                counter.fetch_add(1, AtomicOrdering::Relaxed);
+            });
+        }
+
+        let direct_start = Instant::now();
+        for _ in 0..rounds {
+            direct_dm.merge_data(payload.clone(), true, true);
+        }
+        let direct_elapsed = direct_start.elapsed();
+        let direct_total = direct_counter.load(AtomicOrdering::Relaxed);
+
+        let spawned_counter = Arc::new(AtomicUsize::new(0));
+        let spawned_dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
+        for _ in 0..callback_count {
+            let counter = Arc::clone(&spawned_counter);
+            spawned_dm.on_data(move || {
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    counter.fetch_add(1, AtomicOrdering::Relaxed);
+                });
+            });
+        }
+
+        let spawned_start = Instant::now();
+        for _ in 0..rounds {
+            spawned_dm.merge_data(payload.clone(), true, true);
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let spawned_elapsed = spawned_start.elapsed();
+        let spawned_total = spawned_counter.load(AtomicOrdering::Relaxed);
+
+        assert_eq!(direct_total, rounds * callback_count);
+        assert_eq!(spawned_total, rounds * callback_count);
+
+        println!(
+            "on_data_profile rounds={} callbacks={} direct_us={} spawned_us={}",
+            rounds,
+            callback_count,
+            direct_elapsed.as_micros(),
+            spawned_elapsed.as_micros()
+        );
     }
 }
