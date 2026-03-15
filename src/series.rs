@@ -383,6 +383,23 @@ impl SeriesSubscription {
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
         dm_clone.on_data(move || {
+            // 快速路径：检查该订阅相关的路径是否发生了变化
+            // 如果图表路径和数据路径都没有变化，直接跳过
+            let chart_id = &options.chart_id;
+            let symbol = &options.symbols[0];
+            let duration_str = options.duration.to_string();
+
+            let has_chart_changed = dm_for_callback.is_changing(&["charts", chart_id]);
+            let has_data_changed = if options.duration == 0 {
+                dm_for_callback.is_changing(&["ticks", symbol])
+            } else {
+                dm_for_callback.is_changing(&["klines", symbol, &duration_str])
+            };
+
+            if !has_chart_changed && !has_data_changed {
+                return;
+            }
+
             worker_dirty.store(true, Ordering::SeqCst);
             if worker_running.swap(true, Ordering::SeqCst) {
                 return;
