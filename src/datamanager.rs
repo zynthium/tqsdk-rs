@@ -11,7 +11,7 @@ use crate::types::*;
 use crate::utils::{nanos_to_datetime, value_to_i64};
 use chrono::Utc;
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -1113,9 +1113,13 @@ impl DataManager {
     pub fn get_account_data(&self, user_id: &str, currency: &str) -> Result<Account> {
         let data = self
             .get_by_path(&["trade", user_id, "accounts", currency])
-            .ok_or_else(|| {
-                TqError::DataNotFound(format!("账户未找到: {}/{}", user_id, currency))
-            })?;
+            .unwrap_or_else(|| {
+                // 如果没有数据，返回一个占位符，匹配 Python 的行为
+                json!({
+                    "user_id": user_id,
+                    "currency": currency,
+                })
+            });
 
         self.convert_to_struct(&data)
     }
@@ -1124,7 +1128,13 @@ impl DataManager {
     pub fn get_position_data(&self, user_id: &str, symbol: &str) -> Result<Position> {
         let data = self
             .get_by_path(&["trade", user_id, "positions", symbol])
-            .ok_or_else(|| TqError::DataNotFound(format!("持仓未找到: {}/{}", user_id, symbol)))?;
+            .unwrap_or_else(|| {
+                // 如果没有数据，返回一个占位符，匹配 Python 的行为
+                json!({
+                    "user_id": user_id,
+                    "symbol": symbol,
+                })
+            });
 
         self.convert_to_struct(&data)
     }
@@ -1133,9 +1143,13 @@ impl DataManager {
     pub fn get_order_data(&self, user_id: &str, order_id: &str) -> Result<Order> {
         let data = self
             .get_by_path(&["trade", user_id, "orders", order_id])
-            .ok_or_else(|| {
-                TqError::DataNotFound(format!("委托单未找到: {}/{}", user_id, order_id))
-            })?;
+            .unwrap_or_else(|| {
+                // 如果没有数据，返回一个占位符，匹配 Python 的行为
+                json!({
+                    "user_id": user_id,
+                    "order_id": order_id,
+                })
+            });
 
         self.convert_to_struct(&data)
     }
@@ -1144,9 +1158,13 @@ impl DataManager {
     pub fn get_trade_data(&self, user_id: &str, trade_id: &str) -> Result<Trade> {
         let data = self
             .get_by_path(&["trade", user_id, "trades", trade_id])
-            .ok_or_else(|| {
-                TqError::DataNotFound(format!("成交未找到: {}/{}", user_id, trade_id))
-            })?;
+            .unwrap_or_else(|| {
+                // 如果没有数据，返回一个占位符，匹配 Python 的行为
+                json!({
+                    "user_id": user_id,
+                    "trade_id": trade_id,
+                })
+            });
 
         self.convert_to_struct(&data)
     }
