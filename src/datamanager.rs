@@ -10,6 +10,7 @@ use crate::errors::{Result, TqError};
 use crate::types::*;
 use crate::utils::{nanos_to_datetime, value_to_i64};
 use chrono::Utc;
+use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -637,10 +638,29 @@ impl DataManager {
     }
 
     fn apply_orders_trade_price(&self, user_map: &mut Map<String, Value>, epoch: i64) {
-        let trades_snapshot = user_map.get("trades").and_then(|v| v.as_object()).cloned();
-        let Some(trades_map) = trades_snapshot else {
+        let Some(Value::Object(trades_map)) = user_map.get("trades") else {
             return;
         };
+        let mut order_trade_stats: HashMap<String, (i64, f64)> = HashMap::with_capacity(trades_map.len());
+        for trade_val in trades_map.values() {
+            let Some(trade) = trade_val.as_object() else {
+                continue;
+            };
+            let trade_order_id = trade.get("order_id").and_then(|v| v.as_str()).unwrap_or("");
+            if trade_order_id.is_empty() {
+                continue;
+            }
+            let volume = trade.get("volume").and_then(to_i64_any).unwrap_or(0);
+            if volume <= 0 {
+                continue;
+            }
+            let price = trade.get("price").and_then(to_f64_any).unwrap_or(0.0);
+            let entry = order_trade_stats
+                .entry(trade_order_id.to_string())
+                .or_insert((0, 0.0));
+            entry.0 += volume;
+            entry.1 += price * volume as f64;
+        }
         let Some(Value::Object(orders)) = user_map.get_mut("orders") else {
             return;
         };
@@ -649,23 +669,8 @@ impl DataManager {
             let Some(order) = order_val.as_object_mut() else {
                 continue;
             };
-            let mut sum_volume: i64 = 0;
-            let mut sum_amount: f64 = 0.0;
-            for trade_val in trades_map.values() {
-                let Some(trade) = trade_val.as_object() else {
-                    continue;
-                };
-                let trade_order_id = trade.get("order_id").and_then(|v| v.as_str()).unwrap_or("");
-                if trade_order_id != order_id {
-                    continue;
-                }
-                let volume = trade.get("volume").and_then(to_i64_any).unwrap_or(0);
-                let price = trade.get("price").and_then(to_f64_any).unwrap_or(0.0);
-                sum_volume += volume;
-                sum_amount += price * volume as f64;
-            }
-            if sum_volume > 0 {
-                if let Some(number) = serde_json::Number::from_f64(sum_amount / sum_volume as f64) {
+            if let Some((sum_volume, sum_amount)) = order_trade_stats.get(order_id) {
+                if let Some(number) = serde_json::Number::from_f64(*sum_amount / *sum_volume as f64) {
                     order.insert("trade_price".to_string(), Value::Number(number));
                     order.insert("_epoch".to_string(), Value::Number(epoch.into()));
                 }
@@ -680,47 +685,7 @@ impl DataManager {
         }
 
         let data = self.data.read().unwrap();
-
-        // 第一层直接从 HashMap 获取
-        let mut current = data.get(path[0])?;
-
-        // 后续层级从 Value::Object 获取
-        for &key in path[1..].iter() {
-            match current {
-                Value::Object(map) => {
-                    if let Some(val) = map.get(key) {
-                        current = val;
-                    } else {
-                        return None;
-                    }
-                }
-                _ => return None,
-            }
-        }
-        Some(current.clone())
-    }
-
-    fn get_by_path_strings(&self, path: &[String]) -> Option<Value> {
-        if path.is_empty() {
-            return None;
-        }
-
-        let data = self.data.read().unwrap();
-        let mut current = data.get(&path[0])?;
-
-        for key in &path[1..] {
-            match current {
-                Value::Object(map) => {
-                    if let Some(val) = map.get(key) {
-                        current = val;
-                    } else {
-                        return None;
-                    }
-                }
-                _ => return None,
-            }
-        }
-        Some(current.clone())
+        get_by_path_ref(&data, path).cloned()
     }
 
     /// 判断指定路径的数据是否在最近一次更新中发生了变化
@@ -745,35 +710,6 @@ impl DataManager {
         }
 
         // 检查 _epoch
-        if let Some(Value::Object(map)) = current_value {
-            if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
-                if let Some(epoch) = epoch_val.as_i64() {
-                    return epoch == current_epoch;
-                }
-            }
-        }
-
-        false
-    }
-
-    fn is_changing_strings(&self, path: &[String]) -> bool {
-        let current_epoch = self.epoch.load(Ordering::SeqCst);
-        let data = self.data.read().unwrap();
-
-        if path.is_empty() {
-            return false;
-        }
-
-        let mut current_value = data.get(&path[0]);
-
-        for key in &path[1..] {
-            if let Some(Value::Object(map)) = current_value {
-                current_value = map.get(key);
-            } else {
-                return false;
-            }
-        }
-
         if let Some(Value::Object(map)) = current_value {
             if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
                 if let Some(epoch) = epoch_val.as_i64() {
@@ -850,10 +786,12 @@ impl DataManager {
 
     /// 通知所有 watchers
     fn notify_watchers(&self) {
+        let current_epoch = self.epoch.load(Ordering::SeqCst);
         let watchers = self.watchers.read().unwrap();
-        for (_, watcher) in watchers.iter() {
-            if self.is_changing_strings(&watcher.path) {
-                if let Some(data) = self.get_by_path_strings(&watcher.path) {
+        let data = self.data.read().unwrap();
+        for watcher in watchers.values() {
+            if is_path_epoch_changed(&data, &watcher.path, current_epoch) {
+                if let Some(data) = get_by_path_ref_strings(&data, &watcher.path).cloned() {
                     let tx = watcher.tx.clone();
                     tokio::spawn(async move {
                         let _ = tx.send(data).await;
@@ -864,8 +802,8 @@ impl DataManager {
     }
 
     /// 转换为结构体
-    pub fn convert_to_struct<T: serde::de::DeserializeOwned>(&self, data: &Value) -> Result<T> {
-        serde_json::from_value(data.clone())
+    pub fn convert_to_struct<T: DeserializeOwned>(&self, data: &Value) -> Result<T> {
+        T::deserialize(data)
             .map_err(|e| TqError::ParseError(format!("转换失败: {}", e)))
     }
 
@@ -910,43 +848,21 @@ impl DataManager {
 
             // 转换 data map 为数组
             if let Some(Value::Object(kline_map)) = data_map.get("data") {
-                // 优化：先收集 ID 和 Value，排序后再反序列化，避免全量反序列化
-                let mut all_entries: Vec<(i64, &Value)> = Vec::with_capacity(kline_map.len());
-
-                for (id_str, kline_data) in kline_map.iter() {
-                    if let Ok(id) = id_str.parse::<i64>() {
-                        all_entries.push((id, kline_data));
-                    }
-                }
-
-                // 按 ID 排序
-                all_entries.sort_unstable_by_key(|(id, _)| *id);
-
-                // 过滤超出 right_id 的数据
-                if right_id > 0 {
-                    let r_id = right_id; // Copy for closure
-                    all_entries.retain(|(id, _)| *id <= r_id);
-                }
-
-                // 应用 ViewWidth 限制
-                let vw = if view_width > 0 {
-                    view_width
-                } else {
-                    self.config.default_view_width
-                };
-
-                // 取最后 vw 个
-                let target_entries = if all_entries.len() > vw {
-                    &all_entries[all_entries.len() - vw..]
-                } else {
-                    &all_entries[..]
-                };
-
-                let mut klines: Vec<Kline> = Vec::with_capacity(target_entries.len());
-                for (id, data) in target_entries {
-                    match self.convert_to_struct::<Kline>(data) {
+                let selected_ids = collect_windowed_ids(
+                    kline_map,
+                    right_id,
+                    view_width,
+                    self.config.default_view_width,
+                );
+                let mut klines: Vec<Kline> = Vec::with_capacity(selected_ids.len());
+                for id in selected_ids {
+                    let id_key = id.to_string();
+                    let Some(kline_data) = kline_map.get(&id_key) else {
+                        continue;
+                    };
+                    match self.convert_to_struct::<Kline>(kline_data) {
                         Ok(mut kline) => {
-                            kline.id = *id;
+                            kline.id = id;
                             klines.push(kline);
                         }
                         Err(e) => {
@@ -978,10 +894,12 @@ impl DataManager {
 
         let main_symbol = &symbols[0];
         let duration_str = duration.to_string();
+        let data_guard = self.data.read().unwrap();
 
         // 获取 Chart 信息
-        let (left_id, right_id) =
-            if let Some(Value::Object(chart_map)) = self.get_by_path(&["charts", chart_id]) {
+        let (left_id, right_id) = if let Some(Value::Object(chart_map)) =
+            get_by_path_ref(&data_guard, &["charts", chart_id])
+        {
                 let left = value_to_i64(chart_map.get("left_id").unwrap_or(&Value::Null));
                 let right = value_to_i64(chart_map.get("right_id").unwrap_or(&Value::Null));
                 (left, right)
@@ -1004,8 +922,10 @@ impl DataManager {
 
         // 获取每个合约的元数据
         for symbol in symbols.iter() {
-            if let Some(Value::Object(kline_map)) =
-                self.get_by_path(&["klines", symbol, &duration_str])
+            if let Some(Value::Object(kline_map)) = get_by_path_ref(
+                &data_guard,
+                &["klines", symbol.as_str(), duration_str.as_str()],
+            )
             {
                 let metadata = KlineMetadata {
                     symbol: symbol.clone(),
@@ -1024,8 +944,10 @@ impl DataManager {
         }
 
         // 获取主合约的 K线数据
-        if let Some(Value::Object(main_kline_map)) =
-            self.get_by_path(&["klines", main_symbol, &duration_str])
+        if let Some(Value::Object(main_kline_map)) = get_by_path_ref(
+            &data_guard,
+            &["klines", main_symbol.as_str(), duration_str.as_str()],
+        )
         {
             // 获取 binding 信息
             let mut bindings: HashMap<String, HashMap<i64, i64>> = HashMap::new();
@@ -1090,16 +1012,18 @@ impl DataManager {
                     for symbol in symbols.iter().skip(1) {
                         if let Some(binding) = bindings.get(symbol) {
                             if let Some(&mapped_id) = binding.get(&main_id) {
-                                if let Some(other_kline_data) = self.get_by_path(&[
-                                    "klines",
-                                    symbol,
-                                    &duration_str,
-                                    "data",
-                                    &mapped_id.to_string(),
-                                ]) {
-                                    if let Ok(mut kline) =
-                                        self.convert_to_struct::<Kline>(&other_kline_data)
-                                    {
+                                let mapped_id_str = mapped_id.to_string();
+                                if let Some(other_kline_data) = get_by_path_ref(
+                                    &data_guard,
+                                    &[
+                                        "klines",
+                                        symbol.as_str(),
+                                        duration_str.as_str(),
+                                        "data",
+                                        mapped_id_str.as_str(),
+                                    ],
+                                ) {
+                                    if let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) {
                                         kline.id = mapped_id;
                                         set.klines.insert(symbol.clone(), kline);
                                     }
@@ -1139,40 +1063,23 @@ impl DataManager {
 
             // 转换 data map 为数组
             if let Some(Value::Object(tick_map)) = data_map.get("data") {
-                let mut all_ticks: Vec<(i64, Tick)> = Vec::with_capacity(tick_map.len());
-
-                for (id_str, tick_data) in tick_map.iter() {
-                    if let Ok(id) = id_str.parse::<i64>() {
-                        if let Ok(mut tick) = self.convert_to_struct::<Tick>(tick_data) {
-                            tick.id = id;
-                            all_ticks.push((id, tick));
-                        }
+                let selected_ids = collect_windowed_ids(
+                    tick_map,
+                    right_id,
+                    view_width,
+                    self.config.default_view_width,
+                );
+                let mut ticks: Vec<Tick> = Vec::with_capacity(selected_ids.len());
+                for id in selected_ids {
+                    let id_key = id.to_string();
+                    let Some(tick_data) = tick_map.get(&id_key) else {
+                        continue;
+                    };
+                    if let Ok(mut tick) = self.convert_to_struct::<Tick>(tick_data) {
+                        tick.id = id;
+                        ticks.push(tick);
                     }
                 }
-
-                // 按 ID 排序
-                all_ticks.sort_by_key(|(id, _)| *id);
-
-                // 过滤超出 right_id 的数据
-                if right_id > 0 {
-                    all_ticks.retain(|(id, _)| *id <= right_id);
-                }
-
-                // 应用 ViewWidth 限制
-                let vw = if view_width > 0 {
-                    view_width
-                } else {
-                    self.config.default_view_width
-                };
-
-                let ticks = if all_ticks.len() > vw {
-                    let split_index = all_ticks.len() - vw;
-                    let tail = all_ticks.split_off(split_index);
-                    tail.into_iter().map(|(_, t)| t).collect()
-                } else {
-                    all_ticks.into_iter().map(|(_, t)| t).collect()
-                };
-
                 tick_series.data = ticks;
             }
 
@@ -1234,6 +1141,76 @@ fn to_i64_any(value: &Value) -> Option<i64> {
         Value::String(s) => s.parse::<i64>().ok(),
         _ => None,
     }
+}
+
+fn get_by_path_ref<'a>(data: &'a HashMap<String, Value>, path: &[&str]) -> Option<&'a Value> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut current = data.get(path[0])?;
+    for &key in path[1..].iter() {
+        match current {
+            Value::Object(map) => {
+                current = map.get(key)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+fn collect_windowed_ids(
+    data_map: &Map<String, Value>,
+    right_id: i64,
+    view_width: usize,
+    default_view_width: usize,
+) -> Vec<i64> {
+    let mut ids: Vec<i64> = data_map
+        .keys()
+        .filter_map(|key| key.parse::<i64>().ok())
+        .filter(|id| right_id <= 0 || *id <= right_id)
+        .collect();
+    ids.sort_unstable();
+    let target_width = if view_width > 0 {
+        view_width
+    } else {
+        default_view_width
+    };
+    if ids.len() > target_width {
+        let split_index = ids.len() - target_width;
+        ids.drain(0..split_index);
+    }
+    ids
+}
+
+fn get_by_path_ref_strings<'a>(
+    data: &'a HashMap<String, Value>,
+    path: &[String],
+) -> Option<&'a Value> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut current = data.get(&path[0])?;
+    for key in &path[1..] {
+        match current {
+            Value::Object(map) => {
+                current = map.get(key)?;
+            }
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+fn is_path_epoch_changed(data: &HashMap<String, Value>, path: &[String], current_epoch: i64) -> bool {
+    if let Some(Value::Object(map)) = get_by_path_ref_strings(data, path) {
+        if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
+            if let Some(epoch) = epoch_val.as_i64() {
+                return epoch == current_epoch;
+            }
+        }
+    }
+    false
 }
 
 fn to_f64_any(value: &Value) -> Option<f64> {
