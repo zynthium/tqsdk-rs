@@ -125,8 +125,7 @@ async fn single_kline_subscription_example() {
     // 创建订阅（延迟启动，推荐方式）
     let series_api = client.series().expect("获取 series API 失败");
     let sub = series_api
-        // .kline("SHFE.au2602", Duration::from_secs(60), 5)
-        .kline(&symbol, Duration::from_secs(60), 3010)
+        .kline(symbol, Duration::from_secs(60), 3010)
         .await
         .expect("订阅失败");
 
@@ -251,16 +250,9 @@ async fn multi_kline_subscription_example() {
 
     // 订阅多个合约的 1分钟 K线
     let series_api = client.series().expect("获取 series API 失败");
+    let symbols = vec!["SHFE.au2605", "SHFE.ag2605", "INE.sc2605"];
     let sub = series_api
-        .kline_multi(
-            &[
-                "SHFE.au2605".to_string(),
-                "SHFE.ag2605".to_string(),
-                "INE.sc2605".to_string(),
-            ],
-            Duration::from_secs(60),
-            1000,
-        )
+        .kline(symbols, Duration::from_secs(60), 1000)
         .await
         .expect("订阅失败");
 
@@ -335,7 +327,10 @@ async fn tick_subscription_example() {
 
     // 创建订阅（延迟启动，推荐方式）
     let series_api = client.series().expect("获取 series API 失败");
-    let sub = series_api.tick("SHFE.au2602", 5).await.expect("订阅失败");
+    let sub = series_api
+        .tick("SHFE.au2602", 5)
+        .await
+        .expect("订阅失败");
 
     // 先注册所有回调函数
     sub.on_new_bar(|data| {

@@ -1,6 +1,11 @@
 //! Series API 模块
 //!
-//! 实现 K线和 Tick 订阅功能
+//! 提供 K 线与 Tick 订阅能力，支持：
+//! - 单合约 K 线订阅
+//! - 多合约对齐 K 线订阅
+//! - Tick 订阅
+//! - 历史窗口订阅与焦点跳转
+//! - 回调与流式消费两种数据处理模式
 
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
@@ -24,7 +29,67 @@ type UpdateCallback =
 type SeriesCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>;
 type SeriesErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
 
-/// Series API
+#[derive(Debug, Clone)]
+pub struct KlineSymbols(Vec<String>);
+
+impl KlineSymbols {
+    fn into_vec(self) -> Vec<String> {
+        self.0
+    }
+}
+
+impl From<&str> for KlineSymbols {
+    fn from(value: &str) -> Self {
+        KlineSymbols(vec![value.to_string()])
+    }
+}
+
+impl From<String> for KlineSymbols {
+    fn from(value: String) -> Self {
+        KlineSymbols(vec![value])
+    }
+}
+
+impl From<&String> for KlineSymbols {
+    fn from(value: &String) -> Self {
+        KlineSymbols(vec![value.clone()])
+    }
+}
+
+impl From<Vec<String>> for KlineSymbols {
+    fn from(value: Vec<String>) -> Self {
+        KlineSymbols(value)
+    }
+}
+
+impl From<&[String]> for KlineSymbols {
+    fn from(value: &[String]) -> Self {
+        KlineSymbols(value.to_vec())
+    }
+}
+
+impl From<&Vec<String>> for KlineSymbols {
+    fn from(value: &Vec<String>) -> Self {
+        KlineSymbols(value.clone())
+    }
+}
+
+impl<'a> From<&'a [&'a str]> for KlineSymbols {
+    fn from(value: &'a [&'a str]) -> Self {
+        KlineSymbols(value.iter().map(|s| (*s).to_string()).collect())
+    }
+}
+
+impl<'a> From<Vec<&'a str>> for KlineSymbols {
+    fn from(value: Vec<&'a str>) -> Self {
+        KlineSymbols(value.into_iter().map(|s| s.to_string()).collect())
+    }
+}
+
+/// Series API 入口。
+///
+/// 该类型负责创建并管理 `SeriesSubscription`，用于按图表维度持续接收
+/// K 线或 Tick 数据更新。
 #[derive(Clone)]
 pub struct SeriesAPI {
     dm: Arc<DataManager>,
@@ -33,7 +98,7 @@ pub struct SeriesAPI {
 }
 
 impl SeriesAPI {
-    /// 创建 Series API
+    /// 创建 Series API 实例。
     pub fn new(
         dm: Arc<DataManager>,
         ws: Arc<TqQuoteWebsocket>,
@@ -46,53 +111,55 @@ impl SeriesAPI {
         }
     }
 
-    /// 订阅单合约 K线
-    pub async fn kline(
+    /// 获取 K 线序列订阅（单合约/多合约对齐），对齐 tqsdk-python 的 `get_kline_serial`。
+    ///
+    /// # 参数
+    /// - `symbols`: 单合约或合约列表。元素数量为 1 时订阅单合约，>1 时订阅多合约对齐序列
+    /// - `duration`: K 线周期（整秒）；日线以上必须为 86400 的整数倍
+    /// - `data_length`: 数据条数，上限 10000；多合约模式下最小为 30
+    ///
+    /// # 返回
+    /// 返回可复用的订阅句柄 `SeriesSubscription`。
+    ///
+    /// # 错误
+    /// 当参数无效、权限不足或网络发送失败时返回错误。
+    pub async fn kline<T>(
+        &self,
+        symbols: T,
+        duration: StdDuration,
+        data_length: usize,
+    ) -> Result<Arc<SeriesSubscription>>
+    where
+        T: Into<KlineSymbols>,
+    {
+        let symbols = symbols.into().into_vec();
+        let options = build_realtime_kline_options(symbols, duration, data_length)?;
+        self.subscribe(options).await
+    }
+
+    /// 获取 Tick 序列订阅，对齐 tqsdk-python 的 `get_tick_serial`。
+    ///
+    /// # 参数
+    /// - `symbol`: 合约代码
+    /// - `data_length`: 数据条数，上限 10000
+    ///
+    /// # 返回
+    /// 返回 Tick 订阅句柄 `SeriesSubscription`。
+    ///
+    /// # 错误
+    /// 当参数无效、权限不足或网络发送失败时返回错误。
+    pub async fn tick(
         &self,
         symbol: &str,
-        duration: StdDuration,
-        view_width: usize,
+        data_length: usize,
     ) -> Result<Arc<SeriesSubscription>> {
-        self.subscribe(SeriesOptions {
-            symbols: vec![symbol.to_string()],
-            duration: duration.as_nanos() as i64,
-            view_width,
-            chart_id: String::new(),
-            left_kline_id: None,
-            focus_datetime: None,
-            focus_position: None,
-        })
-        .await
-    }
-
-    /// 订阅多合约 K线（对齐）
-    pub async fn kline_multi(
-        &self,
-        symbols: &[String],
-        duration: StdDuration,
-        view_width: usize,
-    ) -> Result<Arc<SeriesSubscription>> {
-        if symbols.is_empty() {
-            return Err(TqError::InvalidParameter("symbols 为空".to_string()));
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
-
-        self.subscribe(SeriesOptions {
-            symbols: symbols.to_vec(),
-            duration: duration.as_nanos() as i64,
-            view_width,
-            chart_id: String::new(),
-            left_kline_id: None,
-            focus_datetime: None,
-            focus_position: None,
-        })
-        .await
-    }
-
-    /// 订阅 Tick 数据
-    pub async fn tick(&self, symbol: &str, view_width: usize) -> Result<Arc<SeriesSubscription>> {
+        let view_width = normalize_data_length(data_length)?;
         self.subscribe(SeriesOptions {
             symbols: vec![symbol.to_string()],
-            duration: 0, // 0 表示 Tick
+            duration: 0,
             view_width,
             chart_id: String::new(),
             left_kline_id: None,
@@ -102,17 +169,34 @@ impl SeriesAPI {
         .await
     }
 
-    /// 订阅历史 K线（使用 left_kline_id）
+    /// 订阅历史 K 线（通过 `left_kline_id` 定位窗口左边界）。
+    ///
+    /// # 参数
+    /// - `symbol`: 合约代码
+    /// - `duration`: K 线周期
+    /// - `view_width`: 图表窗口宽度
+    /// - `left_kline_id`: 历史窗口左边界 ID
+    ///
+    /// # 返回
+    /// 返回历史窗口订阅句柄 `SeriesSubscription`。
+    ///
+    /// # 错误
+    /// 当参数无效、权限不足或网络发送失败时返回错误。
     pub async fn kline_history(
         &self,
         symbol: &str,
         duration: StdDuration,
-        view_width: usize,
+        data_length: usize,
         left_kline_id: i64,
     ) -> Result<Arc<SeriesSubscription>> {
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+        }
+        let view_width = normalize_data_length(data_length)?;
+        let duration = normalize_kline_duration(duration)?;
         self.subscribe(SeriesOptions {
             symbols: vec![symbol.to_string()],
-            duration: duration.as_nanos() as i64,
+            duration,
             view_width,
             chart_id: String::new(),
             left_kline_id: Some(left_kline_id),
@@ -122,18 +206,36 @@ impl SeriesAPI {
         .await
     }
 
-    /// 订阅历史 K线（使用 focus_datetime）
+    /// 订阅历史 K 线（通过时间焦点定位窗口）。
+    ///
+    /// # 参数
+    /// - `symbol`: 合约代码
+    /// - `duration`: K 线周期
+    /// - `view_width`: 图表窗口宽度
+    /// - `focus_time`: 焦点时间（UTC）
+    /// - `focus_position`: 焦点在窗口中的位置，`1` 靠右，`-1` 靠左
+    ///
+    /// # 返回
+    /// 返回历史窗口订阅句柄 `SeriesSubscription`。
+    ///
+    /// # 错误
+    /// 当参数无效、权限不足或网络发送失败时返回错误。
     pub async fn kline_history_with_focus(
         &self,
         symbol: &str,
         duration: StdDuration,
-        view_width: usize,
+        data_length: usize,
         focus_time: DateTime<Utc>,
         focus_position: i32,
     ) -> Result<Arc<SeriesSubscription>> {
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+        }
+        let view_width = normalize_data_length(data_length)?;
+        let duration = normalize_kline_duration(duration)?;
         self.subscribe(SeriesOptions {
             symbols: vec![symbol.to_string()],
-            duration: duration.as_nanos() as i64,
+            duration,
             view_width,
             chart_id: String::new(),
             left_kline_id: None,
@@ -147,6 +249,19 @@ impl SeriesAPI {
     async fn subscribe(&self, mut options: SeriesOptions) -> Result<Arc<SeriesSubscription>> {
         if options.symbols.is_empty() {
             return Err(TqError::InvalidParameter("symbols 为空".to_string()));
+        }
+        if options.symbols.iter().any(|s| s.is_empty()) {
+            return Err(TqError::InvalidParameter(
+                "symbols 不能包含空字符串".to_string(),
+            ));
+        }
+        if options.view_width == 0 {
+            return Err(TqError::InvalidParameter(
+                "data_length 必须大于 0".to_string(),
+            ));
+        }
+        if options.view_width > 10000 {
+            options.view_width = 10000;
         }
         {
             // 权限校验
@@ -177,16 +292,114 @@ impl SeriesAPI {
     }
 }
 
-/// Series 订阅选项
+/// Series 订阅参数。
+///
+/// 该结构用于描述一次图表订阅请求的核心参数。
 #[derive(Debug, Clone)]
 pub struct SeriesOptions {
+    /// 订阅合约列表，单合约和多合约均使用该字段。
     pub symbols: Vec<String>,
+    /// 周期（纳秒），`0` 表示 Tick 模式。
     pub duration: i64,
+    /// 图表窗口宽度，超出上限时会在请求阶段被截断到 `10000`。
     pub view_width: usize,
+    /// 图表 ID。为空时由 SDK 自动生成。
     pub chart_id: String,
+    /// 历史左边界 K 线 ID，优先级高于焦点定位参数。
     pub left_kline_id: Option<i64>,
+    /// 历史焦点时间（UTC），需与 `focus_position` 搭配使用。
     pub focus_datetime: Option<DateTime<Utc>>,
+    /// 焦点位置，`1` 靠右，`-1` 靠左。
     pub focus_position: Option<i32>,
+}
+
+fn normalize_data_length(data_length: usize) -> Result<usize> {
+    if data_length == 0 {
+        return Err(TqError::InvalidParameter(
+            "data_length 必须大于 0".to_string(),
+        ));
+    }
+    Ok(data_length.min(10000))
+}
+
+fn normalize_kline_duration(duration: StdDuration) -> Result<i64> {
+    if duration.is_zero() {
+        return Err(TqError::InvalidParameter(
+            "duration 必须大于 0".to_string(),
+        ));
+    }
+    if duration.subsec_nanos() != 0 {
+        return Err(TqError::InvalidParameter(
+            "duration 必须为整秒".to_string(),
+        ));
+    }
+    let secs = duration.as_secs();
+    if secs == 0 {
+        return Err(TqError::InvalidParameter(
+            "duration 必须大于 0".to_string(),
+        ));
+    }
+    if secs > 86_400 && secs % 86_400 != 0 {
+        return Err(TqError::InvalidParameter(
+            "日线以上周期必须为 86400 的整数倍".to_string(),
+        ));
+    }
+    let nanos = (secs as u128)
+        .checked_mul(1_000_000_000u128)
+        .ok_or_else(|| TqError::InvalidParameter("duration 过大".to_string()))?;
+    i64::try_from(nanos).map_err(|_| TqError::InvalidParameter("duration 过大".to_string()))
+}
+
+fn build_realtime_kline_options(
+    symbols: Vec<String>,
+    duration: StdDuration,
+    data_length: usize,
+) -> Result<SeriesOptions> {
+    if symbols.is_empty() {
+        return Err(TqError::InvalidParameter("symbols 为空".to_string()));
+    }
+    if symbols.iter().any(|s| s.is_empty()) {
+        return Err(TqError::InvalidParameter(
+            "symbols 不能包含空字符串".to_string(),
+        ));
+    }
+    let view_width = normalize_data_length(data_length)?;
+    let duration = normalize_kline_duration(duration)?;
+    let view_width = if symbols.len() > 1 {
+        view_width.max(30)
+    } else {
+        view_width
+    };
+    Ok(SeriesOptions {
+        symbols,
+        duration,
+        view_width,
+        chart_id: String::new(),
+        left_kline_id: None,
+        focus_datetime: None,
+        focus_position: None,
+    })
+}
+
+fn build_set_chart_request(options: &SeriesOptions, view_width: usize) -> serde_json::Value {
+    let mut chart_req = serde_json::json!({
+        "aid": "set_chart",
+        "chart_id": &options.chart_id,
+        "ins_list": options.symbols.join(","),
+        "duration": options.duration,
+        "view_width": view_width,
+    });
+
+    if let Some(left_kline_id) = options.left_kline_id {
+        chart_req["left_kline_id"] = serde_json::json!(left_kline_id);
+    } else if let (Some(focus_datetime), Some(focus_position)) =
+        (options.focus_datetime, options.focus_position)
+    {
+        chart_req["focus_datetime"] = serde_json::json!(focus_datetime.timestamp_nanos_opt());
+        chart_req["focus_position"] = serde_json::json!(focus_position);
+    }
+
+    chart_req
 }
 
 /// 生成 chart_id
@@ -199,7 +412,13 @@ fn generate_chart_id(options: &SeriesOptions) -> String {
     }
 }
 
-/// Series 订阅
+/// Series 订阅句柄。
+///
+/// 该类型封装单次订阅生命周期，支持：
+/// - 启停与刷新
+/// - 更新/新 Bar/错误回调注册
+/// - 流式消费
+/// - 主动关闭
 pub struct SeriesSubscription {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
@@ -254,30 +473,23 @@ impl SeriesSubscription {
 
     /// 发送 set_chart 请求
     async fn send_set_chart(&self) -> Result<()> {
-        let view_width = if self.options.view_width > 10000 {
-            warn!("ViewWidth 超过最大限制，调整为 10000");
-            10000
-        } else {
-            self.options.view_width
-        };
-
-        let mut chart_req = serde_json::json!({
-            "aid": "set_chart",
-            "chart_id": self.options.chart_id,
-            "ins_list": self.options.symbols.join(","),
-            "duration": self.options.duration,
-            "view_width": view_width
-        });
-
-        // 添加历史数据参数
-        if let Some(left_kline_id) = self.options.left_kline_id {
-            chart_req["left_kline_id"] = serde_json::json!(left_kline_id);
-        } else if let (Some(focus_datetime), Some(focus_position)) =
-            (self.options.focus_datetime, self.options.focus_position)
-        {
-            chart_req["focus_datetime"] = serde_json::json!(focus_datetime.timestamp_nanos_opt());
-            chart_req["focus_position"] = serde_json::json!(focus_position);
+        let mut view_width = self.options.view_width.min(10000);
+        if view_width == 0 {
+            view_width = 1;
         }
+        let use_multi_init_view_width = self.options.duration != 0
+            && self.options.symbols.len() > 1
+            && self.options.left_kline_id.is_none()
+            && self.options.focus_datetime.is_none()
+            && self.options.focus_position.is_none();
+        if use_multi_init_view_width {
+            let ready = *self.chart_ready.read().await;
+            if !ready {
+                view_width = 10000;
+            }
+        }
+
+        let chart_req = build_set_chart_request(&self.options, view_width);
 
         debug!(
             "发送 set_chart 请求: chart_id={}, symbols={:?}, view_width={}, duration={}",
@@ -288,6 +500,14 @@ impl SeriesSubscription {
         Ok(())
     }
 
+    /// 在已存在的图表订阅上更新历史焦点位置。
+    ///
+    /// # 参数
+    /// - `focus_time`: 焦点时间（UTC）
+    /// - `focus_position`: 焦点位置，`1` 靠右，`-1` 靠左
+    ///
+    /// # 错误
+    /// 当网络发送失败时返回错误。
     pub async fn update_focus(
         &self,
         focus_time: DateTime<Utc>,
@@ -311,7 +531,12 @@ impl SeriesSubscription {
         Ok(())
     }
 
-    /// 启动监听
+    /// 启动订阅。
+    ///
+    /// 首次调用会注册数据监听并发送 `set_chart` 请求；重复调用是幂等的。
+    ///
+    /// # 错误
+    /// 当发送订阅请求失败时返回错误。
     pub async fn start(&self) -> Result<()> {
         let mut running = self.running.write().await;
         if *running {
@@ -329,6 +554,13 @@ impl SeriesSubscription {
         Ok(())
     }
 
+    /// 刷新订阅状态并重新发起 `set_chart` 请求。
+    ///
+    /// 该方法会重置内部增量状态（如 `last_id`、范围同步状态），
+    /// 适合在需要强制重新对齐窗口时使用。
+    ///
+    /// # 错误
+    /// 当发送刷新请求失败时返回错误。
     pub async fn refresh(&self) -> Result<()> {
         {
             let mut ids = self.last_ids.write().await;
@@ -365,6 +597,7 @@ impl SeriesSubscription {
     /// 启动监听数据更新
     async fn start_watching(&self) {
         let dm_clone = Arc::clone(&self.dm);
+        let ws = Arc::clone(&self.ws);
         let options = self.options.clone();
         let last_ids = Arc::clone(&self.last_ids);
         let last_left_id = Arc::clone(&self.last_left_id);
@@ -379,20 +612,29 @@ impl SeriesSubscription {
         let running = Arc::clone(&self.running);
         let worker_running = Arc::new(AtomicBool::new(false));
         let worker_dirty = Arc::new(AtomicBool::new(false));
+        let view_width_adjusted = Arc::new(AtomicBool::new(false));
         let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
         dm_clone.on_data(move || {
             let chart_id = &options.chart_id;
-            let symbol = &options.symbols[0];
             let duration_str = options.duration.to_string();
 
             let last_epoch = *last_processed_epoch.lock().unwrap();
             let chart_epoch = dm_for_callback.get_path_epoch(&["charts", chart_id]);
             let data_epoch = if options.duration == 0 {
+                let symbol = &options.symbols[0];
                 dm_for_callback.get_path_epoch(&["ticks", symbol])
+            } else if options.symbols.len() > 1 {
+                options
+                    .symbols
+                    .iter()
+                    .map(|symbol| dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str]))
+                    .max()
+                    .unwrap_or(0)
             } else {
+                let symbol = &options.symbols[0];
                 dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str])
             };
 
@@ -418,6 +660,8 @@ impl SeriesSubscription {
             let running = Arc::clone(&running);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
+            let ws = Arc::clone(&ws);
+            let view_width_adjusted = Arc::clone(&view_width_adjusted);
             let last_processed_epoch = Arc::clone(&last_processed_epoch);
 
             tokio::spawn(async move {
@@ -427,15 +671,23 @@ impl SeriesSubscription {
                     if is_running {
                         let chart_id = &options.chart_id;
                         let duration_str = options.duration.to_string();
-                        let symbol = &options.symbols[0];
 
                         let current_global_epoch = dm.get_epoch();
                         let last_epoch = *last_processed_epoch.lock().unwrap();
 
                         let chart_epoch = dm.get_path_epoch(&["charts", chart_id]);
                         let data_epoch = if options.duration == 0 {
+                            let symbol = &options.symbols[0];
                             dm.get_path_epoch(&["ticks", symbol])
+                        } else if options.symbols.len() > 1 {
+                            options
+                                .symbols
+                                .iter()
+                                .map(|symbol| dm.get_path_epoch(&["klines", symbol, &duration_str]))
+                                .max()
+                                .unwrap_or(0)
                         } else {
+                            let symbol = &options.symbols[0];
                             dm.get_path_epoch(&["klines", symbol, &duration_str])
                         };
 
@@ -475,6 +727,19 @@ impl SeriesSubscription {
                                                             callback(Arc::clone(&series_data));
                                                         }
                                                     }
+
+                                                    let use_multi_init_view_width = options.duration != 0
+                                                        && options.symbols.len() > 1
+                                                        && options.left_kline_id.is_none()
+                                                        && options.focus_datetime.is_none()
+                                                        && options.focus_position.is_none()
+                                                        && options.view_width < 10000;
+                                                    if use_multi_init_view_width
+                                                        && !view_width_adjusted.swap(true, Ordering::SeqCst)
+                                                    {
+                                                        let chart_req = build_set_chart_request(&options, options.view_width);
+                                                        let _ = ws.send(&chart_req).await;
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
@@ -507,7 +772,10 @@ impl SeriesSubscription {
         });
     }
 
-    /// 注册更新回调
+    /// 注册更新回调。
+    ///
+    /// 每次可消费的数据更新时触发，包含完整 `SeriesData` 和 `UpdateInfo`。
+    /// 重复注册会覆盖旧回调。
     pub async fn on_update<F>(&self, handler: F)
     where
         F: Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync + 'static,
@@ -516,7 +784,10 @@ impl SeriesSubscription {
         *guard = Some(Arc::new(handler));
     }
 
-    /// 注册新 K线回调
+    /// 注册新 Bar 回调。
+    ///
+    /// 当检测到 `last_id` 前进时触发。Tick 模式下也会在新 Tick 到达时触发。
+    /// 重复注册会覆盖旧回调。
     pub async fn on_new_bar<F>(&self, handler: F)
     where
         F: Fn(Arc<SeriesData>) + Send + Sync + 'static,
@@ -525,7 +796,10 @@ impl SeriesSubscription {
         *guard = Some(Arc::new(handler));
     }
 
-    /// 注册 K线更新回调
+    /// 注册 Bar 更新回调。
+    ///
+    /// 当最后一根 Bar 有更新或出现新 Bar 时触发。
+    /// 重复注册会覆盖旧回调。
     pub async fn on_bar_update<F>(&self, handler: F)
     where
         F: Fn(Arc<SeriesData>) + Send + Sync + 'static,
@@ -534,7 +808,10 @@ impl SeriesSubscription {
         *guard = Some(Arc::new(handler));
     }
 
-    /// 注册错误回调
+    /// 注册错误回调。
+    ///
+    /// 当更新处理过程中出现可上报错误时触发。
+    /// 重复注册会覆盖旧回调。
     pub async fn on_error<F>(&self, handler: F)
     where
         F: Fn(Arc<String>) + Send + Sync + 'static,
@@ -543,7 +820,12 @@ impl SeriesSubscription {
         *guard = Some(Arc::new(handler));
     }
 
-    /// 获取数据流
+    /// 获取异步数据流。
+    ///
+    /// 该方法内部通过 `on_update` 回调桥接为 `Stream`，适合与 `while let` 或
+    /// `tokio_stream` 生态配合使用。
+    ///
+    /// 注意：调用该方法会覆盖此前注册的 `on_update` 处理器。
     pub async fn data_stream(&self) -> impl Stream<Item = Arc<SeriesData>> {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -560,7 +842,12 @@ impl SeriesSubscription {
         }
     }
 
-    /// 关闭订阅
+    /// 关闭订阅并向服务端发送取消请求。
+    ///
+    /// 该操作幂等，多次调用仅第一次会实际发送取消请求。
+    ///
+    /// # 错误
+    /// 当取消请求发送失败时返回错误。
     pub async fn close(&self) -> Result<()> {
         {
             let mut running = self.running.write().await;
@@ -606,6 +893,35 @@ impl Drop for SeriesSubscription {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod api_naming_tests {
+    use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
+
+    #[test]
+    fn series_api_should_expose_kline_and_tick_methods() {
+        fn _kline<'a>(
+            api: &'a SeriesAPI,
+            symbols: &'a str,
+            duration: StdDuration,
+            data_length: usize,
+        ) -> Pin<Box<dyn Future<Output = Result<Arc<SeriesSubscription>>> + Send + 'a>> {
+            Box::pin(api.kline(symbols, duration, data_length))
+        }
+
+        fn _tick<'a>(
+            api: &'a SeriesAPI,
+            symbol: &'a str,
+            data_length: usize,
+        ) -> Pin<Box<dyn Future<Output = Result<Arc<SeriesSubscription>>> + Send + 'a>> {
+            Box::pin(api.tick(symbol, data_length))
+        }
+
+        let _ = (_kline, _tick);
     }
 }
 

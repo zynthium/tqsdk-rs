@@ -1025,34 +1025,46 @@ impl DataManager {
                     };
 
                     // 添加主合约 K线
-                    if let Some(kline_data) = main_data_index.get(&main_id) {
-                        if let Ok(mut kline) = self.convert_to_struct::<Kline>(kline_data) {
-                            kline.id = main_id;
-                            set.timestamp = nanos_to_datetime(kline.datetime);
-                            set.klines.insert(main_symbol.clone(), kline);
-                        }
-                    }
+                    let Some(kline_data) = main_data_index.get(&main_id) else {
+                        continue;
+                    };
+                    let Ok(mut kline) = self.convert_to_struct::<Kline>(kline_data) else {
+                        continue;
+                    };
+                    kline.id = main_id;
+                    set.timestamp = nanos_to_datetime(kline.datetime);
+                    set.klines.insert(main_symbol.clone(), kline);
 
                     // 添加其他合约的对齐 K线
+                    let mut aligned = true;
                     for symbol in symbols.iter().skip(1) {
                         let Some(binding) = bindings.get(symbol) else {
-                            continue;
+                            aligned = false;
+                            break;
                         };
                         let Some(other_index) = aligned_data_indexes.get(symbol) else {
-                            continue;
+                            aligned = false;
+                            break;
                         };
                         let Some(&mapped_id) = binding.get(&main_id) else {
-                            continue;
+                            aligned = false;
+                            break;
                         };
-                        if let Some(other_kline_data) = other_index.get(&mapped_id) {
-                            if let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) {
-                                kline.id = mapped_id;
-                                set.klines.insert(symbol.clone(), kline);
-                            }
-                        }
+                        let Some(other_kline_data) = other_index.get(&mapped_id) else {
+                            aligned = false;
+                            break;
+                        };
+                        let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) else {
+                            aligned = false;
+                            break;
+                        };
+                        kline.id = mapped_id;
+                        set.klines.insert(symbol.clone(), kline);
                     }
 
-                    result.data.push(set);
+                    if aligned && set.klines.len() == symbols.len() {
+                        result.data.push(set);
+                    }
                 }
             }
         }
@@ -1378,6 +1390,138 @@ mod tests {
 
         assert!(dm.is_changing(&["quotes", "SHFE.au2602"]));
         assert!(!dm.is_changing(&["quotes", "SHFE.ag2512"]));
+    }
+
+    fn test_kline_value(datetime: i64) -> Value {
+        json!({
+            "datetime": datetime,
+            "open": 1.0,
+            "close": 2.0,
+            "high": 3.0,
+            "low": 0.5,
+            "open_oi": 0,
+            "close_oi": 0,
+            "volume": 1
+        })
+    }
+
+    #[test]
+    fn test_get_multi_klines_data_strict_alignment_skips_incomplete_rows() {
+        let dur_id: i64 = 60_000_000_000;
+        let mut initial_data = HashMap::new();
+        initial_data.insert(
+            "charts".to_string(),
+            json!({
+                "C1": {
+                    "left_id": -1,
+                    "right_id": -1
+                }
+            }),
+        );
+        initial_data.insert(
+            "klines".to_string(),
+            json!({
+                "A": {
+                    "60000000000": {
+                        "last_id": 2,
+                        "trading_day_start_id": 0,
+                        "trading_day_end_id": 0,
+                        "binding": {
+                            "B": {
+                                "1": 10
+                            }
+                        },
+                        "data": {
+                            "1": test_kline_value(1_000_000_000),
+                            "2": test_kline_value(2_000_000_000)
+                        }
+                    }
+                },
+                "B": {
+                    "60000000000": {
+                        "last_id": 20,
+                        "trading_day_start_id": 0,
+                        "trading_day_end_id": 0,
+                        "data": {
+                            "10": test_kline_value(1_000_000_000),
+                            "20": test_kline_value(2_000_000_000)
+                        }
+                    }
+                }
+            }),
+        );
+
+        let dm = DataManager::new(initial_data, DataManagerConfig::default());
+        let symbols = vec!["A".to_string(), "B".to_string()];
+        let res = dm
+            .get_multi_klines_data(&symbols, dur_id, "C1", 100)
+            .unwrap();
+
+        assert_eq!(res.data.len(), 1);
+        assert_eq!(res.data[0].klines.len(), 2);
+        assert!(res.data[0].klines.contains_key("A"));
+        assert!(res.data[0].klines.contains_key("B"));
+    }
+
+    #[test]
+    fn test_get_multi_klines_data_strict_alignment_keeps_complete_rows() {
+        let dur_id: i64 = 60_000_000_000;
+        let mut initial_data = HashMap::new();
+        initial_data.insert(
+            "charts".to_string(),
+            json!({
+                "C1": {
+                    "left_id": -1,
+                    "right_id": -1
+                }
+            }),
+        );
+        initial_data.insert(
+            "klines".to_string(),
+            json!({
+                "A": {
+                    "60000000000": {
+                        "last_id": 2,
+                        "trading_day_start_id": 0,
+                        "trading_day_end_id": 0,
+                        "binding": {
+                            "B": {
+                                "1": 10,
+                                "2": 20
+                            }
+                        },
+                        "data": {
+                            "1": test_kline_value(1_000_000_000),
+                            "2": test_kline_value(2_000_000_000)
+                        }
+                    }
+                },
+                "B": {
+                    "60000000000": {
+                        "last_id": 20,
+                        "trading_day_start_id": 0,
+                        "trading_day_end_id": 0,
+                        "data": {
+                            "10": test_kline_value(1_000_000_000),
+                            "20": test_kline_value(2_000_000_000)
+                        }
+                    }
+                }
+            }),
+        );
+
+        let dm = DataManager::new(initial_data, DataManagerConfig::default());
+        let symbols = vec!["A".to_string(), "B".to_string()];
+        let res = dm
+            .get_multi_klines_data(&symbols, dur_id, "C1", 100)
+            .unwrap();
+
+        assert_eq!(res.data.len(), 2);
+        for set in res.data {
+            assert_eq!(set.klines.len(), 2);
+            assert!(set.klines.contains_key("A"));
+            assert!(set.klines.contains_key("B"));
+        }
     }
 
     #[test]

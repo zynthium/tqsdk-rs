@@ -241,7 +241,7 @@ let symbols = vec![
     "SHFE.ag2512".to_string(),  // 白银
 ];
 
-let sub = series_api.kline_multi(
+let sub = series_api.kline(
     &symbols,                    // 合约列表
     Duration::from_secs(60),     // K线周期
     100                          // 数据条数
