@@ -64,7 +64,7 @@ async fn main() -> tqsdk_rs::Result<()> {
         .init_market_backtest(BacktestConfig::new(start_dt, end_dt))
         .await?;
 
-    let symbol = "SHFE.ag2602";
+    let symbol = "SHFE.au2602";
     let duration = Duration::from_secs(60);
     let max_updates = env::var("TQ_MAX_UPDATES")
         .ok()
@@ -108,7 +108,7 @@ async fn main() -> tqsdk_rs::Result<()> {
     let start_wait = Instant::now();
     let mut chart_ready = false;
     loop {
-        if start_wait.elapsed() > Duration::from_secs(60) {
+        if start_wait.elapsed() > Duration::from_secs(120) {
             break;
         }
         tokio::select! {
@@ -117,7 +117,7 @@ async fn main() -> tqsdk_rs::Result<()> {
                 chart_ready = true;
                 break;
             }
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
                 backtest.peek().await?;
             }
         }

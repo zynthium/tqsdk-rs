@@ -11,8 +11,9 @@ fn main() {
 
     // 示例 1: 使用 tqsdk-rs 提供的便捷方法
     println!("【示例 1】使用便捷方法初始化");
-    tqsdk_rs::init_logger("debug", false);
-    info!("使用便捷方法初始化的日志");
+    // tqsdk_rs::init_logger("debug", false);
+    // info!("使用便捷方法初始化的日志");
+    println!("(已跳过示例 1，因为全局 Logger 只能设置一次)");
     println!();
 
     // 示例 2: 组合多个 Layer

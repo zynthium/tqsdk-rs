@@ -254,9 +254,9 @@ async fn multi_kline_subscription_example() {
     let sub = series_api
         .kline_multi(
             &[
-                "SHFE.au2602".to_string(),
-                "SHFE.ag2512".to_string(),
-                "INE.sc2601".to_string(),
+                "SHFE.au2605".to_string(),
+                "SHFE.ag2605".to_string(),
+                "INE.sc2605".to_string(),
             ],
             Duration::from_secs(60),
             1000,
