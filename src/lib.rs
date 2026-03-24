@@ -17,13 +17,13 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // 创建客户端
 //!     let mut client = Client::new("username", "password", ClientConfig::default()).await?;
-//!     
+//!
 //!     // 初始化行情
 //!     client.init_market().await?;
-//!     
+//!
 //!     // 订阅行情
 //!     let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-//!     
+//!
 //!     Ok(())
 //! }
 //! ```
@@ -39,6 +39,8 @@ pub mod utils;
 
 // 数据结构
 pub mod types;
+
+pub mod prelude;
 
 // 数据管理器
 pub mod datamanager;
@@ -72,15 +74,15 @@ pub mod polars_ext;
 
 // 重新导出常用类型
 pub use auth::Authenticator;
+pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
 pub use client::{Client, ClientConfig, ClientOption};
 pub use datamanager::{DataManager, DataManagerConfig};
 pub use errors::{Result, TqError};
-pub use logger::{init_logger, create_logger_layer};
 pub use ins::InsAPI;
+pub use logger::{create_logger_layer, init_logger};
 pub use quote::QuoteSubscription;
 pub use series::{SeriesAPI, SeriesSubscription};
 pub use trade_session::TradeSession;
-pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
 pub use websocket::TqWebsocket;
 

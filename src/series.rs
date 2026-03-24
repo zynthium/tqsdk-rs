@@ -24,6 +24,8 @@ use uuid::Uuid;
 
 use crate::auth::Authenticator;
 
+pub use crate::types::SeriesOptions;
+
 type UpdateCallback =
     Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync>>>>;
 type SeriesCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>;
@@ -104,11 +106,7 @@ impl SeriesAPI {
         ws: Arc<TqQuoteWebsocket>,
         auth: Arc<RwLock<dyn Authenticator>>,
     ) -> Self {
-        SeriesAPI {
-            dm,
-            ws,
-            auth,
-        }
+        SeriesAPI { dm, ws, auth }
     }
 
     /// 获取 K 线序列订阅（单合约/多合约对齐），对齐 tqsdk-python 的 `get_kline_serial`。
@@ -148,20 +146,18 @@ impl SeriesAPI {
     ///
     /// # 错误
     /// 当参数无效、权限不足或网络发送失败时返回错误。
-    pub async fn tick(
-        &self,
-        symbol: &str,
-        data_length: usize,
-    ) -> Result<Arc<SeriesSubscription>> {
+    pub async fn tick(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
-            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+            return Err(TqError::InvalidParameter(
+                "symbol 不能为空字符串".to_string(),
+            ));
         }
         let view_width = normalize_data_length(data_length)?;
         self.subscribe(SeriesOptions {
             symbols: vec![symbol.to_string()],
             duration: 0,
             view_width,
-            chart_id: String::new(),
+            chart_id: None,
             left_kline_id: None,
             focus_datetime: None,
             focus_position: None,
@@ -190,7 +186,9 @@ impl SeriesAPI {
         left_kline_id: i64,
     ) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
-            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+            return Err(TqError::InvalidParameter(
+                "symbol 不能为空字符串".to_string(),
+            ));
         }
         let view_width = normalize_data_length(data_length)?;
         let duration = normalize_kline_duration(duration)?;
@@ -198,7 +196,7 @@ impl SeriesAPI {
             symbols: vec![symbol.to_string()],
             duration,
             view_width,
-            chart_id: String::new(),
+            chart_id: None,
             left_kline_id: Some(left_kline_id),
             focus_datetime: None,
             focus_position: None,
@@ -229,7 +227,9 @@ impl SeriesAPI {
         focus_position: i32,
     ) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
-            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+            return Err(TqError::InvalidParameter(
+                "symbol 不能为空字符串".to_string(),
+            ));
         }
         let view_width = normalize_data_length(data_length)?;
         let duration = normalize_kline_duration(duration)?;
@@ -237,7 +237,7 @@ impl SeriesAPI {
             symbols: vec![symbol.to_string()],
             duration,
             view_width,
-            chart_id: String::new(),
+            chart_id: None,
             left_kline_id: None,
             focus_datetime: Some(focus_time),
             focus_position: Some(focus_position),
@@ -271,8 +271,12 @@ impl SeriesAPI {
         }
 
         // 生成 chart_id
-        if options.chart_id.is_empty() {
-            options.chart_id = generate_chart_id(&options);
+        let has_chart_id = options
+            .chart_id
+            .as_ref()
+            .is_some_and(|chart_id| !chart_id.is_empty());
+        if !has_chart_id {
+            options.chart_id = Some(generate_chart_id(&options));
         }
 
         // 创建新订阅
@@ -292,27 +296,6 @@ impl SeriesAPI {
     }
 }
 
-/// Series 订阅参数。
-///
-/// 该结构用于描述一次图表订阅请求的核心参数。
-#[derive(Debug, Clone)]
-pub struct SeriesOptions {
-    /// 订阅合约列表，单合约和多合约均使用该字段。
-    pub symbols: Vec<String>,
-    /// 周期（纳秒），`0` 表示 Tick 模式。
-    pub duration: i64,
-    /// 图表窗口宽度，超出上限时会在请求阶段被截断到 `10000`。
-    pub view_width: usize,
-    /// 图表 ID。为空时由 SDK 自动生成。
-    pub chart_id: String,
-    /// 历史左边界 K 线 ID，优先级高于焦点定位参数。
-    pub left_kline_id: Option<i64>,
-    /// 历史焦点时间（UTC），需与 `focus_position` 搭配使用。
-    pub focus_datetime: Option<DateTime<Utc>>,
-    /// 焦点位置，`1` 靠右，`-1` 靠左。
-    pub focus_position: Option<i32>,
-}
-
 fn normalize_data_length(data_length: usize) -> Result<usize> {
     if data_length == 0 {
         return Err(TqError::InvalidParameter(
@@ -324,20 +307,14 @@ fn normalize_data_length(data_length: usize) -> Result<usize> {
 
 fn normalize_kline_duration(duration: StdDuration) -> Result<i64> {
     if duration.is_zero() {
-        return Err(TqError::InvalidParameter(
-            "duration 必须大于 0".to_string(),
-        ));
+        return Err(TqError::InvalidParameter("duration 必须大于 0".to_string()));
     }
     if duration.subsec_nanos() != 0 {
-        return Err(TqError::InvalidParameter(
-            "duration 必须为整秒".to_string(),
-        ));
+        return Err(TqError::InvalidParameter("duration 必须为整秒".to_string()));
     }
     let secs = duration.as_secs();
     if secs == 0 {
-        return Err(TqError::InvalidParameter(
-            "duration 必须大于 0".to_string(),
-        ));
+        return Err(TqError::InvalidParameter("duration 必须大于 0".to_string()));
     }
     if secs > 86_400 && secs % 86_400 != 0 {
         return Err(TqError::InvalidParameter(
@@ -374,7 +351,7 @@ fn build_realtime_kline_options(
         symbols,
         duration,
         view_width,
-        chart_id: String::new(),
+        chart_id: None,
         left_kline_id: None,
         focus_datetime: None,
         focus_position: None,
@@ -382,9 +359,10 @@ fn build_realtime_kline_options(
 }
 
 fn build_set_chart_request(options: &SeriesOptions, view_width: usize) -> serde_json::Value {
+    let chart_id = options.chart_id.as_deref().unwrap_or("");
     let mut chart_req = serde_json::json!({
         "aid": "set_chart",
-        "chart_id": &options.chart_id,
+        "chart_id": chart_id,
         "ins_list": options.symbols.join(","),
         "duration": options.duration,
         "view_width": view_width,
@@ -491,9 +469,10 @@ impl SeriesSubscription {
 
         let chart_req = build_set_chart_request(&self.options, view_width);
 
+        let chart_id = self.options.chart_id.as_deref().unwrap_or("");
         debug!(
             "发送 set_chart 请求: chart_id={}, symbols={:?}, view_width={}, duration={}",
-            self.options.chart_id, self.options.symbols, view_width, self.options.duration
+            chart_id, self.options.symbols, view_width, self.options.duration
         );
 
         self.ws.send(&chart_req).await?;
@@ -508,19 +487,16 @@ impl SeriesSubscription {
     ///
     /// # 错误
     /// 当网络发送失败时返回错误。
-    pub async fn update_focus(
-        &self,
-        focus_time: DateTime<Utc>,
-        focus_position: i32,
-    ) -> Result<()> {
+    pub async fn update_focus(&self, focus_time: DateTime<Utc>, focus_position: i32) -> Result<()> {
         let view_width = if self.options.view_width > 10000 {
             10000
         } else {
             self.options.view_width
         };
+        let chart_id = self.options.chart_id.as_deref().unwrap_or("");
         let chart_req = serde_json::json!({
             "aid": "set_chart",
-            "chart_id": self.options.chart_id,
+            "chart_id": chart_id,
             "ins_list": self.options.symbols.join(","),
             "duration": self.options.duration,
             "view_width": view_width,
@@ -546,11 +522,17 @@ impl SeriesSubscription {
         drop(running);
         self.unsubscribe_sent.store(false, Ordering::SeqCst);
 
-        debug!("启动 Series 订阅: {}", self.options.chart_id);
+        debug!(
+            "启动 Series 订阅: {}",
+            self.options.chart_id.as_deref().unwrap_or("")
+        );
 
         self.start_watching().await;
         self.send_set_chart().await?;
-        debug!("send_set_chart done for {}", self.options.chart_id);
+        debug!(
+            "send_set_chart done for {}",
+            self.options.chart_id.as_deref().unwrap_or("")
+        );
         Ok(())
     }
 
@@ -585,9 +567,10 @@ impl SeriesSubscription {
         } else {
             self.options.view_width
         };
+        let chart_id = self.options.chart_id.as_deref().unwrap_or("");
         serde_json::json!({
             "aid": "set_chart",
-            "chart_id": self.options.chart_id,
+            "chart_id": chart_id,
             "ins_list": "",
             "duration": self.options.duration,
             "view_width": view_width
@@ -618,7 +601,7 @@ impl SeriesSubscription {
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
         dm_clone.on_data(move || {
-            let chart_id = &options.chart_id;
+            let chart_id = options.chart_id.as_deref().unwrap_or("");
             let duration_str = options.duration.to_string();
 
             let last_epoch = *last_processed_epoch.lock().unwrap();
@@ -630,7 +613,9 @@ impl SeriesSubscription {
                 options
                     .symbols
                     .iter()
-                    .map(|symbol| dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str]))
+                    .map(|symbol| {
+                        dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str])
+                    })
                     .max()
                     .unwrap_or(0)
             } else {
@@ -669,7 +654,7 @@ impl SeriesSubscription {
                     worker_dirty.store(false, Ordering::SeqCst);
                     let is_running = *running.read().await;
                     if is_running {
-                        let chart_id = &options.chart_id;
+                        let chart_id = options.chart_id.as_deref().unwrap_or("");
                         let duration_str = options.duration.to_string();
 
                         let current_global_epoch = dm.get_epoch();
@@ -693,7 +678,9 @@ impl SeriesSubscription {
 
                         if chart_epoch > last_epoch || data_epoch > last_epoch {
                             if let Some(chart_data) = dm.get_by_path(&["charts", chart_id]) {
-                                if let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data) {
+                                if let Ok(chart_info) =
+                                    dm.convert_to_struct::<ChartInfo>(&chart_data)
+                                {
                                     if chart_info.ready && !chart_info.more_data {
                                         match process_series_update(
                                             &dm,
@@ -712,32 +699,46 @@ impl SeriesSubscription {
                                                     let series_data = Arc::new(series_data);
                                                     let update_info = Arc::new(update_info);
 
-                                                    if let Some(callback) = on_update.read().await.as_ref() {
-                                                        callback(Arc::clone(&series_data), Arc::clone(&update_info));
+                                                    if let Some(callback) =
+                                                        on_update.read().await.as_ref()
+                                                    {
+                                                        callback(
+                                                            Arc::clone(&series_data),
+                                                            Arc::clone(&update_info),
+                                                        );
                                                     }
 
                                                     if update_info.has_new_bar {
-                                                        if let Some(callback) = on_new_bar.read().await.as_ref() {
+                                                        if let Some(callback) =
+                                                            on_new_bar.read().await.as_ref()
+                                                        {
                                                             callback(Arc::clone(&series_data));
                                                         }
                                                     }
 
                                                     if update_info.has_bar_update {
-                                                        if let Some(callback) = on_bar_update.read().await.as_ref() {
+                                                        if let Some(callback) =
+                                                            on_bar_update.read().await.as_ref()
+                                                        {
                                                             callback(Arc::clone(&series_data));
                                                         }
                                                     }
 
-                                                    let use_multi_init_view_width = options.duration != 0
-                                                        && options.symbols.len() > 1
-                                                        && options.left_kline_id.is_none()
-                                                        && options.focus_datetime.is_none()
-                                                        && options.focus_position.is_none()
-                                                        && options.view_width < 10000;
+                                                    let use_multi_init_view_width =
+                                                        options.duration != 0
+                                                            && options.symbols.len() > 1
+                                                            && options.left_kline_id.is_none()
+                                                            && options.focus_datetime.is_none()
+                                                            && options.focus_position.is_none()
+                                                            && options.view_width < 10000;
                                                     if use_multi_init_view_width
-                                                        && !view_width_adjusted.swap(true, Ordering::SeqCst)
+                                                        && !view_width_adjusted
+                                                            .swap(true, Ordering::SeqCst)
                                                     {
-                                                        let chart_req = build_set_chart_request(&options, options.view_width);
+                                                        let chart_req = build_set_chart_request(
+                                                            &options,
+                                                            options.view_width,
+                                                        );
                                                         let _ = ws.send(&chart_req).await;
                                                     }
                                                 }
@@ -746,7 +747,9 @@ impl SeriesSubscription {
                                                 let err_str = e.to_string();
                                                 if !err_str.contains("数据未更新") {
                                                     warn!("处理 Series 更新失败: {}", e);
-                                                    if let Some(callback) = on_error.read().await.as_ref() {
+                                                    if let Some(callback) =
+                                                        on_error.read().await.as_ref()
+                                                    {
                                                         callback(Arc::new(err_str));
                                                     }
                                                 }
@@ -854,7 +857,10 @@ impl SeriesSubscription {
             *running = false;
         }
 
-        info!("关闭 Series 订阅: {}", self.options.chart_id);
+        info!(
+            "关闭 Series 订阅: {}",
+            self.options.chart_id.as_deref().unwrap_or("")
+        );
 
         if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -871,9 +877,10 @@ impl Drop for SeriesSubscription {
         if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
             return;
         }
+        let chart_id = self.options.chart_id.clone().unwrap_or_default();
         info!(
             "销毁 Series 订阅: chart_id={}, symbols={:?}, duration={}",
-            self.options.chart_id, self.options.symbols, self.options.duration
+            chart_id, self.options.symbols, self.options.duration
         );
         let ws = Arc::clone(&self.ws);
         let cancel_req = self.build_cancel_chart_request();
@@ -982,15 +989,19 @@ async fn process_series_update(
 /// 获取单合约 K线数据
 async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Result<SeriesData> {
     let symbol = &options.symbols[0];
+    let chart_id = options
+        .chart_id
+        .as_deref()
+        .ok_or_else(|| TqError::InternalError("SeriesOptions.chart_id 为空".to_string()))?;
 
     // 获取 Chart 信息 - 直接从 JSON 转换为 ChartInfo
     let mut right_id = -1i64;
     let chart_info = dm
-        .get_by_path(&["charts", &options.chart_id])
+        .get_by_path(&["charts", chart_id])
         .and_then(|chart_data| dm.convert_to_struct::<ChartInfo>(&chart_data).ok())
         .map(|mut chart| {
             right_id = chart.right_id;
-            chart.chart_id = options.chart_id.clone();
+            chart.chart_id = chart_id.to_string();
             chart.view_width = options.view_width;
             chart
         });
@@ -998,7 +1009,7 @@ async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Res
         dm.get_klines_data(symbol, options.duration, options.view_width, right_id)?;
 
     // 设置 Chart 信息
-    kline_data.chart_id = options.chart_id.clone();
+    kline_data.chart_id = chart_id.to_string();
     kline_data.chart = chart_info;
 
     Ok(SeriesData {
@@ -1013,10 +1024,14 @@ async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Res
 
 /// 获取多合约 K线数据
 async fn get_multi_kline_data(dm: &DataManager, options: &SeriesOptions) -> Result<SeriesData> {
+    let chart_id = options
+        .chart_id
+        .as_deref()
+        .ok_or_else(|| TqError::InternalError("SeriesOptions.chart_id 为空".to_string()))?;
     let multi_data = dm.get_multi_klines_data(
         &options.symbols,
         options.duration,
-        &options.chart_id,
+        chart_id,
         options.view_width,
     )?;
 
@@ -1033,15 +1048,19 @@ async fn get_multi_kline_data(dm: &DataManager, options: &SeriesOptions) -> Resu
 /// 获取 Tick 数据
 async fn get_tick_data(dm: &DataManager, options: &SeriesOptions) -> Result<SeriesData> {
     let symbol = &options.symbols[0];
+    let chart_id = options
+        .chart_id
+        .as_deref()
+        .ok_or_else(|| TqError::InternalError("SeriesOptions.chart_id 为空".to_string()))?;
 
     // 获取 Chart 信息 - 直接从 JSON 转换为 ChartInfo
     let mut right_id = -1i64;
     let chart_info = dm
-        .get_by_path(&["charts", &options.chart_id])
+        .get_by_path(&["charts", chart_id])
         .and_then(|chart_data| dm.convert_to_struct::<ChartInfo>(&chart_data).ok())
         .map(|mut chart| {
             right_id = chart.right_id;
-            chart.chart_id = options.chart_id.clone();
+            chart.chart_id = chart_id.to_string();
             chart.view_width = options.view_width;
             chart
         });
@@ -1049,7 +1068,7 @@ async fn get_tick_data(dm: &DataManager, options: &SeriesOptions) -> Result<Seri
     let mut tick_data = dm.get_ticks_data(symbol, options.view_width, right_id)?;
 
     // 设置 Chart 信息
-    tick_data.chart_id = options.chart_id.clone();
+    tick_data.chart_id = chart_id.to_string();
     tick_data.chart = chart_info;
 
     Ok(SeriesData {
@@ -1158,7 +1177,8 @@ async fn detect_chart_range_change(
         let mut ready = chart_ready.write().await;
         let mut has_sync = has_chart_sync.write().await;
 
-        trace!("before compare -> last_left: {}, last_right: {}, chart.left_id: {}, chart.right_id: {}, ready: {}, chart.ready: {}, has_sync: {}",
+        trace!(
+            "before compare -> last_left: {}, last_right: {}, chart.left_id: {}, chart.right_id: {}, ready: {}, chart.ready: {}, has_sync: {}",
             *last_left, *last_right, chart.left_id, chart.right_id, *ready, chart.ready, *has_sync,
         );
         if chart.left_id != *last_left || chart.right_id != *last_right {
@@ -1185,8 +1205,9 @@ async fn detect_chart_range_change(
         if chart.ready && !chart.more_data {
             info.chart_ready = true;
         }
-        trace!("after compare -> last_left: {}, last_right: {}, chart.left_id: {}, chart.right_id: {}, ready: {}, chart.ready: {}, has_sync: {}",
-            *last_left, *last_right, chart.left_id, chart.right_id, *ready, chart.ready,  *has_sync,
+        trace!(
+            "after compare -> last_left: {}, last_right: {}, chart.left_id: {}, chart.right_id: {}, ready: {}, chart.ready: {}, has_sync: {}",
+            *last_left, *last_right, chart.left_id, chart.right_id, *ready, chart.ready, *has_sync,
         );
         info.has_chart_sync = *has_sync
     }

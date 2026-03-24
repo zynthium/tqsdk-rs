@@ -201,7 +201,10 @@ impl KlineBuffer {
 
         let len = self.ids.len();
         if start >= len {
-            return Err(TqError::Other(format!("起始位置 {} 超出范围 {}", start, len)));
+            return Err(TqError::Other(format!(
+                "起始位置 {} 超出范围 {}",
+                start, len
+            )));
         }
 
         let end = std::cmp::min(start + length, len);
@@ -440,7 +443,9 @@ impl SeriesData {
 
     /// 单合约 K线转 DataFrame
     fn single_kline_to_dataframe(&self) -> Result<DataFrame> {
-        let kline_data = self.single.as_ref()
+        let kline_data = self
+            .single
+            .as_ref()
             .ok_or_else(|| TqError::Other("单合约数据不存在".to_string()))?;
 
         kline_data.to_dataframe()
@@ -448,7 +453,9 @@ impl SeriesData {
 
     /// Tick 数据转 DataFrame
     fn tick_to_dataframe(&self) -> Result<DataFrame> {
-        let tick_data = self.tick_data.as_ref()
+        let tick_data = self
+            .tick_data
+            .as_ref()
             .ok_or_else(|| TqError::Other("Tick数据不存在".to_string()))?;
 
         tick_data.to_dataframe()
@@ -456,7 +463,9 @@ impl SeriesData {
 
     /// 多合约 K线转 DataFrame（长表格式）
     fn multi_kline_to_dataframe(&self) -> Result<DataFrame> {
-        let multi_data = self.multi.as_ref()
+        let multi_data = self
+            .multi
+            .as_ref()
             .ok_or_else(|| TqError::Other("多合约数据不存在".to_string()))?;
 
         multi_data.to_dataframe()
@@ -469,7 +478,9 @@ impl SeriesData {
             return Err(TqError::Other("只有多合约数据支持宽表格式".to_string()));
         }
 
-        let multi_data = self.multi.as_ref()
+        let multi_data = self
+            .multi
+            .as_ref()
             .ok_or_else(|| TqError::Other("多合约数据不存在".to_string()))?;
 
         multi_data.to_wide_dataframe()
@@ -570,7 +581,9 @@ impl MultiKlineSeriesData {
 
         // 提取主时间轴
         let main_ids: Vec<i64> = self.data.iter().map(|s| s.main_id).collect();
-        let timestamps: Vec<i64> = self.data.iter()
+        let timestamps: Vec<i64> = self
+            .data
+            .iter()
             .map(|s| s.timestamp.timestamp_nanos_opt().unwrap_or(0))
             .collect();
 

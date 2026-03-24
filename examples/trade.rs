@@ -8,7 +8,7 @@
 use std::env;
 use std::time::Duration;
 use tokio;
-use tqsdk_rs::*;
+use tqsdk_rs::prelude::*;
 use tracing::info;
 
 /// 使用回调模式的交易示例（实盘交易）

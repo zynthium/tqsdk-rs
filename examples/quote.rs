@@ -9,7 +9,7 @@
 use std::time::Duration;
 use std::{env, vec};
 use tokio;
-use tqsdk_rs::*;
+use tqsdk_rs::prelude::*;
 use tracing::info;
 
 fn get_credentials() -> (String, String) {
@@ -114,7 +114,6 @@ async fn single_kline_subscription_example() {
 
     // let symbol = "SHFE.au2602";
     let symbol = "CFFEX.IF2512";
-
 
     let mut client = Client::new(&username, &password, config)
         .await
@@ -327,10 +326,7 @@ async fn tick_subscription_example() {
 
     // 创建订阅（延迟启动，推荐方式）
     let series_api = client.series().expect("获取 series API 失败");
-    let sub = series_api
-        .tick("SHFE.au2602", 5)
-        .await
-        .expect("订阅失败");
+    let sub = series_api.tick("SHFE.au2602", 5).await.expect("订阅失败");
 
     // 先注册所有回调函数
     sub.on_new_bar(|data| {
@@ -372,8 +368,7 @@ async fn tick_subscription_example() {
 #[tokio::main]
 async fn main() {
     // 初始化日志：同时输出到终端和文件
-    let log_level =
-        env::var("TQ_LOG").unwrap_or_else(|_| "quote=info,tqsdk_rs=debug".to_string());
+    let log_level = env::var("TQ_LOG").unwrap_or_else(|_| "quote=info,tqsdk_rs=debug".to_string());
     init_logger_with_file(&log_level, false);
 
     // 运行各个示例（取消注释以运行）
@@ -387,8 +382,8 @@ async fn main() {
 
 /// 初始化日志系统：同时输出到终端和文件
 fn init_logger_with_file(level: &str, filter_crate_only: bool) {
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
     use std::fs;
+    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     // 创建日志目录
     fs::create_dir_all("logs").expect("无法创建日志目录");
@@ -430,9 +425,9 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
         .with_writer(file)
         .compact();
 
-
     // 组合两个 Layer
-    tracing_subscriber::registry().with(filter)
+    tracing_subscriber::registry()
+        .with(filter)
         .with(console_layer)
         .with(file_layer)
         .init();

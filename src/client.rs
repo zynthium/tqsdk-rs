@@ -10,13 +10,15 @@ use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
+use crate::types::{
+    EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus,
+};
 use crate::utils::fetch_json_with_headers;
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
-use crate::types::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use async_channel::Receiver;
 use chrono::NaiveDate;
 use reqwest::header::HeaderMap;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -349,7 +351,10 @@ impl Client {
             );
             quote.insert(
                 "expire_datetime".to_string(),
-                source.get("expire_datetime").cloned().unwrap_or(Value::Null),
+                source
+                    .get("expire_datetime")
+                    .cloned()
+                    .unwrap_or(Value::Null),
             );
             quote.insert(
                 "delivery_month".to_string(),
@@ -664,7 +669,11 @@ impl Client {
             .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))
     }
 
-    pub async fn query_graphql(&self, query: &str, variables: Option<serde_json::Value>) -> Result<serde_json::Value> {
+    pub async fn query_graphql(
+        &self,
+        query: &str,
+        variables: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         self.ins()?.query_graphql(query, variables).await
     }
 

@@ -6,12 +6,12 @@
 //! - 多路径同时监听
 //! - 数据更新回调
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tqsdk_rs::*;
 use tokio;
+use tqsdk_rs::prelude::*;
 use tracing::info;
 
 /// DataManager Watch 功能示例
@@ -85,11 +85,8 @@ async fn watch_example() {
 
     // 取消监听
     info!("取消监听...");
-    dm.unwatch(&[
-        "quotes".to_string(),
-        "SHFE.au2512".to_string(),
-    ])
-    .ok();
+    dm.unwatch(&["quotes".to_string(), "SHFE.au2512".to_string()])
+        .ok();
 
     info!("Watch 示例结束");
 }
@@ -189,8 +186,7 @@ async fn multi_watch_example() {
 
     // 清理
     for symbol in &symbols {
-        dm.unwatch(&["quotes".to_string(), symbol.to_string()])
-            .ok();
+        dm.unwatch(&["quotes".to_string(), symbol.to_string()]).ok();
     }
 
     info!("多路径监听示例结束");
@@ -277,4 +273,3 @@ async fn main() {
 
     info!("\n所有示例运行完成!");
 }
-

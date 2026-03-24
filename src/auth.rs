@@ -4,9 +4,7 @@
 
 use crate::errors::{Result, TqError};
 use async_trait::async_trait;
-// JWT 相关导入（暂时不用）
-// use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::Duration;
@@ -21,6 +19,55 @@ pub const TQ_MD_URL_ENV: &str = "TQ_MD_URL";
 pub const CLIENT_ID: &str = "shinny_tq";
 /// 客户端密钥
 pub const CLIENT_SECRET: &str = "be30b9f4-6862-488a-99ad-21bde0400081";
+
+#[derive(Debug, Clone)]
+pub struct TqAuthConfig {
+    pub auth_url: String,
+    pub ns_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub proxy: Option<String>,
+    pub no_proxy: bool,
+    pub verify_jwt: bool,
+    pub http_timeout: Duration,
+}
+
+impl Default for TqAuthConfig {
+    fn default() -> Self {
+        let auth_url = std::env::var("TQ_AUTH_URL").unwrap_or_else(|_| TQ_AUTH_URL.to_string());
+        let ns_url = std::env::var("TQ_NS_URL").unwrap_or_else(|_| TQ_NS_URL.to_string());
+        let client_id = std::env::var("TQ_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
+        let client_secret =
+            std::env::var("TQ_CLIENT_SECRET").unwrap_or_else(|_| CLIENT_SECRET.to_string());
+        let proxy = std::env::var("TQ_AUTH_PROXY")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let no_proxy = matches!(
+            std::env::var("TQ_AUTH_NO_PROXY").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        );
+        let verify_jwt = !matches!(
+            std::env::var("TQ_AUTH_SKIP_JWT_VERIFY").as_deref(),
+            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
+        );
+        let http_timeout_secs: u64 = std::env::var("TQ_HTTP_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(30);
+
+        TqAuthConfig {
+            auth_url,
+            ns_url,
+            client_id,
+            client_secret,
+            proxy,
+            no_proxy,
+            verify_jwt,
+            http_timeout: Duration::from_secs(http_timeout_secs),
+        }
+    }
+}
 
 /// 认证器接口
 #[async_trait]
@@ -133,7 +180,7 @@ struct MdUrlResponse {
 pub struct TqAuth {
     username: String,
     password: String,
-    auth_url: String,
+    config: TqAuthConfig,
     access_token: String,
     refresh_token: String,
     auth_id: String,
@@ -143,12 +190,10 @@ pub struct TqAuth {
 impl TqAuth {
     /// 创建新的认证器
     pub fn new(username: String, password: String) -> Self {
-        let auth_url = std::env::var("TQ_AUTH_URL").unwrap_or_else(|_| TQ_AUTH_URL.to_string());
-
         TqAuth {
             username,
             password,
-            auth_url,
+            config: TqAuthConfig::default(),
             access_token: String::new(),
             refresh_token: String::new(),
             auth_id: String::new(),
@@ -156,16 +201,39 @@ impl TqAuth {
         }
     }
 
+    pub fn with_config(mut self, config: TqAuthConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    fn build_http_client(&self) -> Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder().timeout(self.config.http_timeout);
+        if self.config.no_proxy {
+            builder = builder.no_proxy();
+        }
+        if let Some(proxy) = self.config.proxy.as_deref() {
+            let px = reqwest::Proxy::all(proxy).map_err(|e| TqError::Reqwest {
+                context: format!("配置代理失败: {}", proxy),
+                source: e,
+            })?;
+            builder = builder.proxy(px);
+        }
+        builder.build().map_err(|e| TqError::Reqwest {
+            context: "创建 HTTP 客户端失败".to_string(),
+            source: e,
+        })
+    }
+
     /// 请求 Token
     async fn request_token(&mut self) -> Result<()> {
         let url = format!(
             "{}/auth/realms/shinnytech/protocol/openid-connect/token",
-            self.auth_url
+            self.config.auth_url
         );
 
         let params = [
-            ("client_id", CLIENT_ID),
-            ("client_secret", CLIENT_SECRET),
+            ("client_id", self.config.client_id.as_str()),
+            ("client_secret", self.config.client_secret.as_str()),
             ("username", &self.username),
             ("password", &self.password),
             ("grant_type", "password"),
@@ -173,10 +241,7 @@ impl TqAuth {
 
         info!("正在请求认证 token...");
 
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        let client = self.build_http_client()?;
 
         let response = client
             .post(&url)
@@ -184,18 +249,30 @@ impl TqAuth {
             .header(USER_AGENT, format!("tqsdk-python {}", VERSION))
             .header(ACCEPT, "application/json")
             .send()
-            .await?;
+            .await
+            .map_err(|e| TqError::Reqwest {
+                context: format!("请求失败: POST {}", url),
+                source: e,
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await?;
-            return Err(TqError::AuthenticationError(format!(
-                "认证失败 ({}): {}",
-                status, body
-            )));
+            let body = response.text().await.map_err(|e| TqError::Reqwest {
+                context: format!("读取响应失败: POST {}", url),
+                source: e,
+            })?;
+            return Err(TqError::HttpStatus {
+                method: "POST".to_string(),
+                url,
+                status,
+                body_snippet: TqError::truncate_body(body),
+            });
         }
 
-        let auth_resp: AuthResponse = response.json().await?;
+        let auth_resp: AuthResponse = response.json().await.map_err(|e| TqError::Reqwest {
+            context: "解析 token 响应失败".to_string(),
+            source: e,
+        })?;
         self.access_token = auth_resp.access_token;
         self.refresh_token = auth_resp.refresh_token;
 
@@ -203,21 +280,22 @@ impl TqAuth {
         Ok(())
     }
 
-    /// 解析 JWT Token
-    fn parse_token(&mut self) -> Result<()> {
-        // 解析 JWT（不验证签名，因为我们信任天勤服务器）
+    async fn parse_token(&mut self) -> Result<()> {
         use jsonwebtoken::dangerous::insecure_decode;
-        // 这里我们使用不验证签名的方式解析
-        let token_data = insecure_decode::<AccessTokenClaims>(&self.access_token)?;
-
+        let token_data =
+            insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| {
+                TqError::Jwt {
+                    context: "解析 token 失败".to_string(),
+                    source: e,
+                }
+            })?;
         let claims = token_data.claims;
         self.auth_id = claims.sub;
+        self.grants = Grants::default();
 
-        // 提取权限
         for feature in claims.grants.features {
             self.grants.features.insert(feature);
         }
-
         for account in claims.grants.accounts {
             self.grants.accounts.insert(account);
         }
@@ -248,25 +326,29 @@ impl Authenticator for TqAuth {
 
     async fn login(&mut self) -> Result<()> {
         self.request_token().await?;
-        self.parse_token()?;
-        info!("TqAuth 登录成功, User: {},  AuthId: {}", self.username, self.auth_id);
+        self.parse_token().await?;
+        info!(
+            "TqAuth 登录成功, User: {},  AuthId: {}",
+            self.username, self.auth_id
+        );
         Ok(())
     }
 
     async fn get_td_url(&self, broker_id: &str, account_id: &str) -> Result<BrokerInfo> {
         let url = format!("https://files.shinnytech.com/{}.json", broker_id);
 
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        let client = self.build_http_client()?;
 
         let response = client
             .get(&url)
             .query(&[("account_id", account_id), ("auth", &self.username)])
             .headers(self.base_header())
             .send()
-            .await?;
+            .await
+            .map_err(|e| TqError::Reqwest {
+                context: format!("请求失败: GET {}", url),
+                source: e,
+            })?;
 
         if !response.status().is_success() {
             return Err(TqError::ConfigError(format!(
@@ -275,7 +357,11 @@ impl Authenticator for TqAuth {
             )));
         }
 
-        let broker_infos: std::collections::HashMap<String, BrokerInfo> = response.json().await?;
+        let broker_infos: std::collections::HashMap<String, BrokerInfo> =
+            response.json().await.map_err(|e| TqError::Reqwest {
+                context: format!("解析 broker 配置失败: GET {}", url),
+                source: e,
+            })?;
 
         broker_infos.get(broker_id).cloned().ok_or_else(|| {
             TqError::ConfigError(format!("该期货公司 {} 暂不支持 TqSdk 登录", broker_id))
@@ -289,13 +375,8 @@ impl Authenticator for TqAuth {
                 return Ok(trimmed.to_string());
             }
         }
-
-        let ns_url = std::env::var("TQ_NS_URL").unwrap_or_else(|_| TQ_NS_URL.to_string());
-
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        let ns_url = self.config.ns_url.clone();
+        let client = self.build_http_client()?;
 
         let response = client
             .get(&ns_url)
@@ -305,21 +386,33 @@ impl Authenticator for TqAuth {
             ])
             .headers(self.base_header())
             .send()
-            .await?;
+            .await
+            .map_err(|e| TqError::Reqwest {
+                context: format!("请求失败: GET {}", ns_url),
+                source: e,
+            })?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await?;
-            return Err(TqError::NetworkError(format!(
-                "获取行情服务器地址失败 ({}): {}",
-                status, body
-            )));
+            let body = response.text().await.map_err(|e| TqError::Reqwest {
+                context: format!("读取响应失败: GET {}", ns_url),
+                source: e,
+            })?;
+            return Err(TqError::HttpStatus {
+                method: "GET".to_string(),
+                url: ns_url,
+                status,
+                body_snippet: TqError::truncate_body(body),
+            });
         }
 
-        let md_url_resp: MdUrlResponse = response.json().await?;
+        let md_url_resp: MdUrlResponse = response.json().await.map_err(|e| TqError::Reqwest {
+            context: "解析名称服务响应失败".to_string(),
+            source: e,
+        })?;
         let md_url = md_url_resp.mdurl.trim();
         if md_url.is_empty() {
-            return Err(TqError::NetworkError("名称服务返回空行情地址".to_string()));
+            return Err(TqError::ConfigError("名称服务返回空行情地址".to_string()));
         }
         Ok(md_url.to_string())
     }

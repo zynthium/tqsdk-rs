@@ -5,7 +5,7 @@
 //! - 日志过滤（只显示本库日志）
 //! - WebSocket 消息详细日志
 
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// 日志级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,9 +127,7 @@ pub fn init_logger(level: &str, filter_crate_only: bool) {
 
     // 初始化全局订阅者
     // 使用 try_init 避免重复初始化时 panic
-    let _ = tracing_subscriber::registry()
-        .with(layer)
-        .try_init();
+    let _ = tracing_subscriber::registry().with(layer).try_init();
 }
 
 /// 初始化日志系统（带默认值）

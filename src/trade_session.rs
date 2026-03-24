@@ -8,12 +8,12 @@ use crate::types::{
     Account, InsertOrderRequest, Notification, Order, Position, PositionUpdate, Trade,
 };
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
+use async_channel::{Receiver, Sender, TrySendError, bounded};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use async_channel::{Receiver, Sender, unbounded};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 type AccountCallback = Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>;
 type PositionCallback = Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>;
@@ -66,27 +66,47 @@ impl TradeSession {
         ws_url: String,
         ws_config: WebSocketConfig,
     ) -> Self {
-        // 创建 async-channel channels（使用 unbounded）
-        let (account_tx, account_rx) = unbounded();
-        let (position_tx, position_rx) = unbounded();
-        let (order_tx, order_rx) = unbounded();
-        let (trade_tx, trade_rx) = unbounded();
-        let (notification_tx, notification_rx) = unbounded();
+        let trade_channel_capacity = ws_config.message_queue_capacity.max(1);
+
+        let (account_tx, account_rx) = bounded(trade_channel_capacity);
+        let (position_tx, position_rx) = bounded(trade_channel_capacity);
+        let (order_tx, order_rx) = bounded(trade_channel_capacity);
+        let (trade_tx, trade_rx) = bounded(trade_channel_capacity);
+        let (notification_tx, notification_rx) = bounded(trade_channel_capacity);
 
         let ws = Arc::new(TqTradeWebsocket::new(ws_url, Arc::clone(&dm), ws_config));
 
+        let on_notification: NotificationCallback = Arc::new(RwLock::new(None));
+        let on_error: ErrorCallback = Arc::new(RwLock::new(None));
+
         let noti_tx = notification_tx.clone();
+        let on_notification_for_ws = Arc::clone(&on_notification);
         ws.on_notify(move |noti| {
-            let noti2 = noti.clone();
-            let noti_tx2 = noti_tx.clone();
+            let noti_tx = noti_tx.clone();
+            let on_notification_for_ws = Arc::clone(&on_notification_for_ws);
             tokio::spawn(async move {
-                match noti_tx2.send(noti2).await {
-                    Ok(_) => {
-                        debug!("通知发送成功: {:?}", noti);
+                match noti_tx.try_send(noti.clone()) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        warn!("TradeSession 通知队列已满，丢弃一条通知");
                     }
-                    Err(e) => {
-                        error!("通知发送失败: {:?}, error={}", noti, e);
-                    }
+                    Err(TrySendError::Closed(_)) => {}
+                }
+
+                let callback = on_notification_for_ws.read().await.clone();
+                if let Some(callback) = callback {
+                    callback(noti);
+                }
+            });
+        });
+
+        let on_error_for_ws = Arc::clone(&on_error);
+        ws.on_error(move |msg| {
+            let on_error_for_ws = Arc::clone(&on_error_for_ws);
+            tokio::spawn(async move {
+                let callback = on_error_for_ws.read().await.clone();
+                if let Some(callback) = callback {
+                    callback(msg);
                 }
             });
         });
@@ -111,8 +131,8 @@ impl TradeSession {
             on_position: Arc::new(RwLock::new(None)),
             on_order: Arc::new(RwLock::new(None)),
             on_trade: Arc::new(RwLock::new(None)),
-            on_notification: Arc::new(RwLock::new(None)),
-            on_error: Arc::new(RwLock::new(None)),
+            on_notification,
+            on_error,
             logged_in: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
         }
@@ -201,7 +221,12 @@ impl TradeSession {
                                 .get("trading_day")
                                 .is_some_and(|trading_day| !trading_day.is_null())
                                 && logged_in
-                                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                    .compare_exchange(
+                                        false,
+                                        true,
+                                        Ordering::SeqCst,
+                                        Ordering::SeqCst,
+                                    )
                                     .is_ok()
                             {
                                 info!("交易会话已登录: user_id={}", user_id);
@@ -212,8 +237,15 @@ impl TradeSession {
                             match dm.get_account_data(&user_id, "CNY") {
                                 Ok(account) => {
                                     debug!("账户更新: balance={}", account.balance);
-                                    let _ = account_tx.send(account.clone()).await;
-                                    if let Some(callback) = on_account.read().await.as_ref() {
+                                    match account_tx.try_send(account.clone()) {
+                                        Ok(()) => {}
+                                        Err(TrySendError::Full(_)) => {
+                                            warn!("TradeSession 账户队列已满，丢弃一次更新");
+                                        }
+                                        Err(TrySendError::Closed(_)) => {}
+                                    }
+                                    let callback = on_account.read().await.clone();
+                                    if let Some(callback) = callback {
                                         callback(account);
                                     }
                                 }
@@ -224,15 +256,28 @@ impl TradeSession {
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_epoch {
-                            Self::process_position_update(&dm, &user_id, &position_tx, &on_position, last_epoch).await;
+                            Self::process_position_update(
+                                &dm,
+                                &user_id,
+                                &position_tx,
+                                &on_position,
+                                last_epoch,
+                            )
+                            .await;
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_epoch {
-                            Self::process_order_update(&dm, &user_id, &order_tx, &on_order, last_epoch).await;
+                            Self::process_order_update(
+                                &dm, &user_id, &order_tx, &on_order, last_epoch,
+                            )
+                            .await;
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_epoch {
-                            Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade, last_epoch).await;
+                            Self::process_trade_update(
+                                &dm, &user_id, &trade_tx, &on_trade, last_epoch,
+                            )
+                            .await;
                         }
 
                         *last_processed_epoch.lock().unwrap() = current_global_epoch;
@@ -279,11 +324,16 @@ impl TradeSession {
                                 position: position.clone(),
                             };
 
-                            // 发送到 async-channel
-                            let _ = position_tx.send(update).await;
+                            match position_tx.try_send(update) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    warn!("TradeSession 持仓队列已满，丢弃一次更新");
+                                }
+                                Err(TrySendError::Closed(_)) => {}
+                            }
 
-                            // 调用回调
-                            if let Some(callback) = on_position.read().await.as_ref() {
+                            let callback = on_position.read().await.clone();
+                            if let Some(callback) = callback {
                                 callback(symbol.clone(), position);
                             }
                         }
@@ -318,11 +368,16 @@ impl TradeSession {
                     if let Ok(order) = serde_json::from_value::<Order>(order_data.clone()) {
                         debug!("订单更新: order_id={}", order_id);
 
-                        // 发送到 async-channel
-                        let _ = order_tx.send(order.clone()).await;
+                        match order_tx.try_send(order.clone()) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                warn!("TradeSession 订单队列已满，丢弃一次更新");
+                            }
+                            Err(TrySendError::Closed(_)) => {}
+                        }
 
-                        // 调用回调
-                        if let Some(callback) = on_order.read().await.as_ref() {
+                        let callback = on_order.read().await.clone();
+                        if let Some(callback) = callback {
                             callback(order);
                         }
                     }
@@ -353,11 +408,16 @@ impl TradeSession {
                     if let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone()) {
                         debug!("成交更新: trade_id={}", trade_id);
 
-                        // 发送到 async-channel
-                        let _ = trade_tx.send(trade.clone()).await;
+                        match trade_tx.try_send(trade.clone()) {
+                            Ok(()) => {}
+                            Err(TrySendError::Full(_)) => {
+                                warn!("TradeSession 成交队列已满，丢弃一次更新");
+                            }
+                            Err(TrySendError::Closed(_)) => {}
+                        }
 
-                        // 调用回调
-                        if let Some(callback) = on_trade.read().await.as_ref() {
+                        let callback = on_trade.read().await.clone();
+                        if let Some(callback) = callback {
                             callback(trade);
                         }
                     }
@@ -701,5 +761,84 @@ impl TradeSession {
         info!("关闭交易会话");
         self.ws.close().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datamanager::{DataManager, DataManagerConfig};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    #[tokio::test]
+    async fn trade_session_callback_executes_outside_lock() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        dm.merge_data(
+            json!({
+                "trade": {
+                    "u": {
+                        "orders": {
+                            "o1": {}
+                        }
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let (order_tx, _order_rx) = bounded(8);
+        let on_order: OrderCallback = Arc::new(RwLock::new(None));
+
+        {
+            let on_order_for_cb = Arc::clone(&on_order);
+            *on_order.write().await = Some(Arc::new(move |_order: Order| {
+                assert!(on_order_for_cb.try_write().is_ok());
+            }));
+        }
+
+        TradeSession::process_order_update(&dm, "u", &order_tx, &on_order, -1).await;
+    }
+
+    #[tokio::test]
+    async fn trade_session_channel_overflow_drops_but_callbacks_still_fire() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        dm.merge_data(
+            json!({
+                "trade": {
+                    "u": {
+                        "orders": {
+                            "o1": {},
+                            "o2": {}
+                        }
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let (order_tx, order_rx) = bounded(1);
+        let fired = Arc::new(AtomicUsize::new(0));
+        let on_order: OrderCallback = Arc::new(RwLock::new(None));
+        {
+            let fired = Arc::clone(&fired);
+            *on_order.write().await = Some(Arc::new(move |_order: Order| {
+                fired.fetch_add(1, AtomicOrdering::SeqCst);
+            }));
+        }
+
+        TradeSession::process_order_update(&dm, "u", &order_tx, &on_order, -1).await;
+
+        assert_eq!(fired.load(AtomicOrdering::SeqCst), 2);
+        assert!(order_rx.try_recv().is_ok());
+        assert!(order_rx.try_recv().is_err());
     }
 }

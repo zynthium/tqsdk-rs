@@ -14,9 +14,6 @@ fn nanos_to_cst_naive_date(nanos: i64) -> NaiveDate {
     dt.with_timezone(&tz).date_naive()
 }
 
-
-
-
 #[tokio::main]
 async fn main() -> tqsdk_rs::Result<()> {
     // Initialize logging
@@ -74,7 +71,9 @@ async fn main() -> tqsdk_rs::Result<()> {
         .and_then(|v| v.parse::<i32>().ok())
         .unwrap_or(1);
 
-    println!("在使用天勤量化之前，默认您已经知晓并同意以下免责条款，如果不同意请立即停止使用：https://www.shinnytech.com/blog/disclaimer/");
+    println!(
+        "在使用天勤量化之前，默认您已经知晓并同意以下免责条款，如果不同意请立即停止使用：https://www.shinnytech.com/blog/disclaimer/"
+    );
     println!("    INFO - 模拟交易成交记录, 账户: TQSIM");
     println!("    INFO - 模拟交易账户资金, 账户: TQSIM");
 
@@ -223,7 +222,9 @@ async fn main() -> tqsdk_rs::Result<()> {
             None => break,
         }
     }
-    println!("    INFO - 胜率: 0.00%, 盈亏额比例: inf, 收益率: 0.00%, 年化收益率: 0.00%, 最大回撤: 0.00%, 年化夏普率: inf,年化索提诺比率: -15.8114");
+    println!(
+        "    INFO - 胜率: 0.00%, 盈亏额比例: inf, 收益率: 0.00%, 年化收益率: 0.00%, 最大回撤: 0.00%, 年化夏普率: inf,年化索提诺比率: -15.8114"
+    );
 
     let summary = json!({
         "symbol": symbol,

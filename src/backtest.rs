@@ -6,7 +6,7 @@ use crate::utils::{datetime_to_nanos, nanos_to_datetime};
 use crate::websocket::TqQuoteWebsocket;
 use async_channel::Receiver;
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -115,7 +115,9 @@ impl BacktestHandle {
 
         // info!("Received backtest update");
 
-        let value = self.dm.get_by_path(&["_tqsdk_backtest"])
+        let value = self
+            .dm
+            .get_by_path(&["_tqsdk_backtest"])
             .ok_or_else(|| TqError::DataNotFound("_tqsdk_backtest object not found".to_string()))?;
 
         if let Some(time) = parse_backtest_time(&value) {
@@ -129,7 +131,9 @@ impl BacktestHandle {
             return Ok(BacktestEvent::Tick { current_dt: dt });
         }
 
-        Err(TqError::InternalError("Failed to parse backtest time".to_string()))
+        Err(TqError::InternalError(
+            "Failed to parse backtest time".to_string(),
+        ))
     }
 
     /// 主动触发一次回测推进

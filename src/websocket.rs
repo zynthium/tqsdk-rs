@@ -8,28 +8,28 @@
 
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
+use chrono::Timelike;
 use futures::{SinkExt, StreamExt};
 use reqwest::header::HeaderMap;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, RwLock};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::{channel, error::TrySendError};
+use tokio::sync::{Mutex, Notify, oneshot};
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
 use yawc::frame::{FrameView, OpCode};
-use chrono::Timelike;
 
-type MessageCallback = Arc<RwLock<Option<Box<dyn Fn(Value) + Send + Sync>>>>;
-type OpenCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
-type CloseCallback = Arc<RwLock<Option<Box<dyn Fn() + Send + Sync>>>>;
-type ErrorCallback = Arc<RwLock<Option<Box<dyn Fn(String) + Send + Sync>>>>;
-type NotifyCallback = Arc<RwLock<Option<Box<dyn Fn(crate::types::Notification) + Send + Sync>>>>;
+type MessageCallback = Arc<RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>;
+type OpenCallback = Arc<RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
+type CloseCallback = Arc<RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
+type ErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>;
+type NotifyCallback = Arc<RwLock<Option<Arc<dyn Fn(crate::types::Notification) + Send + Sync>>>>;
 
 struct SharedReconnectTimer {
     next_reconnect_at: Instant,
@@ -40,29 +40,61 @@ const DEFAULT_MESSAGE_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_MESSAGE_BACKLOG_WARN_STEP: usize = 1024;
 const DEFAULT_MESSAGE_BATCH_MAX: usize = 32;
 
-fn try_merge_rtn_data_inplace(
-    base: &mut Value,
-    next: Value,
-) -> std::result::Result<(), Value> {
+/// Socket I/O 采用单所有者 actor，避免跨 await 持有锁。
+///
+/// - 发送通过有界 mpsc 队列进入 actor（提供背压）。
+/// - close 通过 Notify 触发（不依赖队列容量，避免 close 被 send 队列阻塞）。
+#[derive(Clone)]
+struct WsIoHandle {
+    tx: tokio::sync::mpsc::Sender<WsIoCommand>,
+    close_notify: Arc<Notify>,
+}
+
+impl WsIoHandle {
+    async fn send_text(&self, payload: String) -> Result<()> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(WsIoCommand::SendText {
+                payload,
+                resp: resp_tx,
+            })
+            .await
+            .map_err(|_| TqError::WebSocketError("websocket io actor is closed".to_string()))?;
+        resp_rx.await.unwrap_or_else(|_| {
+            Err(TqError::WebSocketError(
+                "websocket io actor dropped".to_string(),
+            ))
+        })
+    }
+
+    fn request_close(&self) {
+        // 关闭请求必须不阻塞：无论 send 队列是否满，都可以唤醒 actor。
+        self.close_notify.notify_waiters();
+        // 尝试投递一个 Shutdown 命令（如果队列满则忽略，Notify 已足够唤醒）。
+        let _ = self.tx.try_send(WsIoCommand::Shutdown);
+    }
+}
+
+enum WsIoCommand {
+    SendText {
+        payload: String,
+        resp: oneshot::Sender<Result<()>>,
+    },
+    Shutdown,
+}
+
+fn try_merge_rtn_data_inplace(base: &mut Value, next: Value) -> std::result::Result<(), Value> {
     let Some(base_obj) = base.as_object_mut() else {
         return Err(next);
     };
-    if base_obj
-        .get("aid")
-        .and_then(|v| v.as_str())
-        != Some("rtn_data")
-    {
+    if base_obj.get("aid").and_then(|v| v.as_str()) != Some("rtn_data") {
         return Err(next);
     }
 
     let Value::Object(next_obj) = next else {
         return Err(next);
     };
-    if next_obj
-        .get("aid")
-        .and_then(|v| v.as_str())
-        != Some("rtn_data")
-    {
+    if next_obj.get("aid").and_then(|v| v.as_str()) != Some("rtn_data") {
         return Err(Value::Object(next_obj));
     }
 
@@ -77,10 +109,24 @@ fn try_merge_rtn_data_inplace(
     Ok(())
 }
 
+fn derive_message_backlog_max(
+    message_queue_capacity: usize,
+    message_backlog_warn_step: usize,
+) -> usize {
+    let capacity = message_queue_capacity.max(1);
+    let warn_step = message_backlog_warn_step.max(1);
+    capacity
+        .saturating_mul(4)
+        .max(warn_step.saturating_mul(2))
+        .max(64)
+}
+
 fn enqueue_message_with_backpressure(
     sender: &tokio::sync::mpsc::Sender<Value>,
     backlog: &Arc<std::sync::Mutex<VecDeque<Value>>>,
     draining: &Arc<AtomicBool>,
+    backlog_max: usize,
+    dropped_counter: &Arc<AtomicUsize>,
     backlog_warn_step: usize,
     batch_max: usize,
     channel_name: &'static str,
@@ -89,23 +135,59 @@ fn enqueue_message_with_backpressure(
     match sender.try_send(data) {
         Ok(()) => {}
         Err(TrySendError::Closed(_)) => {
-            warn!("{} 消息处理队列已关闭，丢弃消息", channel_name);
+            let dropped_total = dropped_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            warn!(
+                "{} 消息处理队列已关闭，丢弃消息: dropped_total={}",
+                channel_name, dropped_total
+            );
         }
         Err(TrySendError::Full(data)) => {
+            let backlog_max = backlog_max.max(1);
             let mut queue = backlog.lock().unwrap();
-            queue.push_back(data);
+            let mut data_opt = Some(data);
+            if let Some(tail) = queue.back_mut() {
+                if let Some(d) = data_opt.take() {
+                    match try_merge_rtn_data_inplace(tail, d) {
+                        Ok(()) => {}
+                        Err(unmerged) => {
+                            data_opt = Some(unmerged);
+                        }
+                    }
+                }
+            }
+
+            if let Some(data) = data_opt {
+                if queue.len() >= backlog_max {
+                    let overflow = queue.len() + 1 - backlog_max;
+                    for _ in 0..overflow {
+                        queue.pop_front();
+                    }
+                    let dropped_total =
+                        dropped_counter.fetch_add(overflow, Ordering::Relaxed) + overflow;
+                    if dropped_total == overflow || dropped_total.is_multiple_of(backlog_warn_step)
+                    {
+                        warn!(
+                            "{} 消息 backlog 达到上限，丢弃最旧消息: dropped_now={} dropped_total={} backlog_max={}",
+                            channel_name, overflow, dropped_total, backlog_max
+                        );
+                    }
+                }
+
+                queue.push_back(data);
+            }
             let backlog_len = queue.len();
             drop(queue);
             if backlog_len == 1 || backlog_len.is_multiple_of(backlog_warn_step) {
                 warn!(
-                    "{} 消息处理队列积压: backlog={}",
-                    channel_name, backlog_len
+                    "{} 消息处理队列积压: backlog={}/{}",
+                    channel_name, backlog_len, backlog_max
                 );
             }
             if !draining.swap(true, Ordering::SeqCst) {
                 let sender = sender.clone();
                 let backlog = Arc::clone(backlog);
                 let draining = Arc::clone(draining);
+                let dropped_counter = Arc::clone(dropped_counter);
                 tokio::spawn(async move {
                     loop {
                         let next = {
@@ -117,7 +199,8 @@ fn enqueue_message_with_backpressure(
                                         let Some(next_payload) = q.pop_front() else {
                                             break;
                                         };
-                                        match try_merge_rtn_data_inplace(&mut payload, next_payload) {
+                                        match try_merge_rtn_data_inplace(&mut payload, next_payload)
+                                        {
                                             Ok(()) => {
                                                 merged += 1;
                                             }
@@ -136,8 +219,23 @@ fn enqueue_message_with_backpressure(
                             Some(payload) => {
                                 if sender.send(payload).await.is_err() {
                                     draining.store(false, Ordering::SeqCst);
-                                    backlog.lock().unwrap().clear();
-                                    warn!("{} 消息处理队列已关闭，清理积压消息", channel_name);
+                                    let cleared = {
+                                        let mut q = backlog.lock().unwrap();
+                                        let n = q.len();
+                                        q.clear();
+                                        n
+                                    };
+                                    if cleared > 0 {
+                                        let dropped_total = dropped_counter
+                                            .fetch_add(cleared, Ordering::Relaxed)
+                                            + cleared;
+                                        warn!(
+                                            "{} 消息处理队列已关闭，清理积压消息: cleared={} dropped_total={}",
+                                            channel_name, cleared, dropped_total
+                                        );
+                                    } else {
+                                        warn!("{} 消息处理队列已关闭，清理积压消息", channel_name);
+                                    }
                                     break;
                                 }
                             }
@@ -227,9 +325,8 @@ pub struct TqWebsocket {
     last_peek_sent: Arc<std::sync::Mutex<std::time::Instant>>,
     connection_id: Arc<RwLock<u64>>,
     last_disconnect_reason: Arc<RwLock<Option<String>>>,
-
-    // WebSocket 连接实例
-    ws: Arc<Mutex<Option<yawc::WebSocket>>>,
+    // WebSocket I/O actor 句柄（单所有者 socket I/O，避免跨 await 持有锁）
+    io: Arc<std::sync::Mutex<Option<WsIoHandle>>>,
 
     // 回调函数
     on_message: MessageCallback,
@@ -240,7 +337,8 @@ pub struct TqWebsocket {
 
 impl TqWebsocket {
     fn emit_connection_notify(&self, code: i64, level: &str, content: String) {
-        if let Some(callback) = self.on_message.read().unwrap().as_ref() {
+        let callback = self.on_message.read().unwrap().clone();
+        if let Some(callback) = callback {
             callback(build_connection_notify(
                 code,
                 level,
@@ -256,10 +354,7 @@ impl TqWebsocket {
             return;
         };
         if aid == "subscribe_quote" {
-            let ins_list = value
-                .get("ins_list")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let ins_list = value.get("ins_list").and_then(|v| v.as_str()).unwrap_or("");
             if ins_list.len() > self.ins_list_max_length {
                 warn!(
                     "订阅合约字符串总长度大于 {}，可能会引起服务器限制。",
@@ -309,7 +404,7 @@ impl TqWebsocket {
             last_peek_sent: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             connection_id: Arc::new(RwLock::new(0)),
             last_disconnect_reason: Arc::new(RwLock::new(None)),
-            ws: Arc::new(Mutex::new(None)),
+            io: Arc::new(std::sync::Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
             on_open: Arc::new(RwLock::new(None)),
             on_close: Arc::new(RwLock::new(None)),
@@ -375,20 +470,18 @@ impl TqWebsocket {
                 error!(url = %self.url, error = %e, "WebSocket 连接失败");
                 debug!(error = %e, "websocket connection closed");
                 let in_ops_time = is_ops_maintenance_window_cst();
-                let mut content = format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url);
+                let mut content =
+                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url);
                 if in_ops_time {
                     content.push_str("，每日 19:00-19:30 为日常运维时间，请稍后再试");
                 }
 
                 // 触发错误回调
-                if let Some(callback) = self.on_error.read().unwrap().as_ref() {
+                let callback = self.on_error.read().unwrap().clone();
+                if let Some(callback) = callback {
                     callback(format!("Connection failed: {}", e));
                 }
-                self.emit_connection_notify(
-                    2019112911,
-                    "WARNING",
-                    content,
-                );
+                self.emit_connection_notify(2019112911, "WARNING", content);
                 if !is_reconnection && in_ops_time {
                     self.connecting.store(false, Ordering::SeqCst);
                     return Err(TqError::WebSocketError(format!(
@@ -407,10 +500,14 @@ impl TqWebsocket {
             }
         };
 
-        // 保存连接实例
-        {
-            let mut ws_guard = self.ws.lock().await;
-            *ws_guard = Some(ws);
+        // 为新连接分配 connection_id，并替换旧的 I/O actor（如果存在则请求关闭）
+        let id = {
+            let mut guard = self.connection_id.write().unwrap();
+            *guard += 1;
+            *guard
+        };
+        if let Some(old) = self.io.lock().unwrap().take() {
+            old.request_close();
         }
 
         *self.status.write().unwrap() = WebSocketStatus::Open;
@@ -422,7 +519,8 @@ impl TqWebsocket {
         }
 
         // 触发 onOpen 回调
-        if let Some(callback) = self.on_open.read().unwrap().as_ref() {
+        let callback = self.on_open.read().unwrap().clone();
+        if let Some(callback) = callback {
             callback();
         }
         let first_connected = !self.connected_once.swap(true, Ordering::SeqCst);
@@ -442,13 +540,8 @@ impl TqWebsocket {
             );
         }
 
-        // 启动消息接收循环
-        let id = {
-            let mut guard = self.connection_id.write().unwrap();
-            *guard += 1;
-            *guard
-        };
-        self.start_receive_loop(id).await;
+        // 启动 I/O actor（读 + 写 + peek），由 actor 独占 socket，避免跨 await 持锁
+        self.install_io_actor(ws, id);
         // 发送队列中的消息
         self.flush_queue().await;
         self.send_peek_message().await?;
@@ -460,7 +553,10 @@ impl TqWebsocket {
 
     /// 发送消息
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
-        let value = serde_json::to_value(obj)?;
+        let value = serde_json::to_value(obj).map_err(|e| TqError::Json {
+            context: "序列化 websocket 消息失败".to_string(),
+            source: e,
+        })?;
         self.emit_send_guard_warnings(&value);
         let json_str = value.to_string();
         let log_pack = sanitize_log_pack_value(&value);
@@ -468,34 +564,33 @@ impl TqWebsocket {
 
         if self.is_ready() {
             debug!("WebSocket 发送消息: {}", log_pack);
-
-            let mut ws_guard = self.ws.lock().await;
-            if let Some(ws) = ws_guard.as_mut() {
-                // yawc 使用 Sink trait，发送 FrameView
-                let frame = FrameView::text(json_str.into_bytes());
-                match ws.send(frame).await {
-                    Ok(_) => {
-                        Ok(())
-                    }
+            let io = self.io.lock().unwrap().clone();
+            if let Some(io) = io {
+                match io.send_text(json_str).await {
+                    Ok(()) => Ok(()),
                     Err(e) => {
-                        error!("消息发送失败: {}", e);
-                        self.set_disconnect_reason(format!("send_frame_failed: {}", e));
-                        *self.status.write().unwrap() = WebSocketStatus::Closed;
-                        drop(ws_guard);
-                        self.emit_connection_notify(
-                            2019112911,
-                            "WARNING",
-                            format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
-                        );
-                        if let Some(callback) = self.on_close.read().unwrap().as_ref() {
-                            callback();
+                        // actor 通常会负责状态切换与回调，这里仅在仍处于 Open 时补齐一次断线通知，避免无声失败
+                        if *self.status.read().unwrap() == WebSocketStatus::Open {
+                            self.set_disconnect_reason(format!("send_frame_failed: {}", e));
+                            *self.status.write().unwrap() = WebSocketStatus::Closed;
+                            self.emit_connection_notify(
+                                2019112911,
+                                "WARNING",
+                                format!(
+                                    "与 {} 的网络连接断开，请检查客户端及网络是否正常",
+                                    self.url
+                                ),
+                            );
+                            let callback = self.on_close.read().unwrap().clone();
+                            if let Some(callback) = callback {
+                                callback();
+                            }
                         }
-                        Err(TqError::WebSocketError(format!("Send failed: {}", e)))
+                        Err(e)
                     }
                 }
             } else {
-                debug!("WebSocket 连接不存在，消息加入队列");
-                drop(ws_guard);
+                debug!("WebSocket I/O actor 不存在，消息加入队列");
                 self.queue.lock().await.push(json_str);
                 Ok(())
             }
@@ -540,29 +635,21 @@ impl TqWebsocket {
         *self.should_reconnect.write().unwrap() = false;
         self.pending_peek.store(false, Ordering::SeqCst);
 
-        // 先设置状态为 Closing，这会让接收循环在下次迭代时退出
+        // 先设置状态为 Closing，I/O actor 会在收到关闭信号后退出
         *self.status.write().unwrap() = WebSocketStatus::Closing;
-
-        // 关闭 WebSocket 连接
-        let mut ws_guard = self.ws.lock().await;
-        if let Some(ws) = ws_guard.take() {
-            // yawc WebSocket 会在 drop 时自动发送关闭帧并关闭连接
-            drop(ws);
-            info!("WebSocket 连接已关闭");
-        }
-        drop(ws_guard);
-
-        // 等待一小段时间让接收循环退出
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-
-        *self.status.write().unwrap() = WebSocketStatus::Closed;
         self.set_disconnect_reason("manual_close");
         self.connecting.store(false, Ordering::SeqCst);
-        self.pending_peek.store(false, Ordering::SeqCst);
 
-        // 触发 onClose 回调
-        if let Some(callback) = self.on_close.read().unwrap().as_ref() {
-            callback();
+        // close 必须不阻塞：不等待 send 队列，不等待 actor join
+        if let Some(io) = self.io.lock().unwrap().take() {
+            io.request_close();
+        } else {
+            // 未建立连接或 actor 已退出：直接落到 Closed 并触发回调（保持行为一致）
+            *self.status.write().unwrap() = WebSocketStatus::Closed;
+            let callback = self.on_close.read().unwrap().clone();
+            if let Some(callback) = callback {
+                callback();
+            }
         }
 
         Ok(())
@@ -570,45 +657,31 @@ impl TqWebsocket {
 
     /// 发送队列中的消息
     async fn flush_queue(&self) {
-        let mut queue = self.queue.lock().await;
-        if queue.is_empty() {
+        let pending = {
+            let mut queue = self.queue.lock().await;
+            if queue.is_empty() {
+                return;
+            }
+            debug!("发送队列中的 {} 条消息", queue.len());
+            std::mem::take(&mut *queue)
+        };
+
+        let io = self.io.lock().unwrap().clone();
+        let Some(io) = io else {
+            // 仍未建立 actor：回退到队列，等待后续连接
+            let mut queue = self.queue.lock().await;
+            queue.extend(pending);
             return;
-        }
+        };
 
-        debug!("发送队列中的 {} 条消息", queue.len());
-
-        let pending = std::mem::take(&mut *queue);
-        drop(queue);
-
-        let mut ws_guard = self.ws.lock().await;
-        if let Some(ws) = ws_guard.as_mut() {
-            for (idx, msg) in pending.iter().enumerate() {
-                debug!("发送队列消息: {}", msg);
-                let frame = FrameView::text(msg.clone().into_bytes());
-                match ws.send(frame).await {
-                    Ok(_) => {
-                        debug!("队列消息发送成功");
-                    }
-                    Err(e) => {
-                        error!("队列消息发送失败: {}", e);
-                        self.set_disconnect_reason(format!("flush_queue_send_failed: {}", e));
-                        // 连接异常，恢复状态、回退消息到队列并触发关闭回调
-                        *self.status.write().unwrap() = WebSocketStatus::Closed;
-                        drop(ws_guard);
-                        let mut q = self.queue.lock().await;
-                        q.extend(pending[idx..].iter().cloned());
-                        drop(q);
-                        self.emit_connection_notify(
-                            2019112911,
-                            "WARNING",
-                            format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
-                        );
-                        if let Some(callback) = self.on_close.read().unwrap().as_ref() {
-                            callback();
-                        }
-                        break;
-                    }
-                }
+        for (idx, msg) in pending.iter().enumerate() {
+            if let Err(e) = io.send_text(msg.clone()).await {
+                error!("队列消息发送失败: {}", e);
+                self.set_disconnect_reason(format!("flush_queue_send_failed: {}", e));
+                // 回退未发送部分
+                let mut q = self.queue.lock().await;
+                q.extend(pending[idx..].iter().cloned());
+                break;
             }
         }
     }
@@ -618,7 +691,7 @@ impl TqWebsocket {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        *self.on_message.write().unwrap() = Some(Box::new(callback));
+        *self.on_message.write().unwrap() = Some(Arc::new(callback));
     }
 
     /// 注册连接打开回调
@@ -626,7 +699,7 @@ impl TqWebsocket {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        *self.on_open.write().unwrap() = Some(Box::new(callback));
+        *self.on_open.write().unwrap() = Some(Arc::new(callback));
     }
 
     /// 注册连接关闭回调
@@ -634,7 +707,7 @@ impl TqWebsocket {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        *self.on_close.write().unwrap() = Some(Box::new(callback));
+        *self.on_close.write().unwrap() = Some(Arc::new(callback));
     }
 
     /// 注册错误回调
@@ -642,329 +715,55 @@ impl TqWebsocket {
     where
         F: Fn(String) + Send + Sync + 'static,
     {
-        *self.on_error.write().unwrap() = Some(Box::new(callback));
+        *self.on_error.write().unwrap() = Some(Arc::new(callback));
     }
 
-    /// 启动消息接收循环
-    async fn start_receive_loop(&self, connection_id: u64) {
+    /// 安装 WebSocket I/O actor（单任务独占 socket：读/写/peek/关闭）
+    fn install_io_actor(&self, ws: yawc::WebSocket, connection_id: u64) {
+        let capacity = self.config.message_queue_capacity.max(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<WsIoCommand>(capacity);
+        let close_notify = Arc::new(Notify::new());
+
+        // 先暴露 handle，确保 send/close 可用（避免跨 await 持锁：clone handle 后 await）
+        *self.io.lock().unwrap() = Some(WsIoHandle {
+            tx: tx.clone(),
+            close_notify: Arc::clone(&close_notify),
+        });
+
         let status = Arc::clone(&self.status);
-        let ws = Arc::clone(&self.ws);
-        let status_for_peek = Arc::clone(&self.status);
-        let ws_for_peek = Arc::clone(&self.ws);
-        let on_message_for_recv = Arc::clone(&self.on_message);
-        let on_message_for_peek = Arc::clone(&self.on_message);
-        let _on_error = Arc::clone(&self.on_error);
-        let _on_close = Arc::clone(&self.on_close);
-        let _on_close_for_peek = Arc::clone(&self.on_close);
-        let _should_reconnect = Arc::clone(&self.should_reconnect);
-        let url_for_recv = self.url.clone();
-        let url_for_peek = self.url.clone();
+        let pending_peek = Arc::clone(&self.pending_peek);
+        let last_peek_sent = Arc::clone(&self.last_peek_sent);
+        let disconnect_reason = Arc::clone(&self.last_disconnect_reason);
+        let current_connection_id = Arc::clone(&self.connection_id);
+        let on_message = Arc::clone(&self.on_message);
+        let on_close = Arc::clone(&self.on_close);
+        let url = self.url.clone();
+        let conn_id = self.conn_id.clone();
         let auto_peek = self.config.auto_peek;
         let auto_peek_interval = self.config.auto_peek_interval;
         let peek_timeout = self.config.peek_timeout;
-        let pending_peek_for_recv = Arc::clone(&self.pending_peek);
-        let pending_peek_for_timer = Arc::clone(&self.pending_peek);
-        let disconnect_reason_for_recv = Arc::clone(&self.last_disconnect_reason);
-        let disconnect_reason_for_peek = Arc::clone(&self.last_disconnect_reason);
-        // last_recv_time: 上次收到消息的时间
-        let last_recv_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-        let last_recv_time_for_recv = Arc::clone(&last_recv_time);
-        let last_recv_time_for_timer = Arc::clone(&last_recv_time);
-        let current_connection_id = Arc::clone(&self.connection_id);
-        let current_connection_id_for_peek = Arc::clone(&self.connection_id);
-        let last_peek_sent = Arc::clone(&self.last_peek_sent);
-        let last_peek_sent_for_timer = Arc::clone(&self.last_peek_sent);
-        let conn_id_for_recv = self.conn_id.clone();
-        let conn_id_for_peek = self.conn_id.clone();
 
         tokio::spawn(async move {
-            debug!("启动 WebSocket 消息接收循环");
-            let mut consecutive_none = 0u8;
-
-            loop {
-                if *current_connection_id.read().unwrap() != connection_id {
-                    debug!("WebSocket 连接 ID 不匹配，退出接收循环");
-                    break;
-                }
-                // 检查连接状态
-                let current_status = *status.read().unwrap();
-                if current_status != WebSocketStatus::Open {
-                    debug!("WebSocket 状态不是 Open，退出接收循环");
-                    break;
-                }
-
-                // 获取 WebSocket 实例
-                let mut ws_guard = ws.lock().await;
-                if let Some(ws_instance) = ws_guard.as_mut() {
-                    // yawc 使用 Stream trait，使用 next() 接收消息
-                    // 使用 timeout 避免无限等待
-                    let timeout_duration = tokio::time::Duration::from_secs(15);
-                    let next_result =
-                        tokio::time::timeout(timeout_duration, ws_instance.next()).await;
-
-                    match next_result {
-                    Ok(Some(frame)) => {
-                        consecutive_none = 0;
-                        // 收到任何消息都更新 last_recv_time
-                        if let Ok(mut t) = last_recv_time_for_recv.lock() {
-                            *t = std::time::Instant::now();
-                        }
-                        if auto_peek {
-                            pending_peek_for_recv.store(false, Ordering::SeqCst);
-                        }
-
-                        // 处理不同类型的帧
-                        match frame.opcode {
-                            OpCode::Text | OpCode::Binary => {
-                                    match serde_json::from_slice::<Value>(&frame.payload) {
-                                        Ok(json_value) => {
-                                            let text = String::from_utf8_lossy(&frame.payload);
-                                            debug!("WebSocket Recv Text: {}", text);
-                                            debug!(pack = %text, "websocket received data");
-                                            if let Some(callback) =
-                                                on_message_for_recv.read().unwrap().as_ref()
-                                            {
-                                                callback(json_value);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!(
-                                                "解析 JSON 失败: {}, payload={}",
-                                                e,
-                                                String::from_utf8_lossy(&frame.payload)
-                                            );
-                                        }
-                                    }
-
-                                    if auto_peek
-                                        && !pending_peek_for_recv.swap(true, Ordering::SeqCst)
-                                    {
-                                        let frame =
-                                            FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
-                                        match ws_instance.send(frame).await {
-                                            Ok(_) => {
-                                                if let Ok(mut t) = last_peek_sent.lock() {
-                                                    *t = std::time::Instant::now();
-                                                }
-                                                debug!("Websocket Send -> peek_message");
-                                            }
-                                            Err(e) => {
-                                                pending_peek_for_recv
-                                                    .store(false, Ordering::SeqCst);
-                                                *disconnect_reason_for_recv.write().unwrap() =
-                                                    Some(format!(
-                                                        "recv_loop_send_peek_failed: {}",
-                                                        e
-                                                    ));
-                                                error!(
-                                                    "Websocket Send `peek_message` failed: {}",
-                                                    e
-                                                );
-                                                *status.write().unwrap() = WebSocketStatus::Closed;
-                                                if let Some(callback) =
-                                                    on_message_for_recv.read().unwrap().as_ref()
-                                                {
-                                                    callback(build_connection_notify(
-                                                        2019112911,
-                                                        "WARNING",
-                                                        format!(
-                                                            "与 {} 的网络连接断开，请检查客户端及网络是否正常",
-                                                            url_for_recv
-                                                        ),
-                                                        url_for_recv.clone(),
-                                                        conn_id_for_recv.clone(),
-                                                    ));
-                                                }
-                                                if let Some(callback) = _on_close.read().unwrap().as_ref() {
-                                                    callback();
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                OpCode::Close => {
-                                    *disconnect_reason_for_recv.write().unwrap() =
-                                        Some("server_close_frame".to_string());
-                                    info!("WebSocket 收到关闭帧");
-                                    *status.write().unwrap() = WebSocketStatus::Closed;
-                                    if let Some(callback) = on_message_for_recv.read().unwrap().as_ref() {
-                                        callback(build_connection_notify(
-                                            2019112911,
-                                            "WARNING",
-                                            format!(
-                                                "与 {} 的网络连接断开，请检查客户端及网络是否正常",
-                                                url_for_recv
-                                            ),
-                                            url_for_recv.clone(),
-                                            conn_id_for_recv.clone(),
-                                        ));
-                                    }
-
-                                    // 触发关闭回调
-                                    if let Some(callback) = _on_close.read().unwrap().as_ref() {
-                                        callback();
-                                    }
-
-                                    drop(ws_guard);
-                                    break;
-                                }
-                                OpCode::Ping => {
-                                    debug!("WebSocket 收到 Ping（自动处理）");
-                                }
-                                OpCode::Pong => {
-                                    debug!("WebSocket 收到 Pong");
-                                }
-                                OpCode::Continuation => {
-                                    debug!("WebSocket 收到 Continuation 帧");
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            consecutive_none = consecutive_none.saturating_add(1);
-                            if consecutive_none < 3 {
-                                warn!(
-                                    "WebSocket next() 返回 None（第 {} 次），等待确认后再断线处理",
-                                    consecutive_none
-                                );
-                                drop(ws_guard);
-                                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                                continue;
-                            }
-                            let probe = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
-                            match ws_instance.send(probe).await {
-                                Ok(_) => {
-                                    if let Ok(mut t) = last_peek_sent.lock() {
-                                        *t = std::time::Instant::now();
-                                    }
-                                    pending_peek_for_recv.store(true, Ordering::SeqCst);
-                                    consecutive_none = 0;
-                                    warn!(
-                                        "WebSocket next() 连续返回 None，但探测发送成功，继续保持连接"
-                                    );
-                                    drop(ws_guard);
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                                    continue;
-                                }
-                                Err(e) => {
-                                    *disconnect_reason_for_recv.write().unwrap() =
-                                        Some(format!("stream_ended_probe_send_failed: {}", e));
-                                }
-                            }
-                            info!("WebSocket Stream 结束，连接已关闭");
-                            *status.write().unwrap() = WebSocketStatus::Closed;
-                            if let Some(callback) = on_message_for_recv.read().unwrap().as_ref() {
-                                callback(build_connection_notify(
-                                    2019112911,
-                                    "WARNING",
-                                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url_for_recv),
-                                    url_for_recv.clone(),
-                                    conn_id_for_recv.clone(),
-                                ));
-                            }
-
-                            if let Some(callback) = _on_close.read().unwrap().as_ref() {
-                                callback();
-                            }
-
-                            drop(ws_guard);
-                            break;
-                        }
-                        Err(_) => {
-                            // Timeout，继续下一次循环（这样可以检查状态是否变化）
-                            trace!("WebSocket 接收超时，继续等待");
-                        }
-                    }
-                } else {
-                    trace!("WebSocket 实例不存在，退出接收循环");
-                    break;
-                }
-
-                drop(ws_guard);
-            }
-
-            info!("WebSocket 消息接收循环结束");
-        });
-
-        tokio::spawn(async move {
-            if !auto_peek || auto_peek_interval.is_zero() {
-                return;
-            }
-            let mut ticker = tokio::time::interval(auto_peek_interval);
-            loop {
-                ticker.tick().await;
-
-                if *current_connection_id_for_peek.read().unwrap() != connection_id {
-                    debug!("WebSocket 连接 ID 不匹配，退出 peek 循环");
-                    break;
-                }
-
-                let current_status = *status_for_peek.read().unwrap();
-                if current_status != WebSocketStatus::Open {
-                    break;
-                }
-                if pending_peek_for_timer.load(Ordering::SeqCst) {
-                    if let Some(timeout) = peek_timeout {
-                        let last_recv_elapsed = last_recv_time_for_timer
-                            .lock()
-                            .ok()
-                            .map(|t| t.elapsed());
-                        let last_peek_elapsed = last_peek_sent_for_timer
-                            .lock()
-                            .ok()
-                            .map(|t| t.elapsed());
-                        if let (Some(recv_elapsed), Some(peek_elapsed)) =
-                            (last_recv_elapsed, last_peek_elapsed)
-                        {
-                            if recv_elapsed > timeout && peek_elapsed > timeout {
-                                pending_peek_for_timer.store(false, Ordering::SeqCst);
-                                continue;
-                            }
-                        }
-                        continue;
-                    } else {
-                        continue;
-                    }
-                }
-
-                // 主动发送 peek message
-                let mut ws_guard = ws_for_peek.lock().await;
-                if let Some(ws_instance) = ws_guard.as_mut() {
-                    // 如果已经有 pending 的 peek（在获取锁的过程中被设置），则跳过
-                    if pending_peek_for_timer.swap(true, Ordering::SeqCst) {
-                        drop(ws_guard);
-                        continue;
-                    }
-                    let frame = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
-                    if let Err(e) = ws_instance.send(frame).await {
-                        error!("Websocket Send `peek_message` failed: {}", e);
-                        *disconnect_reason_for_peek.write().unwrap() =
-                            Some(format!("timer_send_peek_failed: {}", e));
-                        *status_for_peek.write().unwrap() = WebSocketStatus::Closed;
-                        pending_peek_for_timer.store(false, Ordering::SeqCst);
-                        if let Some(callback) = on_message_for_peek.read().unwrap().as_ref() {
-                            callback(build_connection_notify(
-                                2019112911,
-                                "WARNING",
-                                format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url_for_peek),
-                                url_for_peek.clone(),
-                                conn_id_for_peek.clone(),
-                            ));
-                        }
-                        if let Some(callback) = _on_close_for_peek.read().unwrap().as_ref() {
-                            callback();
-                        }
-                        break;
-                    }
-                    if let Ok(mut t) = last_peek_sent_for_timer.lock() {
-                        *t = std::time::Instant::now();
-                    }
-                    debug!("Websocket Timer Send -> peek_message");
-                } else {
-                    break;
-                }
-                drop(ws_guard);
-            }
+            ws_io_actor_loop(
+                ws,
+                rx,
+                close_notify,
+                connection_id,
+                current_connection_id,
+                status,
+                pending_peek,
+                last_peek_sent,
+                disconnect_reason,
+                on_message,
+                on_close,
+                url,
+                conn_id,
+                auto_peek,
+                auto_peek_interval,
+                peek_timeout,
+            )
+            .await;
+            // actor 退出后不清理 handle：由上层 init/close 在切换时 take()，避免竞态删掉新 actor
         });
     }
 
@@ -992,7 +791,8 @@ impl TqWebsocket {
                 times, self.config.reconnect_max_times
             );
 
-            let wait_duration = next_shared_reconnect_delay(times as u32, self.config.reconnect_interval);
+            let wait_duration =
+                next_shared_reconnect_delay(times as u32, self.config.reconnect_interval);
             if wait_duration > Duration::ZERO {
                 sleep(wait_duration).await;
             }
@@ -1033,13 +833,335 @@ impl TqWebsocket {
     }
 }
 
+async fn ws_io_actor_loop(
+    mut ws: yawc::WebSocket,
+    mut cmd_rx: tokio::sync::mpsc::Receiver<WsIoCommand>,
+    close_notify: Arc<Notify>,
+    connection_id: u64,
+    current_connection_id: Arc<RwLock<u64>>,
+    status: Arc<RwLock<WebSocketStatus>>,
+    pending_peek: Arc<AtomicBool>,
+    last_peek_sent: Arc<std::sync::Mutex<std::time::Instant>>,
+    disconnect_reason: Arc<RwLock<Option<String>>>,
+    on_message: MessageCallback,
+    on_close: CloseCallback,
+    url: String,
+    conn_id: String,
+    auto_peek: bool,
+    auto_peek_interval: Duration,
+    peek_timeout: Option<Duration>,
+) {
+    debug!(connection_id, "启动 WebSocket I/O actor");
+
+    let last_recv_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let mut consecutive_none = 0u8;
+    let mut closed_callback_fired = false;
+    let timeout_duration = tokio::time::Duration::from_secs(15);
+    let mut peek_ticker: Option<tokio::time::Interval> =
+        if auto_peek && !auto_peek_interval.is_zero() {
+            Some(tokio::time::interval(auto_peek_interval))
+        } else {
+            None
+        };
+
+    loop {
+        if *current_connection_id.read().unwrap() != connection_id {
+            debug!("WebSocket 连接 ID 不匹配，退出 I/O actor");
+            break;
+        }
+        let current_status = *status.read().unwrap();
+        if current_status != WebSocketStatus::Open {
+            debug!("WebSocket 状态不是 Open，退出 I/O actor");
+            break;
+        }
+
+        tokio::select! {
+            _ = close_notify.notified() => {
+                debug!("收到 close 信号，退出 I/O actor");
+                break;
+            }
+
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    Some(WsIoCommand::SendText { payload, resp }) => {
+                        let frame = FrameView::text(payload.into_bytes());
+                        match ws.send(frame).await {
+                            Ok(()) => { let _ = resp.send(Ok(())); }
+                            Err(e) => {
+                                let err_msg = format!("Send failed: {}", e);
+                                let _ = resp.send(Err(TqError::WebSocketError(err_msg.clone())));
+                                *disconnect_reason.write().unwrap() = Some(format!("send_frame_failed: {}", e));
+                                *status.write().unwrap() = WebSocketStatus::Closed;
+                                let callback = on_message.read().unwrap().clone();
+                                if let Some(callback) = callback {
+                                    callback(build_connection_notify(
+                                        2019112911,
+                                        "WARNING",
+                                        format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url),
+                                        url.clone(),
+                                        conn_id.clone(),
+                                    ));
+                                }
+                                let callback = on_close.read().unwrap().clone();
+                                if let Some(callback) = callback {
+                                    closed_callback_fired = true;
+                                    callback();
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    Some(WsIoCommand::Shutdown) | None => {
+                        debug!("收到 Shutdown 或 command channel 关闭，退出 I/O actor");
+                        break;
+                    }
+                }
+            }
+
+            tick = async {
+                if let Some(ticker) = &mut peek_ticker {
+                    ticker.tick().await;
+                    true
+                } else {
+                    std::future::pending::<bool>().await
+                }
+            } => {
+                if tick {
+                    // 定时 peek
+                    if pending_peek.load(Ordering::SeqCst) {
+                        if let Some(timeout) = peek_timeout {
+                            let last_recv_elapsed = last_recv_time.lock().ok().map(|t| t.elapsed());
+                            let last_peek_elapsed = last_peek_sent.lock().ok().map(|t| t.elapsed());
+                            if let (Some(recv_elapsed), Some(peek_elapsed)) = (last_recv_elapsed, last_peek_elapsed) {
+                                if recv_elapsed > timeout && peek_elapsed > timeout {
+                                    pending_peek.store(false, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // 如果在 tick 前后刚好被设置了 pending，则跳过
+                    if pending_peek.swap(true, Ordering::SeqCst) {
+                        continue;
+                    }
+                    let frame = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                    if let Err(e) = ws.send(frame).await {
+                        error!("Websocket Timer Send `peek_message` failed: {}", e);
+                        *disconnect_reason.write().unwrap() = Some(format!("timer_send_peek_failed: {}", e));
+                        *status.write().unwrap() = WebSocketStatus::Closed;
+                        pending_peek.store(false, Ordering::SeqCst);
+                        let callback = on_message.read().unwrap().clone();
+                        if let Some(callback) = callback {
+                            callback(build_connection_notify(
+                                2019112911,
+                                "WARNING",
+                                format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url),
+                                url.clone(),
+                                conn_id.clone(),
+                            ));
+                        }
+                        let callback = on_close.read().unwrap().clone();
+                        if let Some(callback) = callback {
+                            closed_callback_fired = true;
+                            callback();
+                        }
+                        break;
+                    }
+                    if let Ok(mut t) = last_peek_sent.lock() {
+                        *t = std::time::Instant::now();
+                    }
+                    debug!("Websocket Timer Send -> peek_message");
+                }
+            }
+
+            next_result = tokio::time::timeout(timeout_duration, ws.next()) => {
+                match next_result {
+                    Ok(Some(frame)) => {
+                        consecutive_none = 0;
+                        if let Ok(mut t) = last_recv_time.lock() {
+                            *t = std::time::Instant::now();
+                        }
+                        if auto_peek {
+                            pending_peek.store(false, Ordering::SeqCst);
+                        }
+
+                        match frame.opcode {
+                            OpCode::Text | OpCode::Binary => {
+                                match serde_json::from_slice::<Value>(&frame.payload) {
+                                    Ok(json_value) => {
+                                        let text = String::from_utf8_lossy(&frame.payload);
+                                        debug!("WebSocket Recv Text: {}", text);
+                                        debug!(pack = %text, "websocket received data");
+                                        let callback = on_message.read().unwrap().clone();
+                                        if let Some(callback) = callback {
+                                            callback(json_value);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!(
+                                            "解析 JSON 失败: {}, payload={}",
+                                            e,
+                                            String::from_utf8_lossy(&frame.payload)
+                                        );
+                                    }
+                                }
+
+                                if auto_peek && !pending_peek.swap(true, Ordering::SeqCst) {
+                                    let frame = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                                    match ws.send(frame).await {
+                                        Ok(()) => {
+                                            if let Ok(mut t) = last_peek_sent.lock() {
+                                                *t = std::time::Instant::now();
+                                            }
+                                            debug!("Websocket Send -> peek_message");
+                                        }
+                                        Err(e) => {
+                                            pending_peek.store(false, Ordering::SeqCst);
+                                            *disconnect_reason.write().unwrap() =
+                                                Some(format!("recv_loop_send_peek_failed: {}", e));
+                                            error!("Websocket Send `peek_message` failed: {}", e);
+                                            *status.write().unwrap() = WebSocketStatus::Closed;
+                                            let callback = on_message.read().unwrap().clone();
+                                            if let Some(callback) = callback {
+                                                callback(build_connection_notify(
+                                                    2019112911,
+                                                    "WARNING",
+                                                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url),
+                                                    url.clone(),
+                                                    conn_id.clone(),
+                                                ));
+                                            }
+                                            let callback = on_close.read().unwrap().clone();
+                                            if let Some(callback) = callback {
+                                                closed_callback_fired = true;
+                                                callback();
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            OpCode::Close => {
+                                *disconnect_reason.write().unwrap() = Some("server_close_frame".to_string());
+                                info!("WebSocket 收到关闭帧");
+                                *status.write().unwrap() = WebSocketStatus::Closed;
+                                let callback = on_message.read().unwrap().clone();
+                                if let Some(callback) = callback {
+                                    callback(build_connection_notify(
+                                        2019112911,
+                                        "WARNING",
+                                        format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url),
+                                        url.clone(),
+                                        conn_id.clone(),
+                                    ));
+                                }
+                                let callback = on_close.read().unwrap().clone();
+                                if let Some(callback) = callback {
+                                    closed_callback_fired = true;
+                                    callback();
+                                }
+                                break;
+                            }
+                            OpCode::Ping => debug!("WebSocket 收到 Ping（自动处理）"),
+                            OpCode::Pong => debug!("WebSocket 收到 Pong"),
+                            OpCode::Continuation => debug!("WebSocket 收到 Continuation 帧"),
+                        }
+                    }
+                    Ok(None) => {
+                        consecutive_none = consecutive_none.saturating_add(1);
+                        if consecutive_none < 3 {
+                            warn!(
+                                "WebSocket next() 返回 None（第 {} 次），等待确认后再断线处理",
+                                consecutive_none
+                            );
+                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                            continue;
+                        }
+
+                        let probe = FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes());
+                        match ws.send(probe).await {
+                            Ok(()) => {
+                                if let Ok(mut t) = last_peek_sent.lock() {
+                                    *t = std::time::Instant::now();
+                                }
+                                pending_peek.store(true, Ordering::SeqCst);
+                                consecutive_none = 0;
+                                warn!("WebSocket next() 连续返回 None，但探测发送成功，继续保持连接");
+                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                continue;
+                            }
+                            Err(e) => {
+                                *disconnect_reason.write().unwrap() = Some(format!(
+                                    "stream_ended_probe_send_failed: {}",
+                                    e
+                                ));
+                            }
+                        }
+
+                        info!("WebSocket Stream 结束，连接已关闭");
+                        *status.write().unwrap() = WebSocketStatus::Closed;
+                        let callback = on_message.read().unwrap().clone();
+                        if let Some(callback) = callback {
+                            callback(build_connection_notify(
+                                2019112911,
+                                "WARNING",
+                                format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url),
+                                url.clone(),
+                                conn_id.clone(),
+                            ));
+                        }
+                        let callback = on_close.read().unwrap().clone();
+                        if let Some(callback) = callback {
+                            closed_callback_fired = true;
+                            callback();
+                        }
+                        break;
+                    }
+                    Err(_) => {
+                        trace!("WebSocket 接收超时，继续等待");
+                    }
+                }
+            }
+        }
+    }
+
+    // actor 退出：如果是当前连接且尚未触发回调，则补齐一次 on_close
+    if *current_connection_id.read().unwrap() == connection_id && !closed_callback_fired {
+        let reason = disconnect_reason.read().unwrap().clone();
+        // manual_close 不发断线 notify（保持原 close() 行为）
+        if reason.as_deref() != Some("manual_close")
+            && *status.read().unwrap() == WebSocketStatus::Open
+        {
+            *status.write().unwrap() = WebSocketStatus::Closed;
+            let callback = on_message.read().unwrap().clone();
+            if let Some(callback) = callback {
+                callback(build_connection_notify(
+                    2019112911,
+                    "WARNING",
+                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", url),
+                    url.clone(),
+                    conn_id.clone(),
+                ));
+            }
+        } else {
+            *status.write().unwrap() = WebSocketStatus::Closed;
+        }
+
+        let callback = on_close.read().unwrap().clone();
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+
+    debug!(connection_id, "WebSocket I/O actor 结束");
+}
+
 fn extract_notify_code(value: &Value) -> Option<i64> {
     if let Some(code) = value.as_i64() {
         return Some(code);
     }
-    value
-        .as_str()
-        .and_then(|s| s.parse::<i64>().ok())
+    value.as_str().and_then(|s| s.parse::<i64>().ok())
 }
 
 fn build_connection_notify(
@@ -1169,9 +1291,7 @@ fn get_i64(value: Option<&Value>, default: i64) -> i64 {
 }
 
 fn get_bool(value: Option<&Value>, default: bool) -> bool {
-    value
-        .and_then(|v| v.as_bool())
-        .unwrap_or(default)
+    value.and_then(|v| v.as_bool()).unwrap_or(default)
 }
 
 fn is_md_reconnect_complete(
@@ -1299,8 +1419,7 @@ fn is_trade_reconnect_complete(
     }
     for user in users.iter() {
         let more_data = get_bool(
-            dm.get_by_path(&["trade", user, "trade_more_data"])
-                .as_ref(),
+            dm.get_by_path(&["trade", user, "trade_more_data"]).as_ref(),
             true,
         );
         if more_data {
@@ -1349,6 +1468,8 @@ impl TqQuoteWebsocket {
         let message_queue_capacity = config.message_queue_capacity;
         let message_backlog_warn_step = config.message_backlog_warn_step;
         let message_batch_max = config.message_batch_max;
+        let message_backlog_max =
+            derive_message_backlog_max(message_queue_capacity, message_backlog_warn_step);
         let base = Arc::new(TqWebsocket::new(url, config));
         let dm_clone = Arc::clone(&dm);
         let subscribe_quote: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
@@ -1366,6 +1487,7 @@ impl TqQuoteWebsocket {
         let (msg_tx, mut msg_rx) = channel::<Value>(message_queue_capacity);
         let msg_backlog = Arc::new(std::sync::Mutex::new(VecDeque::<Value>::new()));
         let msg_draining = Arc::new(AtomicBool::new(false));
+        let msg_dropped = Arc::new(AtomicUsize::new(0));
         {
             let dm = Arc::clone(&dm_clone);
             let pending_ins_query = Arc::clone(&pending_ins_query);
@@ -1413,7 +1535,8 @@ impl TqQuoteWebsocket {
                                                 true,
                                                 true,
                                             );
-                                            *reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
+                                            *reconnect_dm.write().unwrap() =
+                                                Some(Arc::clone(&dm_temp));
                                             let sub = subscribe_quote_clone.read().unwrap().clone();
                                             let charts = charts_clone.read().unwrap().clone();
                                             let base_for_send = Arc::clone(&base_clone);
@@ -1423,8 +1546,9 @@ impl TqQuoteWebsocket {
                                                     let _ = base_for_send.send(&sub).await;
                                                 }
                                                 for chart in charts.values() {
-                                                    if let Some(view_width) =
-                                                        chart.get("view_width").and_then(|v| v.as_f64())
+                                                    if let Some(view_width) = chart
+                                                        .get("view_width")
+                                                        .and_then(|v| v.as_f64())
                                                     {
                                                         if view_width > 0.0 {
                                                             debug!(pack = ?chart, "resend request");
@@ -1449,8 +1573,10 @@ impl TqQuoteWebsocket {
                                         }
 
                                         if reconnect_pending.load(Ordering::SeqCst) {
-                                            let dm_temp = reconnect_dm.read().unwrap().as_ref().cloned();
-                                            let charts_snapshot = charts_clone.read().unwrap().clone();
+                                            let dm_temp =
+                                                reconnect_dm.read().unwrap().as_ref().cloned();
+                                            let charts_snapshot =
+                                                charts_clone.read().unwrap().clone();
                                             let subscribe_snapshot =
                                                 subscribe_quote_clone.read().unwrap().clone();
                                             if let Some(dm_temp) = dm_temp {
@@ -1459,18 +1585,25 @@ impl TqQuoteWebsocket {
                                                     &charts_snapshot,
                                                     &subscribe_snapshot,
                                                 ) {
-                                                    let mut diffs = reconnect_diffs.write().unwrap();
+                                                    let mut diffs =
+                                                        reconnect_diffs.write().unwrap();
                                                     let pending = diffs.clone();
                                                     diffs.clear();
-                                                    reconnect_pending.store(false, Ordering::SeqCst);
+                                                    reconnect_pending
+                                                        .store(false, Ordering::SeqCst);
                                                     *reconnect_dm.write().unwrap() = None;
-                                                    dm.merge_data(Value::Array(pending), true, true);
+                                                    dm.merge_data(
+                                                        Value::Array(pending),
+                                                        true,
+                                                        true,
+                                                    );
                                                     debug!("data completed");
                                                 } else {
                                                     debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
                                                     let base_for_peek = Arc::clone(&base_clone);
                                                     tokio::spawn(async move {
-                                                        let _ = base_for_peek.send_peek_message().await;
+                                                        let _ =
+                                                            base_for_peek.send_peek_message().await;
                                                     });
                                                 }
                                             }
@@ -1493,11 +1626,14 @@ impl TqQuoteWebsocket {
         let msg_tx_for_callback = msg_tx.clone();
         let msg_backlog_for_callback = Arc::clone(&msg_backlog);
         let msg_draining_for_callback = Arc::clone(&msg_draining);
+        let msg_dropped_for_callback = Arc::clone(&msg_dropped);
         base.on_message(move |data: Value| {
             enqueue_message_with_backpressure(
                 &msg_tx_for_callback,
                 &msg_backlog_for_callback,
                 &msg_draining_for_callback,
+                message_backlog_max,
+                &msg_dropped_for_callback,
                 message_backlog_warn_step,
                 message_batch_max,
                 "行情",
@@ -1538,7 +1674,8 @@ impl TqQuoteWebsocket {
                     width_ok && symbols_ok
                 });
                 let has_pending_query = !pending_ins_query.read().unwrap().is_empty();
-                let should_reconnect = has_quote_interest || has_chart_interest || has_pending_query;
+                let should_reconnect =
+                    has_quote_interest || has_chart_interest || has_pending_query;
                 if !should_reconnect {
                     info!("无活跃订阅意图，跳过自动重连");
                     return;
@@ -1640,7 +1777,10 @@ impl TqQuoteWebsocket {
 
     /// 发送消息（重写以记录订阅和图表请求）
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
-        let mut value = serde_json::to_value(obj)?;
+        let mut value = serde_json::to_value(obj).map_err(|e| TqError::Json {
+            context: "序列化 websocket 消息失败".to_string(),
+            source: e,
+        })?;
 
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
             match aid {
@@ -1765,8 +1905,7 @@ impl TqQuoteWebsocket {
     }
 
     pub fn is_logged_in(&self) -> bool {
-        self.login_ready
-            .load(std::sync::atomic::Ordering::SeqCst)
+        self.login_ready.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// 关闭连接
@@ -1812,16 +1951,19 @@ impl TqTradingStatusWebsocket {
                             let mut diffs = payload.clone();
                             let mut received: HashMap<String, String> = HashMap::new();
                             for diff in diffs.iter_mut() {
-                                if let Some(map) =
-                                    diff.get_mut("trading_status").and_then(|v| v.as_object_mut())
+                                if let Some(map) = diff
+                                    .get_mut("trading_status")
+                                    .and_then(|v| v.as_object_mut())
                                 {
                                     for (symbol, ts_val) in map.iter_mut() {
                                         if let Some(ts_map) = ts_val.as_object_mut() {
                                             if !ts_map.contains_key("symbol") {
-                                                ts_map.insert("symbol".to_string(), Value::String(symbol.clone()));
+                                                ts_map.insert(
+                                                    "symbol".to_string(),
+                                                    Value::String(symbol.clone()),
+                                                );
                                             }
-                                            if let Some(status_val) =
-                                                ts_map.get_mut("trade_status")
+                                            if let Some(status_val) = ts_map.get_mut("trade_status")
                                             {
                                                 if let Some(status) = status_val.as_str() {
                                                     let normalized = if status == "AUCTIONORDERING"
@@ -1878,7 +2020,7 @@ impl TqTradingStatusWebsocket {
                 let sub = subscribe_trading_status.read().unwrap().clone();
                 tokio::spawn(async move {
                     if let Some(sub) = sub {
-                         let _ = base.send(&sub).await;
+                        let _ = base.send(&sub).await;
                     }
                     let _ = base.send_peek_message().await;
                 });
@@ -1898,7 +2040,10 @@ impl TqTradingStatusWebsocket {
     }
 
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
-        let value = serde_json::to_value(obj)?;
+        let value = serde_json::to_value(obj).map_err(|e| TqError::Json {
+            context: "序列化 websocket 消息失败".to_string(),
+            source: e,
+        })?;
 
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
             if aid == "subscribe_trading_status" {
@@ -1963,6 +2108,8 @@ impl TqTradeWebsocket {
         let message_queue_capacity = config.message_queue_capacity;
         let message_backlog_warn_step = config.message_backlog_warn_step;
         let message_batch_max = config.message_batch_max;
+        let message_backlog_max =
+            derive_message_backlog_max(message_queue_capacity, message_backlog_warn_step);
         let base = Arc::new(TqWebsocket::new(url, config));
         let dm_clone = Arc::clone(&dm);
         let req_login: Arc<RwLock<Option<Value>>> = Arc::new(RwLock::new(None));
@@ -1977,6 +2124,7 @@ impl TqTradeWebsocket {
         let (msg_tx, mut msg_rx) = channel::<Value>(message_queue_capacity);
         let msg_backlog = Arc::new(std::sync::Mutex::new(VecDeque::<Value>::new()));
         let msg_draining = Arc::new(AtomicBool::new(false));
+        let msg_dropped = Arc::new(AtomicUsize::new(0));
         {
             let dm = Arc::clone(&dm_clone);
             let on_notify_clone = Arc::clone(&on_notify);
@@ -1994,11 +2142,14 @@ impl TqTradeWebsocket {
                             "rtn_data" => {
                                 if let Some(payload) = data.get("data") {
                                     if let Some(array) = payload.as_array() {
-                                        let reconnect_index = array.iter().position(has_reconnect_notify);
-                                        let (notifies, cleaned_data) = Self::separate_notifies(array.clone());
+                                        let reconnect_index =
+                                            array.iter().position(has_reconnect_notify);
+                                        let (notifies, cleaned_data) =
+                                            Self::separate_notifies(array.clone());
                                         debug!("notifies: {:?}", notifies);
 
-                                        if let Some(callback) = on_notify_clone.read().unwrap().as_ref() {
+                                        let callback = on_notify_clone.read().unwrap().clone();
+                                        if let Some(callback) = callback {
                                             for notify in notifies {
                                                 callback(notify);
                                             }
@@ -2015,8 +2166,13 @@ impl TqTradeWebsocket {
                                                 HashMap::new(),
                                                 DataManagerConfig::default(),
                                             ));
-                                            dm_temp.merge_data(Value::Array(diffs.clone()), true, true);
-                                            *reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
+                                            dm_temp.merge_data(
+                                                Value::Array(diffs.clone()),
+                                                true,
+                                                true,
+                                            );
+                                            *reconnect_dm.write().unwrap() =
+                                                Some(Arc::clone(&dm_temp));
                                             let base_for_send = Arc::clone(&base_clone);
                                             let req_login = req_login_clone.read().unwrap().clone();
                                             let confirm_settlement =
@@ -2047,28 +2203,39 @@ impl TqTradeWebsocket {
                                         }
 
                                         if reconnect_pending.load(Ordering::SeqCst) {
-                                            let dm_temp = reconnect_dm.read().unwrap().as_ref().cloned();
+                                            let dm_temp =
+                                                reconnect_dm.read().unwrap().as_ref().cloned();
                                             let prev_positions =
                                                 reconnect_prev_positions.read().unwrap().clone();
                                             if let Some(dm_temp) = dm_temp {
                                                 if let Some(removal_diffs) =
-                                                    is_trade_reconnect_complete(&dm_temp, &prev_positions)
+                                                    is_trade_reconnect_complete(
+                                                        &dm_temp,
+                                                        &prev_positions,
+                                                    )
                                                 {
-                                                    let mut diffs = reconnect_diffs.write().unwrap();
+                                                    let mut diffs =
+                                                        reconnect_diffs.write().unwrap();
                                                     let mut pending = diffs.clone();
                                                     diffs.clear();
-                                                    reconnect_pending.store(false, Ordering::SeqCst);
+                                                    reconnect_pending
+                                                        .store(false, Ordering::SeqCst);
                                                     *reconnect_dm.write().unwrap() = None;
                                                     if !removal_diffs.is_empty() {
                                                         pending.extend(removal_diffs);
                                                     }
-                                                    dm.merge_data(Value::Array(pending), true, true);
+                                                    dm.merge_data(
+                                                        Value::Array(pending),
+                                                        true,
+                                                        true,
+                                                    );
                                                     debug!("data completed");
                                                 } else {
                                                     debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
                                                     let base_for_peek = Arc::clone(&base_clone);
                                                     tokio::spawn(async move {
-                                                        let _ = base_for_peek.send_peek_message().await;
+                                                        let _ =
+                                                            base_for_peek.send_peek_message().await;
                                                     });
                                                 }
                                             }
@@ -2090,8 +2257,12 @@ impl TqTradeWebsocket {
                                     data.get("user_name").and_then(|v| v.as_str()),
                                     data.get("trading_day").and_then(|v| v.as_str()),
                                 ) {
-                                    debug!("收到结算单: user={}, trading_day={}", user_name, trading_day);
-                                    let settlement = Self::parse_settlement_content(settlement_info);
+                                    debug!(
+                                        "收到结算单: user={}, trading_day={}",
+                                        user_name, trading_day
+                                    );
+                                    let settlement =
+                                        Self::parse_settlement_content(settlement_info);
                                     let settlement_data = serde_json::json!({
                                         "trade": {
                                             user_name: {
@@ -2114,11 +2285,14 @@ impl TqTradeWebsocket {
         let msg_tx_for_callback = msg_tx.clone();
         let msg_backlog_for_callback = Arc::clone(&msg_backlog);
         let msg_draining_for_callback = Arc::clone(&msg_draining);
+        let msg_dropped_for_callback = Arc::clone(&msg_dropped);
         base.on_message(move |data: Value| {
             enqueue_message_with_backpressure(
                 &msg_tx_for_callback,
                 &msg_backlog_for_callback,
                 &msg_draining_for_callback,
+                message_backlog_max,
+                &msg_dropped_for_callback,
                 message_backlog_warn_step,
                 message_batch_max,
                 "交易",
@@ -2248,7 +2422,14 @@ impl TqTradeWebsocket {
     where
         F: Fn(crate::types::Notification) + Send + Sync + 'static,
     {
-        *self.on_notify.write().unwrap() = Some(Box::new(callback));
+        *self.on_notify.write().unwrap() = Some(Arc::new(callback));
+    }
+
+    pub fn on_error<F>(&self, callback: F)
+    where
+        F: Fn(String) + Send + Sync + 'static,
+    {
+        self.base.on_error(callback);
     }
 
     /// 初始化连接
@@ -2259,8 +2440,14 @@ impl TqTradeWebsocket {
     /// 发送消息（重写以记录登录请求）
     pub async fn send<T: Serialize>(&self, obj: &T) -> Result<()> {
         // 序列化为 Value 以检查 aid
-        let json_str = serde_json::to_string(obj)?;
-        let value: Value = serde_json::from_str(&json_str)?;
+        let json_str = serde_json::to_string(obj).map_err(|e| TqError::Json {
+            context: "序列化 websocket 消息失败".to_string(),
+            source: e,
+        })?;
+        let value: Value = serde_json::from_str(&json_str).map_err(|e| TqError::Json {
+            context: "解析 websocket 消息 JSON 失败".to_string(),
+            source: e,
+        })?;
 
         // 如果是登录请求，记录下来
         if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
@@ -2293,7 +2480,7 @@ impl TqTradeWebsocket {
 // ✅ 3. 消息发送 - 已实现（使用 Sink trait 和 FrameView）
 // ✅ 4. 消息接收 - 已实现（使用 Stream trait 的 next() 方法）
 // ✅ 5. 连接状态管理 - 已实现（WebSocketStatus 状态机）
-// ✅ 6. 消息接收循环 - 已实现（start_receive_loop）
+// ✅ 6. Socket I/O actor - 已实现（install_io_actor + ws_io_actor_loop，避免跨 await 持锁）
 // ✅ 7. 自动重连机制 - 已实现（handle_reconnect）
 // ✅ 8. 消息队列 - 已实现（连接未就绪时缓存消息）
 // ✅ 9. 回调机制 - 已实现（on_message, on_open, on_close, on_error）
@@ -2326,3 +2513,128 @@ impl TqTradeWebsocket {
 // - 消息接收循环在独立的 tokio task 中运行
 // - Ping/Pong 帧由 yawc 自动处理，无需手动响应
 // - 重连时自动重发订阅/登录/图表请求（通过 on_open 回调）
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn close_does_not_block_when_send_queue_full() {
+        let ws = TqWebsocket::new("ws://127.0.0.1/".to_string(), WebSocketConfig::default());
+        *ws.status.write().unwrap() = WebSocketStatus::Open;
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<WsIoCommand>(1);
+        let close_notify = Arc::new(Notify::new());
+        *ws.io.lock().unwrap() = Some(WsIoHandle {
+            tx: tx.clone(),
+            close_notify: Arc::clone(&close_notify),
+        });
+
+        // 填满 send 队列：close() 不应因为 try_send(Shutdown) 失败而阻塞
+        let (resp_tx, _resp_rx) = oneshot::channel();
+        tx.try_send(WsIoCommand::SendText {
+            payload: r#"{"aid":"test"}"#.to_string(),
+            resp: resp_tx,
+        })
+        .expect("queue should accept the first item");
+
+        let res = tokio::time::timeout(Duration::from_millis(50), ws.close()).await;
+        assert!(res.is_ok(), "close() should not block on full send queue");
+    }
+
+    #[tokio::test]
+    async fn callback_reentrancy_does_not_deadlock() {
+        let ws = Arc::new(TqWebsocket::new(
+            "ws://127.0.0.1/".to_string(),
+            WebSocketConfig::default(),
+        ));
+        let ws2 = Arc::clone(&ws);
+        ws.on_message(move |_v| {
+            ws2.on_message(|_v| {});
+        });
+
+        let ws3 = Arc::clone(&ws);
+        let handle = tokio::task::spawn_blocking(move || {
+            ws3.emit_connection_notify(1, "INFO", "x".to_string());
+        });
+
+        let res = tokio::time::timeout(Duration::from_millis(200), handle).await;
+        assert!(res.is_ok());
+        res.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn enqueue_backlog_is_bounded_and_drops_oldest() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Value>(1);
+        tx.try_send(json!({"aid":"x","seq":0})).unwrap();
+
+        let backlog = Arc::new(std::sync::Mutex::new(VecDeque::<Value>::new()));
+        let draining = Arc::new(AtomicBool::new(true));
+        let dropped = Arc::new(AtomicUsize::new(0));
+
+        let backlog_max = 3;
+        let warn_step = 2;
+        let batch_max = 1;
+
+        for seq in 1..=5 {
+            enqueue_message_with_backpressure(
+                &tx,
+                &backlog,
+                &draining,
+                backlog_max,
+                &dropped,
+                warn_step,
+                batch_max,
+                "test",
+                json!({"aid":"x","seq":seq}),
+            );
+        }
+
+        let q = backlog.lock().unwrap();
+        assert_eq!(q.len(), backlog_max);
+        let seqs: Vec<i64> = q
+            .iter()
+            .map(|v| v.get("seq").and_then(|s| s.as_i64()).unwrap())
+            .collect();
+        assert_eq!(seqs, vec![3, 4, 5]);
+        drop(q);
+
+        assert_eq!(dropped.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn enqueue_merges_rtn_data_in_backlog() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Value>(1);
+        tx.try_send(json!({"aid":"x"})).unwrap();
+
+        let backlog = Arc::new(std::sync::Mutex::new(VecDeque::<Value>::new()));
+        let draining = Arc::new(AtomicBool::new(true));
+        let dropped = Arc::new(AtomicUsize::new(0));
+
+        let backlog_max = 2;
+        let warn_step = 16;
+        let batch_max = 1;
+
+        for i in 0..10 {
+            enqueue_message_with_backpressure(
+                &tx,
+                &backlog,
+                &draining,
+                backlog_max,
+                &dropped,
+                warn_step,
+                batch_max,
+                "test",
+                json!({"aid":"rtn_data","data":[{"i":i}]}),
+            );
+        }
+
+        let q = backlog.lock().unwrap();
+        assert_eq!(q.len(), 1);
+        let data = q[0].get("data").unwrap().as_array().unwrap();
+        assert_eq!(data.len(), 10);
+        drop(q);
+
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+}

@@ -2,6 +2,8 @@
 //!
 //! 使用 thiserror 定义所有错误类型
 
+use reqwest::StatusCode;
+
 /// TQSDK Result 类型
 pub type Result<T> = std::result::Result<T, TqError>;
 
@@ -24,9 +26,38 @@ pub enum TqError {
     #[error("数据解析错误: {0}")]
     ParseError(String),
 
-    /// 网络请求错误
-    #[error("网络请求错误: {0}")]
-    NetworkError(String),
+    /// Reqwest 错误（保留 source）
+    #[error("{context}")]
+    Reqwest {
+        context: String,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    /// HTTP 状态码错误（保留关键信息）
+    #[error("HTTP 状态码错误: {method} {url} -> {status}, body={body_snippet}")]
+    HttpStatus {
+        method: String,
+        url: String,
+        status: StatusCode,
+        body_snippet: String,
+    },
+
+    /// JSON 错误（保留 source 与上下文）
+    #[error("{context}")]
+    Json {
+        context: String,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// JWT 错误（保留 source 与上下文）
+    #[error("{context}")]
+    Jwt {
+        context: String,
+        #[source]
+        source: jsonwebtoken::errors::Error,
+    },
 
     /// 配置错误
     #[error("配置错误: {0}")]
@@ -64,53 +95,17 @@ pub enum TqError {
     #[error("操作超时")]
     Timeout,
 
-    /// IO 错误
-    #[error("IO 错误: {0}")]
-    IoError(String),
-
-    /// JSON 错误
-    #[error("JSON 错误: {0}")]
-    JsonError(String),
-
-    /// JWT 错误
-    #[error("JWT 错误: {0}")]
-    JwtError(String),
+    /// IO 错误（保留 source）
+    #[error("IO 错误")]
+    Io(#[from] std::io::Error),
 
     /// 其他错误
     #[error("错误: {0}")]
     Other(String),
-}
 
-// 实现 From trait 用于错误转换
-
-impl From<std::io::Error> for TqError {
-    fn from(err: std::io::Error) -> Self {
-        TqError::IoError(err.to_string())
-    }
-}
-
-impl From<serde_json::Error> for TqError {
-    fn from(err: serde_json::Error) -> Self {
-        TqError::JsonError(err.to_string())
-    }
-}
-
-impl From<reqwest::Error> for TqError {
-    fn from(err: reqwest::Error) -> Self {
-        TqError::NetworkError(err.to_string())
-    }
-}
-
-impl From<jsonwebtoken::errors::Error> for TqError {
-    fn from(err: jsonwebtoken::errors::Error) -> Self {
-        TqError::JwtError(err.to_string())
-    }
-}
-
-impl From<url::ParseError> for TqError {
-    fn from(err: url::ParseError) -> Self {
-        TqError::InvalidParameter(err.to_string())
-    }
+    /// URL 解析错误（保留 source）
+    #[error("URL 解析错误")]
+    UrlParse(#[from] url::ParseError),
 }
 
 // 预定义的错误常量
@@ -153,5 +148,15 @@ impl TqError {
             "使用 focus_datetime 时必须提供 focus_position，且 focus_position 必须 >= 0"
                 .to_string(),
         )
+    }
+
+    pub fn truncate_body(body: String) -> String {
+        const LIMIT: usize = 2048;
+        if body.len() <= LIMIT {
+            return body;
+        }
+        let mut s = body;
+        s.truncate(LIMIT);
+        s
     }
 }

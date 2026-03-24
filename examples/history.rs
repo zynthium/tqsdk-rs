@@ -8,7 +8,7 @@
 use chrono::NaiveDate;
 use std::env;
 use std::time::Duration;
-use tqsdk_rs::*;
+use tqsdk_rs::prelude::*;
 use tracing::info;
 
 /// 使用 left_kline_id 订阅历史 K线
@@ -42,10 +42,7 @@ async fn history_kline_with_left_id_example() {
                 info!("✅ Chart 初次同步完成");
                 if let Some(single) = &data.single {
                     if let Some(chart) = &single.chart {
-                        info!(
-                            "   范围: [{}, {}]",
-                            chart.left_id, chart.right_id
-                        );
+                        info!("   范围: [{}, {}]", chart.left_id, chart.right_id);
                     }
                     info!("   数据量: {} 根K线", sym_data.data.len());
                     if let Some(first) = sym_data.data.first() {
@@ -57,10 +54,7 @@ async fn history_kline_with_left_id_example() {
             if info.chart_range_changed {
                 info!(
                     "📊 Chart 范围变化: [{},{}] -> [{},{}]",
-                    info.old_left_id,
-                    info.old_right_id,
-                    info.new_left_id,
-                    info.new_right_id
+                    info.old_left_id, info.old_right_id, info.new_left_id, info.new_right_id
                 );
                 info!("   当前数据量: {} 根K线", sym_data.data.len());
             }
@@ -70,10 +64,7 @@ async fn history_kline_with_left_id_example() {
                 info!("\n🎉 所有历史数据传输完成！");
                 if let Some(single) = &data.single {
                     if let Some(chart) = &single.chart {
-                        info!(
-                            "   最终范围: [{}, {}]",
-                            chart.left_id, chart.right_id
-                        );
+                        info!("   最终范围: [{}, {}]", chart.left_id, chart.right_id);
                         info!("   总数据量: {} 根K线", sym_data.data.len());
                         info!(
                             "   Chart More Data: {}, Ready: {}",
@@ -81,7 +72,8 @@ async fn history_kline_with_left_id_example() {
                         );
 
                         // 验证数据范围是否正确
-                        if let (Some(first), Some(last)) = (sym_data.data.first(), sym_data.data.last())
+                        if let (Some(first), Some(last)) =
+                            (sym_data.data.first(), sym_data.data.last())
                         {
                             info!("\n数据范围验证:");
                             info!(
@@ -196,10 +188,7 @@ async fn history_kline_with_focus_example() {
 
                 if let Some(single) = &data.single {
                     if let Some(chart) = &single.chart {
-                        info!(
-                            "   范围: [{}, {}]",
-                            chart.left_id, chart.right_id
-                        );
+                        info!("   范围: [{}, {}]", chart.left_id, chart.right_id);
                     }
                     info!("   数据量: {} 根K线", sym_data.data.len());
                 }
@@ -248,7 +237,10 @@ async fn interface_live_test_example() {
         Err(err) => info!("query_symbol_ranking error: {}", err),
     }
 
-    match client.query_edb_data(&[1, 2], 5, Some("day"), Some("ffill")).await {
+    match client
+        .query_edb_data(&[1, 2], 5, Some("day"), Some("ffill"))
+        .await
+    {
         Ok(edb) => info!("query_edb_data: {:?}", edb),
         Err(err) => info!("query_edb_data error: {}", err),
     }
@@ -280,8 +272,7 @@ async fn main() {
     init_logger_with_file("history=info,tqsdk_rs=debug", false);
 
     interface_live_test_example().await;
-    let has_shinny_env =
-        env::var("TQ_AUTH_USER").is_ok() && env::var("TQ_AUTH_PASS").is_ok();
+    let has_shinny_env = env::var("TQ_AUTH_USER").is_ok() && env::var("TQ_AUTH_PASS").is_ok();
     if has_shinny_env {
         history_kline_with_left_id_example().await;
     }
@@ -289,11 +280,10 @@ async fn main() {
     info!("\n所有示例运行完成!");
 }
 
-
 /// 初始化日志系统：同时输出到终端和文件
 fn init_logger_with_file(level: &str, filter_crate_only: bool) {
-    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
     use std::fs;
+    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     // 创建日志目录
     fs::create_dir_all("logs").expect("无法创建日志目录");
@@ -335,9 +325,9 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
         .with_writer(file)
         .compact();
 
-
     // 组合两个 Layer
-    tracing_subscriber::registry().with(filter)
+    tracing_subscriber::registry()
+        .with(filter)
         .with(console_layer)
         .with(file_layer)
         .init();

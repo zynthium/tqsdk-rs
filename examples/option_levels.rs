@@ -1,6 +1,6 @@
 use std::env;
 use std::time::Duration;
-use tqsdk_rs::*;
+use tqsdk_rs::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -62,7 +62,14 @@ async fn main() -> Result<()> {
     println!("atm(price_level={:?})={:?}", price_level, atm);
 
     let (in_money, at_money, out_money) = client
-        .query_all_level_options(underlying.as_str(), underlying_price, "CALL", None, None, None)
+        .query_all_level_options(
+            underlying.as_str(),
+            underlying_price,
+            "CALL",
+            None,
+            None,
+            None,
+        )
         .await?;
     println!(
         "all_level_options: in_money={}, at_money={:?}, out_money={}",
@@ -92,4 +99,3 @@ async fn main() -> Result<()> {
     client.close().await?;
     Ok(())
 }
-

@@ -9,13 +9,13 @@
 use crate::errors::{Result, TqError};
 use crate::types::*;
 use crate::utils::{nanos_to_datetime, value_to_i64};
+use async_channel::{Receiver, Sender, unbounded};
 use chrono::Utc;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
-use async_channel::{Sender, Receiver, unbounded};
 use tracing::{debug, error};
 
 type DataCallbacks = Arc<RwLock<Vec<Arc<dyn Fn() + Send + Sync>>>>;
@@ -606,7 +606,10 @@ impl DataManager {
             let pos_short = short_his + short_today;
             pos.insert("pos_long".to_string(), Value::Number(pos_long.into()));
             pos.insert("pos_short".to_string(), Value::Number(pos_short.into()));
-            pos.insert("pos".to_string(), Value::Number((pos_long - pos_short).into()));
+            pos.insert(
+                "pos".to_string(),
+                Value::Number((pos_long - pos_short).into()),
+            );
             pos.insert("_epoch".to_string(), Value::Number(epoch.into()));
         }
     }
@@ -638,7 +641,8 @@ impl DataManager {
         let Some(Value::Object(trades_map)) = user_map.get("trades") else {
             return;
         };
-        let mut order_trade_stats: HashMap<String, (i64, f64)> = HashMap::with_capacity(trades_map.len());
+        let mut order_trade_stats: HashMap<String, (i64, f64)> =
+            HashMap::with_capacity(trades_map.len());
         for trade_val in trades_map.values() {
             let Some(trade) = trade_val.as_object() else {
                 continue;
@@ -667,7 +671,8 @@ impl DataManager {
                 continue;
             };
             if let Some((sum_volume, sum_amount)) = order_trade_stats.get(order_id) {
-                if let Some(number) = serde_json::Number::from_f64(*sum_amount / *sum_volume as f64) {
+                if let Some(number) = serde_json::Number::from_f64(*sum_amount / *sum_volume as f64)
+                {
                     order.insert("trade_price".to_string(), Value::Number(number));
                     order.insert("_epoch".to_string(), Value::Number(epoch.into()));
                 }
@@ -824,8 +829,10 @@ impl DataManager {
 
     /// 转换为结构体
     pub fn convert_to_struct<T: DeserializeOwned>(&self, data: &Value) -> Result<T> {
-        T::deserialize(data)
-            .map_err(|e| TqError::ParseError(format!("转换失败: {}", e)))
+        T::deserialize(data).map_err(|e| TqError::Json {
+            context: "转换失败".to_string(),
+            source: e,
+        })
     }
 
     /// 获取 Quote 数据
@@ -887,7 +894,10 @@ impl DataManager {
                             klines.push(kline);
                         }
                         Err(e) => {
-                            error!("{}", TqError::ParseError(format!("K线数据格式错误 id={}: {}", id, e)));
+                            error!(
+                                "{}",
+                                TqError::ParseError(format!("K线数据格式错误 id={}: {}", id, e))
+                            );
                         }
                     }
                 }
@@ -921,12 +931,12 @@ impl DataManager {
         let (left_id, right_id) = if let Some(Value::Object(chart_map)) =
             get_by_path_ref(&data_guard, &["charts", chart_id])
         {
-                let left = value_to_i64(chart_map.get("left_id").unwrap_or(&Value::Null));
-                let right = value_to_i64(chart_map.get("right_id").unwrap_or(&Value::Null));
-                (left, right)
-            } else {
-                (-1, -1)
-            };
+            let left = value_to_i64(chart_map.get("left_id").unwrap_or(&Value::Null));
+            let right = value_to_i64(chart_map.get("right_id").unwrap_or(&Value::Null));
+            (left, right)
+        } else {
+            (-1, -1)
+        };
 
         let mut result = MultiKlineSeriesData {
             chart_id: chart_id.to_string(),
@@ -947,8 +957,7 @@ impl DataManager {
             if let Some(Value::Object(kline_map)) = get_by_path_ref(
                 &data_guard,
                 &["klines", symbol.as_str(), duration_str.as_str()],
-            )
-            {
+            ) {
                 let metadata = KlineMetadata {
                     symbol: symbol.clone(),
                     last_id: value_to_i64(kline_map.get("last_id").unwrap_or(&Value::Null)),
@@ -973,8 +982,7 @@ impl DataManager {
         if let Some(Value::Object(main_kline_map)) = get_by_path_ref(
             &data_guard,
             &["klines", main_symbol.as_str(), duration_str.as_str()],
-        )
-        {
+        ) {
             // 获取 binding 信息
             let mut bindings: HashMap<String, HashMap<i64, i64>> = HashMap::new();
             if let Some(Value::Object(binding_map)) = main_kline_map.get("binding") {
@@ -1054,7 +1062,8 @@ impl DataManager {
                             aligned = false;
                             break;
                         };
-                        let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) else {
+                        let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data)
+                        else {
                             aligned = false;
                             break;
                         };
@@ -1262,7 +1271,11 @@ fn get_by_path_ref_strings<'a>(
     Some(current)
 }
 
-fn is_path_epoch_changed(data: &HashMap<String, Value>, path: &[String], current_epoch: i64) -> bool {
+fn is_path_epoch_changed(
+    data: &HashMap<String, Value>,
+    path: &[String],
+    current_epoch: i64,
+) -> bool {
     if let Some(Value::Object(map)) = get_by_path_ref_strings(data, path) {
         if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
             if let Some(epoch) = epoch_val.as_i64() {
@@ -1334,7 +1347,9 @@ fn default_object_by_branch(prototype: Option<&Value>, branch: PrototypeBranch) 
     if matches!(branch, PrototypeBranch::At | PrototypeBranch::Hash)
         && prototype.is_some_and(Value::is_object)
     {
-        return prototype.cloned().unwrap_or_else(|| Value::Object(Map::new()));
+        return prototype
+            .cloned()
+            .unwrap_or_else(|| Value::Object(Map::new()));
     }
     Value::Object(Map::new())
 }

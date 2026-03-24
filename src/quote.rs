@@ -6,10 +6,10 @@ use crate::datamanager::DataManager;
 use crate::errors::Result;
 use crate::types::Quote;
 use crate::websocket::TqQuoteWebsocket;
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use async_channel::{Receiver, Sender, unbounded};
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -112,9 +112,7 @@ impl QuoteSubscription {
             symbols.iter().cloned().collect()
         };
         debug!("同步 Quote 订阅请求: {} 个合约", ins_list.len());
-        self.ws
-            .update_quote_subscription(&self.id, ins_list)
-            .await
+        self.ws.update_quote_subscription(&self.id, ins_list).await
     }
 
     /// 获取 Quote 更新通道（克隆接收端）
@@ -180,9 +178,7 @@ impl QuoteSubscription {
                         };
 
                         let current_global_epoch = dm.get_epoch();
-                        let last_epoch = {
-                            *last_processed_epoch.lock().unwrap()
-                        };
+                        let last_epoch = { *last_processed_epoch.lock().unwrap() };
 
                         for symbol in symbol_list {
                             let path: Vec<&str> = vec!["quotes", &symbol];

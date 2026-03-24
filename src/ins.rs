@@ -2,24 +2,24 @@
 //!
 //! 提供合约列表、期权筛选、结算价、持仓排名、EDB 指标、交易日历与交易状态等能力。
 
+use crate::auth::Authenticator;
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
-use crate::auth::Authenticator;
 use crate::types::{
     EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus,
 };
 use crate::utils::{fetch_json_with_headers, split_symbol, value_to_f64};
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket};
-use async_channel::{unbounded, Receiver};
-use chrono::{Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
+use async_channel::{Receiver, unbounded};
 use chrono::Duration as ChronoDuration;
+use chrono::{Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
 use reqwest::Client;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::time::{Duration, Instant, MissedTickBehavior};
 use tokio::sync::RwLock;
+use tokio::time::{Duration, Instant, MissedTickBehavior};
 use uuid::Uuid;
 
 /// 合约查询与基础数据接口
@@ -77,7 +77,10 @@ fn match_query_cache(symbol: &Map<String, Value>, query: &Value, variables: &Val
 fn parse_query_quotes_result(res: &Value, target_ex: Option<&str>) -> Vec<String> {
     let mut list = Vec::new();
     if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj.get("multi_symbol_info").and_then(|v| v.as_array()) {
+        if let Some(arr) = result_obj
+            .get("multi_symbol_info")
+            .and_then(|v| v.as_array())
+        {
             for item in arr {
                 if let Some(ins) = item.get("instrument_id").and_then(|v| v.as_str()) {
                     if let Some(ex) = target_ex {
@@ -101,7 +104,10 @@ fn parse_query_cont_quotes_result(
 ) -> Vec<String> {
     let mut list = Vec::new();
     if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj.get("multi_symbol_info").and_then(|v| v.as_array()) {
+        if let Some(arr) = result_obj
+            .get("multi_symbol_info")
+            .and_then(|v| v.as_array())
+        {
             for item in arr {
                 if let Some(underlying) = item.get("underlying") {
                     if let Some(edges) = underlying.get("edges").and_then(|v| v.as_array()) {
@@ -151,7 +157,10 @@ fn parse_query_options_result(
 ) -> Vec<String> {
     let mut options = Vec::new();
     if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj.get("multi_symbol_info").and_then(|v| v.as_array()) {
+        if let Some(arr) = result_obj
+            .get("multi_symbol_info")
+            .and_then(|v| v.as_array())
+        {
             for item in arr {
                 if let Some(der) = item.get("derivatives") {
                     if let Some(edges) = der.get("edges").and_then(|v| v.as_array()) {
@@ -254,7 +263,10 @@ struct OptionNode {
 fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
     let mut options = Vec::new();
     if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj.get("multi_symbol_info").and_then(|v| v.as_array()) {
+        if let Some(arr) = result_obj
+            .get("multi_symbol_info")
+            .and_then(|v| v.as_array())
+        {
             for item in arr {
                 if let Some(der) = item.get("derivatives") {
                     if let Some(edges) = der.get("edges").and_then(|v| v.as_array()) {
@@ -281,7 +293,8 @@ fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
                                 .get("expired")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                            let Some(ts) = node.get("last_exercise_datetime").and_then(|v| v.as_i64())
+                            let Some(ts) =
+                                node.get("last_exercise_datetime").and_then(|v| v.as_i64())
                             else {
                                 continue;
                             };
@@ -294,7 +307,9 @@ fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
                                 ts / 1_000_000_000,
                                 (ts % 1_000_000_000) as u32,
                             )
-                            .unwrap_or_else(|| chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+                            .unwrap_or_else(|| {
+                                chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap()
+                            });
                             options.push(OptionNode {
                                 instrument_id: instrument_id.to_string(),
                                 english_name,
@@ -381,7 +396,10 @@ fn validate_finance_underlying(underlying_symbol: &str) -> Result<()> {
 }
 
 fn validate_finance_nearbys(underlying_symbol: &str, nearbys: &[i32]) -> Result<()> {
-    let is_index = matches!(underlying_symbol, "SSE.000300" | "SSE.000852" | "SSE.000016");
+    let is_index = matches!(
+        underlying_symbol,
+        "SSE.000300" | "SSE.000852" | "SSE.000016"
+    );
     if is_index {
         if nearbys.iter().any(|v| !matches!(v, 0 | 1 | 2 | 3 | 4 | 5)) {
             return Err(TqError::InvalidParameter(format!(
@@ -532,7 +550,10 @@ fn update_symbol_info_map(info: &mut Map<String, Value>, symbol: &Map<String, Va
         );
     }
     if let Some(Value::String(exchange_id)) = symbol.get("exchange_id") {
-        info.insert("exchange_id".to_string(), Value::String(exchange_id.clone()));
+        info.insert(
+            "exchange_id".to_string(),
+            Value::String(exchange_id.clone()),
+        );
     }
     if let Some(Value::String(product_id)) = symbol.get("product_id") {
         info.insert("product_id".to_string(), Value::String(product_id.clone()));
@@ -573,7 +594,10 @@ fn update_symbol_info_map(info: &mut Map<String, Value>, symbol: &Map<String, Va
     if let Some(v) = symbol.get("settlement_price") {
         info.insert("pre_settlement".to_string(), v.clone());
     }
-    if let Some(ts) = symbol.get("expire_datetime").and_then(timestamp_nano_to_seconds) {
+    if let Some(ts) = symbol
+        .get("expire_datetime")
+        .and_then(timestamp_nano_to_seconds)
+    {
         info.insert("expire_datetime".to_string(), json!(ts));
     }
     if let Some(ts_nano) = symbol
@@ -588,7 +612,10 @@ fn update_symbol_info_map(info: &mut Map<String, Value>, symbol: &Map<String, Va
         }
     }
     if let Some(Value::String(call_or_put)) = symbol.get("call_or_put") {
-        info.insert("option_class".to_string(), Value::String(call_or_put.clone()));
+        info.insert(
+            "option_class".to_string(),
+            Value::String(call_or_put.clone()),
+        );
     }
     if let Some(v) = symbol.get("delivery_year") {
         info.insert("delivery_year".to_string(), v.clone());
@@ -652,7 +679,10 @@ fn parse_query_symbol_info_result(
     let mut combine_leg1: HashMap<String, String> = HashMap::new();
 
     if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj.get("multi_symbol_info").and_then(|v| v.as_array()) {
+        if let Some(arr) = result_obj
+            .get("multi_symbol_info")
+            .and_then(|v| v.as_array())
+        {
             for item in arr {
                 let symbol = match item.as_object() {
                     Some(obj) => obj,
@@ -728,8 +758,7 @@ fn parse_query_symbol_info_result(
 
     let mut underlying_delivery: HashMap<String, (Value, Value)> = HashMap::new();
     for (symbol, info) in &quotes {
-        if let (Some(year), Some(month)) = (info.get("delivery_year"), info.get("delivery_month"))
-        {
+        if let (Some(year), Some(month)) = (info.get("delivery_year"), info.get("delivery_month")) {
             underlying_delivery.insert(symbol.clone(), (year.clone(), month.clone()));
         }
     }
@@ -747,9 +776,7 @@ fn parse_query_symbol_info_result(
             .get("underlying_symbol")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let last_exercise_ts = info
-            .get("last_exercise_datetime")
-            .and_then(|v| v.as_i64());
+        let last_exercise_ts = info.get("last_exercise_datetime").and_then(|v| v.as_i64());
         let expire_ts = info.get("expire_datetime").and_then(|v| v.as_i64());
 
         if let Some(ins_class) = ins_class {
@@ -757,8 +784,7 @@ fn parse_query_symbol_info_result(
                 if let Some(exchange_id) = exchange_id {
                     if matches!(exchange_id.as_str(), "DCE" | "CZCE" | "SHFE" | "GFEX") {
                         if let Some(underlying_symbol) = &underlying_symbol {
-                            if let Some((year, month)) =
-                                underlying_delivery.get(underlying_symbol)
+                            if let Some((year, month)) = underlying_delivery.get(underlying_symbol)
                             {
                                 info.insert("delivery_year".to_string(), year.clone());
                                 info.insert("delivery_month".to_string(), month.clone());
@@ -767,8 +793,7 @@ fn parse_query_symbol_info_result(
                     }
                     if exchange_id == "CFFEX" {
                         if let Some(ts_i64) = last_exercise_ts {
-                            if let Some(dt) =
-                                timestamp_nano_to_cst_datetime(ts_i64 * 1_000_000_000)
+                            if let Some(dt) = timestamp_nano_to_cst_datetime(ts_i64 * 1_000_000_000)
                             {
                                 info.insert("delivery_year".to_string(), json!(dt.year()));
                                 info.insert("delivery_month".to_string(), json!(dt.month() as i32));
@@ -851,7 +876,9 @@ impl InsAPI {
         }
 
         let query_value = json!(query);
-        let variables_value = variables.clone().unwrap_or_else(|| Value::Object(Map::new()));
+        let variables_value = variables
+            .clone()
+            .unwrap_or_else(|| Value::Object(Map::new()));
 
         if let Some(Value::Object(symbols)) = self.dm.get_by_path(&["symbols"]) {
             for symbol in symbols.values() {
@@ -876,9 +903,7 @@ impl InsAPI {
 
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
-        let rx = self
-            .dm
-            .watch(vec!["symbols".to_string(), id.clone()]);
+        let rx = self.dm.watch(vec!["symbols".to_string(), id.clone()]);
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -901,11 +926,7 @@ impl InsAPI {
     /// 发送 GraphQL 查询并等待结果
     ///
     /// `query` 为 GraphQL 文本，`variables` 为变量对象。
-    pub async fn query_graphql(
-        &self,
-        query: &str,
-        variables: Option<Value>,
-    ) -> Result<Value> {
+    pub async fn query_graphql(&self, query: &str, variables: Option<Value>) -> Result<Value> {
         let vars = variables.unwrap_or_else(|| Value::Object(Map::new()));
         self.send_ins_query(query.to_string(), Some(vars), None, 60)
             .await
@@ -931,7 +952,9 @@ impl InsAPI {
         }
         if let Some(ex) = exchange_id {
             if ex.is_empty() {
-                return Err(TqError::InvalidParameter("exchange_id 不能为空".to_string()));
+                return Err(TqError::InvalidParameter(
+                    "exchange_id 不能为空".to_string(),
+                ));
             }
             let is_future_ex = matches!(ex, "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX");
             let need_pass_ex = match ins_class {
@@ -967,7 +990,9 @@ impl InsAPI {
 
         let mut target_ex: Option<String> = None;
         if let Some(ex) = exchange_id {
-            if matches!(ins_class, Some("INDEX") | Some("CONT")) && matches!(ex, "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX") {
+            if matches!(ins_class, Some("INDEX") | Some("CONT"))
+                && matches!(ex, "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX")
+            {
                 target_ex = Some(ex.to_string());
             }
         }
@@ -1031,7 +1056,11 @@ impl InsAPI {
             .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
             .await?;
 
-        Ok(parse_query_cont_quotes_result(&res, exchange_id, product_id))
+        Ok(parse_query_cont_quotes_result(
+            &res,
+            exchange_id,
+            product_id,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1082,7 +1111,10 @@ impl InsAPI {
 }"#;
 
         let mut all_vars = Map::new();
-        all_vars.insert("instrument_id".to_string(), Value::Array(vec![json!(underlying_symbol)]));
+        all_vars.insert(
+            "instrument_id".to_string(),
+            Value::Array(vec![json!(underlying_symbol)]),
+        );
         all_vars.insert("derivative_class".to_string(), json!(["OPTION"]));
 
         let res = self
@@ -1321,14 +1353,8 @@ impl InsAPI {
             .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
             .await?;
         let nodes = parse_option_nodes(&res);
-        let mut nodes = filter_option_nodes(
-            nodes,
-            Some(option_class),
-            None,
-            None,
-            has_a,
-            Some(nearbys),
-        );
+        let mut nodes =
+            filter_option_nodes(nodes, Some(option_class), None, None, has_a, Some(nearbys));
 
         if nodes.is_empty() {
             return Ok((vec![], vec![], vec![]));
@@ -1489,7 +1515,7 @@ impl InsAPI {
     }
   }
 }"#
-            .to_string();
+        .to_string();
         query = query.replace("__SYMBOLS__", &symbol_json);
         let res = self.send_ins_query(query, None, None, 60).await?;
         Ok(parse_query_symbol_info_result(
@@ -1517,7 +1543,10 @@ impl InsAPI {
             ));
         }
         if days < 1 {
-            return Err(TqError::InvalidParameter(format!("days 参数 {} 错误。", days)));
+            return Err(TqError::InvalidParameter(format!(
+                "days 参数 {} 错误。",
+                days
+            )));
         }
         let mut query_days = days;
         let mut url = url::Url::parse("https://md-settlement-system-fc-api.shinnytech.com/mss")
@@ -1534,9 +1563,9 @@ impl InsAPI {
 
         let headers = self.auth.read().await.base_header();
         let content = fetch_json_with_headers(url.as_str(), headers).await?;
-        let obj = content.as_object().ok_or_else(|| {
-            TqError::ParseError("结算价数据格式错误，应为对象".to_string())
-        })?;
+        let obj = content
+            .as_object()
+            .ok_or_else(|| TqError::ParseError("结算价数据格式错误，应为对象".to_string()))?;
 
         let mut dates: Vec<String> = obj.keys().cloned().collect();
         dates.sort_by(|a, b| b.cmp(a));
@@ -1590,20 +1619,22 @@ impl InsAPI {
             ));
         }
         if days < 1 {
-            return Err(TqError::InvalidParameter(format!("days 参数 {} 错误。", days)));
+            return Err(TqError::InvalidParameter(format!(
+                "days 参数 {} 错误。",
+                days
+            )));
         }
         let mut url = url::Url::parse("https://symbol-ranking-system-fc-api.shinnytech.com/srs")
             .map_err(|e| TqError::InternalError(format!("URL 解析失败: {}", e)))?;
-        let mut params = vec![
-            ("symbol", symbol.to_string()),
-            ("days", days.to_string()),
-        ];
+        let mut params = vec![("symbol", symbol.to_string()), ("days", days.to_string())];
         if let Some(dt) = start_dt {
             params.push(("start_date", dt.format("%Y%m%d").to_string()));
         }
         if let Some(broker) = broker {
             if broker.is_empty() {
-                return Err(TqError::InvalidParameter("broker 不能为空字符串".to_string()));
+                return Err(TqError::InvalidParameter(
+                    "broker 不能为空字符串".to_string(),
+                ));
             }
             params.push(("broker", broker.to_string()));
         }
@@ -1611,9 +1642,9 @@ impl InsAPI {
 
         let headers = self.auth.read().await.base_header();
         let content = fetch_json_with_headers(url.as_str(), headers).await?;
-        let obj = content.as_object().ok_or_else(|| {
-            TqError::ParseError("持仓排名数据格式错误，应为对象".to_string())
-        })?;
+        let obj = content
+            .as_object()
+            .ok_or_else(|| TqError::ParseError("持仓排名数据格式错误，应为对象".to_string()))?;
 
         let mut rows: HashMap<String, SymbolRanking> = HashMap::new();
         for (dt, symbols_val) in obj.iter() {
@@ -1661,10 +1692,14 @@ impl InsAPI {
                         });
 
                         let volume = rank_map.get("volume").map(value_to_f64).unwrap_or(f64::NAN);
-                        let varvolume =
-                            rank_map.get("varvolume").map(value_to_f64).unwrap_or(f64::NAN);
-                        let ranking =
-                            rank_map.get("ranking").map(value_to_f64).unwrap_or(f64::NAN);
+                        let varvolume = rank_map
+                            .get("varvolume")
+                            .map(value_to_f64)
+                            .unwrap_or(f64::NAN);
+                        let ranking = rank_map
+                            .get("ranking")
+                            .map(value_to_f64)
+                            .unwrap_or(f64::NAN);
 
                         match data_type.as_str() {
                             "volume_ranking" => {
@@ -1781,7 +1816,10 @@ impl InsAPI {
             .timeout(std::time::Duration::from_secs(30))
             .default_headers(headers)
             .build()
-            .map_err(|e| TqError::NetworkError(format!("创建 HTTP 客户端失败: {}", e)))?;
+            .map_err(|e| TqError::Reqwest {
+                context: "创建 HTTP 客户端失败".to_string(),
+                source: e,
+            })?;
 
         let payload = json!({
             "ids": norm_ids,
@@ -1789,24 +1827,39 @@ impl InsAPI {
             "end": end_s,
         });
 
+        let url = "https://edb.shinnytech.com/data/index_data";
         let resp = client
-            .post("https://edb.shinnytech.com/data/index_data")
+            .post(url)
             .json(&payload)
             .send()
             .await
-            .map_err(|e| TqError::NetworkError(format!("请求失败: {}", e)))?;
+            .map_err(|e| TqError::Reqwest {
+                context: format!("请求失败: POST {}", url),
+                source: e,
+            })?;
 
         if !resp.status().is_success() {
-            return Err(TqError::NetworkError(format!(
-                "HTTP 状态码错误: {}",
-                resp.status()
-            )));
+            let status = resp.status();
+            let body = resp.text().await.map_err(|e| TqError::Reqwest {
+                context: format!("读取响应失败: POST {}", url),
+                source: e,
+            })?;
+            return Err(TqError::HttpStatus {
+                method: "POST".to_string(),
+                url: url.to_string(),
+                status,
+                body_snippet: TqError::truncate_body(body),
+            });
         }
 
-        let content: Value = resp
-            .json()
-            .await
-            .map_err(|e| TqError::ParseError(format!("JSON 解析失败: {}", e)))?;
+        let body = resp.text().await.map_err(|e| TqError::Reqwest {
+            context: format!("读取响应失败: POST {}", url),
+            source: e,
+        })?;
+        let content: Value = serde_json::from_str(&body).map_err(|e| TqError::Json {
+            context: format!("JSON 解析失败: POST {}", url),
+            source: e,
+        })?;
 
         if content
             .get("error_code")
@@ -1816,7 +1869,10 @@ impl InsAPI {
         {
             return Err(TqError::Other(format!(
                 "edb 指标取值查询失败: {}",
-                content.get("error_msg").and_then(|v| v.as_str()).unwrap_or("")
+                content
+                    .get("error_msg")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
             )));
         }
 
@@ -1845,10 +1901,7 @@ impl InsAPI {
             };
             let mut row_map: HashMap<i32, f64> = HashMap::new();
             for (idx, id) in ids_from_server.iter().enumerate() {
-                let value = row_arr
-                    .get(idx)
-                    .map(value_to_f64)
-                    .unwrap_or(f64::NAN);
+                let value = row_arr.get(idx).map(value_to_f64).unwrap_or(f64::NAN);
                 row_map.insert(*id, value);
             }
             rows.insert(date.clone(), row_map);
@@ -1933,8 +1986,9 @@ impl InsAPI {
                 "start_dt 必须小于等于 end_dt".to_string(),
             ));
         }
-        let url = std::env::var("TQ_CHINESE_HOLIDAY_URL")
-            .unwrap_or_else(|_| "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string());
+        let url = std::env::var("TQ_CHINESE_HOLIDAY_URL").unwrap_or_else(|_| {
+            "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string()
+        });
         let headers = self.auth.read().await.base_header();
         let content = fetch_json_with_headers(&url, headers).await?;
         let holidays = content
@@ -1978,9 +2032,10 @@ impl InsAPI {
                 "账户不支持查看交易状态信息，需要购买后才能使用。升级网址：https://www.shinnytech.com/tqsdk-buy/".to_string(),
             ));
         }
-        let ws = self.trading_status_ws.as_ref().ok_or_else(|| {
-            TqError::InternalError("交易状态服务未初始化".to_string())
-        })?;
+        let ws = self
+            .trading_status_ws
+            .as_ref()
+            .ok_or_else(|| TqError::InternalError("交易状态服务未初始化".to_string()))?;
 
         let mut subscribe_symbol = symbol.to_string();
         let mut option_mapping: HashMap<String, String> = HashMap::new();
@@ -2011,9 +2066,7 @@ impl InsAPI {
                 if let Some(Value::Object(info)) = info_list.first() {
                     if let Some(Value::String(class_str)) = info.get("ins_class") {
                         if class_str == "OPTION" {
-                            if let Some(Value::String(underlying)) =
-                                info.get("underlying_symbol")
-                            {
+                            if let Some(Value::String(underlying)) = info.get("underlying_symbol") {
                                 if !underlying.is_empty() {
                                     subscribe_symbol = underlying.clone();
                                     option_mapping
@@ -2078,8 +2131,8 @@ mod tests {
     use chrono::TimeZone;
     use reqwest::header::HeaderMap;
     use serde_json::json;
-    use std::future::Future;
     use std::collections::HashSet;
+    use std::future::Future;
     use tokio::time::Duration;
 
     #[test]
@@ -2122,7 +2175,11 @@ mod tests {
 
     #[test]
     fn parse_options_filters_conditions() {
-        let ts = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap().timestamp() * 1_000_000_000;
+        let ts = Utc
+            .with_ymd_and_hms(2024, 12, 1, 0, 0, 0)
+            .unwrap()
+            .timestamp()
+            * 1_000_000_000;
         let res = json!({
             "result": {
                 "multi_symbol_info": [
@@ -2156,48 +2213,17 @@ mod tests {
             }
         });
 
-        let calls = parse_query_options_result(
-            &res,
-            Some("CALL"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let calls = parse_query_options_result(&res, Some("CALL"), None, None, None, None, None);
         assert_eq!(calls, vec!["SHFE.cu2405C3000"]);
 
-        let year_month = parse_query_options_result(
-            &res,
-            None,
-            Some(2024),
-            Some(12),
-            None,
-            None,
-            None,
-        );
+        let year_month =
+            parse_query_options_result(&res, None, Some(2024), Some(12), None, None, None);
         assert_eq!(year_month.len(), 2);
 
-        let strike = parse_query_options_result(
-            &res,
-            None,
-            None,
-            None,
-            Some(3100.0),
-            None,
-            None,
-        );
+        let strike = parse_query_options_result(&res, None, None, None, Some(3100.0), None, None);
         assert_eq!(strike, vec!["SHFE.cu2405P3100"]);
 
-        let has_a = parse_query_options_result(
-            &res,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(true),
-        );
+        let has_a = parse_query_options_result(&res, None, None, None, None, None, Some(true));
         assert_eq!(has_a, vec!["SHFE.cu2405C3000"]);
     }
 
@@ -2378,10 +2404,7 @@ mod tests {
         );
         let option = list[0].as_object().unwrap();
         assert_eq!(option.get("ins_class").unwrap(), "OPTION");
-        assert_eq!(
-            option.get("underlying_symbol").unwrap(),
-            "SHFE.cu2405"
-        );
+        assert_eq!(option.get("underlying_symbol").unwrap(), "SHFE.cu2405");
         assert_eq!(option.get("delivery_year").unwrap(), 2024);
         assert_eq!(option.get("delivery_month").unwrap(), 5);
         assert_eq!(option.get("exercise_year").unwrap(), 2024);
@@ -2435,11 +2458,8 @@ mod tests {
             .cloned()
             .unwrap_or_else(|| "SHFE.cu2405".to_string());
 
-        let _ = match run_with_timeout(
-            client.query_cont_quotes(Some("SHFE"), Some("cu"), None),
-            30,
-        )
-        .await
+        let _ = match run_with_timeout(client.query_cont_quotes(Some("SHFE"), Some("cu"), None), 30)
+            .await
         {
             Ok(list) => list,
             Err(err) => {
@@ -2498,7 +2518,11 @@ mod tests {
             Ok(())
         }
 
-        async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
+        async fn get_td_url(
+            &self,
+            _broker_id: &str,
+            _account_id: &str,
+        ) -> Result<crate::auth::BrokerInfo> {
             Err(TqError::NotLoggedIn)
         }
 
@@ -2528,7 +2552,10 @@ mod tests {
     }
 
     fn build_ins_api(features: &[&str]) -> InsAPI {
-        let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
         let ws = Arc::new(TqQuoteWebsocket::new(
             "wss://example.com".to_string(),
             Arc::clone(&dm),
@@ -2538,7 +2565,9 @@ mod tests {
         for item in features {
             feature_set.insert(item.to_string());
         }
-        let auth = Arc::new(RwLock::new(DummyAuth { features: feature_set }));
+        let auth = Arc::new(RwLock::new(DummyAuth {
+            features: feature_set,
+        }));
         InsAPI::new(dm, ws, None, auth, true)
     }
 
@@ -2635,7 +2664,10 @@ mod tests {
             Err(err) => println!("query_symbol_ranking error: {}", err),
         }
 
-        match api.query_edb_data(&[1, 2], 5, Some("day"), Some("ffill")).await {
+        match api
+            .query_edb_data(&[1, 2], 5, Some("day"), Some("ffill"))
+            .await
+        {
             Ok(edb) => println!("query_edb_data: {:?}", edb),
             Err(err) => println!("query_edb_data error: {}", err),
         }
@@ -2684,12 +2716,7 @@ mod tests {
         let mut client = Client::new(&user, &pass, ClientConfig::default()).await?;
         client.init_market().await?;
 
-        match run_with_timeout(
-            client.query_cont_quotes(Some("GFEX"), Some("lc"), None),
-            30,
-        )
-        .await
-        {
+        match run_with_timeout(client.query_cont_quotes(Some("GFEX"), Some("lc"), None), 30).await {
             Ok(list) => println!("query_cont_quotes: {:?}", list),
             Err(err) => println!("query_cont_quotes error: {}", err),
         }

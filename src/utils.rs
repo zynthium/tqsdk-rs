@@ -43,21 +43,30 @@ pub async fn fetch_json(url: &str) -> Result<Value> {
         .brotli(true)
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| TqError::NetworkError(format!("创建 HTTP 客户端失败: {}", e)))?;
+        .map_err(|e| TqError::Reqwest {
+            context: "创建 HTTP 客户端失败".to_string(),
+            source: e,
+        })?;
 
     // 发送请求
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| TqError::NetworkError(format!("请求失败: {}", e)))?;
+    let response = client.get(url).send().await.map_err(|e| TqError::Reqwest {
+        context: format!("请求失败: GET {}", url),
+        source: e,
+    })?;
 
     // 检查状态码
     if !response.status().is_success() {
-        return Err(TqError::NetworkError(format!(
-            "HTTP 状态码错误: {}",
-            response.status()
-        )));
+        let status = response.status();
+        let body = response.text().await.map_err(|e| TqError::Reqwest {
+            context: format!("读取响应失败: GET {}", url),
+            source: e,
+        })?;
+        return Err(TqError::HttpStatus {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            status,
+            body_snippet: TqError::truncate_body(body),
+        });
     }
 
     debug!("HTTP 状态: {}", response.status());
@@ -67,7 +76,10 @@ pub async fn fetch_json(url: &str) -> Result<Value> {
     let mut buffer = Vec::new();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| TqError::NetworkError(format!("下载数据失败: {}", e)))?;
+        let chunk = chunk.map_err(|e| TqError::Reqwest {
+            context: format!("下载数据失败: GET {}", url),
+            source: e,
+        })?;
         buffer.extend_from_slice(&chunk);
         debug!("已下载: {} 字节", buffer.len());
     }
@@ -75,8 +87,10 @@ pub async fn fetch_json(url: &str) -> Result<Value> {
     info!("下载完成，总大小: {} 字节", buffer.len());
 
     // 解析 JSON
-    let json: Value = serde_json::from_slice(&buffer)
-        .map_err(|e| TqError::ParseError(format!("JSON 解析失败: {}", e)))?;
+    let json: Value = serde_json::from_slice(&buffer).map_err(|e| TqError::Json {
+        context: format!("JSON 解析失败: GET {}", url),
+        source: e,
+    })?;
 
     Ok(json)
 }
@@ -90,19 +104,28 @@ pub async fn fetch_json_with_headers(url: &str, headers: HeaderMap) -> Result<Va
         .timeout(Duration::from_secs(30))
         .default_headers(headers)
         .build()
-        .map_err(|e| TqError::NetworkError(format!("创建 HTTP 客户端失败: {}", e)))?;
+        .map_err(|e| TqError::Reqwest {
+            context: "创建 HTTP 客户端失败".to_string(),
+            source: e,
+        })?;
 
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| TqError::NetworkError(format!("请求失败: {}", e)))?;
+    let response = client.get(url).send().await.map_err(|e| TqError::Reqwest {
+        context: format!("请求失败: GET {}", url),
+        source: e,
+    })?;
 
     if !response.status().is_success() {
-        return Err(TqError::NetworkError(format!(
-            "HTTP 状态码错误: {}",
-            response.status()
-        )));
+        let status = response.status();
+        let body = response.text().await.map_err(|e| TqError::Reqwest {
+            context: format!("读取响应失败: GET {}", url),
+            source: e,
+        })?;
+        return Err(TqError::HttpStatus {
+            method: "GET".to_string(),
+            url: url.to_string(),
+            status,
+            body_snippet: TqError::truncate_body(body),
+        });
     }
 
     debug!("HTTP 状态: {}", response.status());
@@ -111,15 +134,20 @@ pub async fn fetch_json_with_headers(url: &str, headers: HeaderMap) -> Result<Va
     let mut buffer = Vec::new();
 
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| TqError::NetworkError(format!("下载数据失败: {}", e)))?;
+        let chunk = chunk.map_err(|e| TqError::Reqwest {
+            context: format!("下载数据失败: GET {}", url),
+            source: e,
+        })?;
         buffer.extend_from_slice(&chunk);
         debug!("已下载: {} 字节", buffer.len());
     }
 
     info!("下载完成，总大小: {} 字节", buffer.len());
 
-    let json: Value = serde_json::from_slice(&buffer)
-        .map_err(|e| TqError::ParseError(format!("JSON 解析失败: {}", e)))?;
+    let json: Value = serde_json::from_slice(&buffer).map_err(|e| TqError::Json {
+        context: format!("JSON 解析失败: GET {}", url),
+        source: e,
+    })?;
 
     Ok(json)
 }

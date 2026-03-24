@@ -85,7 +85,7 @@ tqsdk-rs = { version = "0.1.1", features = ["polars"] }
 
 ```rust
 use std::env;
-use tqsdk_rs::{Client, ClientConfig};
+use tqsdk_rs::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -748,6 +748,27 @@ cargo run --example custom_logger
 # 天勤账号（必需）
 export TQ_AUTH_USER="your_username"
 export TQ_AUTH_PASS="your_password"
+
+# 认证与网络（可选）
+# 认证服务器与名称服务（默认使用官方地址）
+export TQ_AUTH_URL="https://auth.shinnytech.com"
+export TQ_NS_URL="https://api.shinnytech.com/ns"
+#
+# OAuth 客户端信息（默认使用内置值；如需自定义可覆盖）
+export TQ_CLIENT_ID="shinny_tq"
+export TQ_CLIENT_SECRET="..."
+#
+# 认证请求代理（默认使用 reqwest/system proxy 规则；如需强制代理可设置）
+export TQ_AUTH_PROXY="http://127.0.0.1:7890"
+#
+# 禁用代理（仅对认证请求生效）
+export TQ_AUTH_NO_PROXY="1"
+#
+# 禁用 JWT 签名验证（默认开启验证；关闭后不会信任 token 内 grants）
+export TQ_AUTH_SKIP_JWT_VERIFY="1"
+#
+# HTTP 超时（秒）
+export TQ_HTTP_TIMEOUT_SECS="30"
 
 # 回测起止日期（可选，仅 backtest 示例需要）
 export TQ_START_DT="2026-01-02"
