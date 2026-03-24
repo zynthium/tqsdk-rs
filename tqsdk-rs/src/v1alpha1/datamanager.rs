@@ -691,9 +691,20 @@ impl DataManager {
 
                 for (id_str, tick_data) in tick_map.iter() {
                     if let Ok(id) = id_str.parse::<i64>() {
-                        if let Ok(mut tick) = self.convert_to_struct::<Tick>(tick_data) {
-                            tick.id = id;
-                            all_ticks.push((id, tick));
+                        match self.convert_to_struct::<Tick>(tick_data) {
+                            Ok(mut tick) => {
+                                tick.id = id;
+                                all_ticks.push((id, tick));
+                            }
+                            Err(e) => {
+                                error!(
+                                    "{}",
+                                    TqError::ParseError(format!(
+                                        "Tick数据格式错误: id={}, {}",
+                                        id, e
+                                    ))
+                                );
+                            }
                         }
                     }
                 }

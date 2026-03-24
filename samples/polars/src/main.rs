@@ -34,9 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let series_api = client.series().expect("获取 Series_api 失败");
 
-    // example_kline(&series_api).await?;
+    example_kline(&series_api).await?;
     example_tick(&series_api).await?;
-    // example_multi_kline(&series_api).await?;
+    example_multi_kline(&series_api).await?;
 
     println!("\n=== 示例完成 ===");
     Ok(())
@@ -164,7 +164,7 @@ async fn example_tick(series_api: &SeriesAPI) -> Result<(), Box<dyn std::error::
     println!("\n【示例 2】Tick 数据分析");
     println!("订阅 SHFE.au2506 的 Tick 数据...\n");
 
-    let tick_subscription = series_api.tick("SHFE.au2506", 5).await?;
+    let tick_subscription = series_api.tick("SHFE.au2506", 10).await?;
 
     let tick_buffer = Arc::new(RwLock::new(TickBuffer::new()));
 
