@@ -147,7 +147,7 @@ async fn trade_callback_example() {
     // 下单示例（注释掉，避免实际下单）
     /*
     info!("\n准备下单...");
-    let order = trader.insert_order(&InsertOrderRequest {
+    let order_id = trader.insert_order(&InsertOrderRequest {
         symbol: "SHFE.au2512".to_string(),
         direction: Direction::Buy,
         offset: Offset::Open,
@@ -157,15 +157,15 @@ async fn trade_callback_example() {
         ..Default::default()
     }).await;
 
-    if let Ok(order) = order {
-        info!("下单成功: {}", order.order_id);
+    if let Ok(order_id) = order_id {
+        info!("下单成功: {}", order_id);
 
         // 等待一会儿
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // 撤单
-        info!("准备撤单 {}...", order.order_id);
-        if let Ok(_) = trader.cancel_order(&order.order_id).await {
+        info!("准备撤单 {}...", order_id);
+        if let Ok(_) = trader.cancel_order(&order_id).await {
             info!("撤单成功!");
         } else {
             info!("撤单失败");

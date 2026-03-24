@@ -417,6 +417,7 @@ pub struct SeriesSubscription {
 
     running: Arc<RwLock<bool>>,
     unsubscribe_sent: Arc<AtomicBool>,
+    data_cb_id: Arc<std::sync::Mutex<Option<i64>>>,
 }
 
 impl SeriesSubscription {
@@ -446,6 +447,7 @@ impl SeriesSubscription {
             on_error: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
             unsubscribe_sent: Arc::new(AtomicBool::new(false)),
+            data_cb_id: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -528,7 +530,10 @@ impl SeriesSubscription {
         );
 
         self.start_watching().await;
-        self.send_set_chart().await?;
+        if let Err(e) = self.send_set_chart().await {
+            *self.running.write().await = false;
+            return Err(e);
+        }
         debug!(
             "send_set_chart done for {}",
             self.options.chart_id.as_deref().unwrap_or("")
@@ -600,7 +605,7 @@ impl SeriesSubscription {
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
-        dm_clone.on_data(move || {
+        let cb_id = dm_clone.on_data_register(move || {
             let chart_id = options.chart_id.as_deref().unwrap_or("");
             let duration_str = options.duration.to_string();
 
@@ -773,6 +778,7 @@ impl SeriesSubscription {
                 }
             });
         });
+        *self.data_cb_id.lock().unwrap() = Some(cb_id);
     }
 
     /// 注册更新回调。
@@ -856,6 +862,9 @@ impl SeriesSubscription {
             let mut running = self.running.write().await;
             *running = false;
         }
+        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+            let _ = self.dm.off_data(id);
+        }
 
         info!(
             "关闭 Series 订阅: {}",
@@ -874,6 +883,9 @@ impl SeriesSubscription {
 
 impl Drop for SeriesSubscription {
     fn drop(&mut self) {
+        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+            let _ = self.dm.off_data(id);
+        }
         if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
             return;
         }

@@ -54,6 +54,7 @@ pub struct TradeSession {
     // 状态（使用 Arc<AtomicBool> 避免锁开销，支持跨线程共享）
     logged_in: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
+    data_cb_id: Arc<std::sync::Mutex<Option<i64>>>,
 }
 
 impl TradeSession {
@@ -135,6 +136,7 @@ impl TradeSession {
             on_error,
             logged_in: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
+            data_cb_id: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -186,7 +188,7 @@ impl TradeSession {
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
 
-        dm_clone.on_data(move || {
+        let cb_id = dm_clone.on_data_register(move || {
             worker_dirty.store(true, Ordering::SeqCst);
             if worker_running.swap(true, Ordering::SeqCst) {
                 return;
@@ -294,6 +296,7 @@ impl TradeSession {
                 }
             });
         });
+        *self.data_cb_id.lock().unwrap() = Some(cb_id);
     }
 
     /// 处理持仓更新
@@ -380,6 +383,8 @@ impl TradeSession {
                         if let Some(callback) = callback {
                             callback(order);
                         }
+                    } else {
+                        warn!("订单数据解析失败: order_id={}", order_id);
                     }
                 }
             }
@@ -507,8 +512,8 @@ impl TradeSession {
 }
 
 impl TradeSession {
-    /// 下单
-    pub async fn insert_order(&self, req: &InsertOrderRequest) -> Result<Order> {
+    /// 下单（返回委托单号）
+    pub async fn insert_order(&self, req: &InsertOrderRequest) -> Result<String> {
         if !self.is_ready() {
             return Err(TqError::InternalError("交易会话未就绪".to_string()));
         }
@@ -548,58 +553,7 @@ impl TradeSession {
 
         info!("发送下单请求: order_id={}, symbol={}", order_id, req.symbol);
         self.ws.send(&order_req).await?;
-
-        // 初始化订单状态到 DataManager
-        let order_init = serde_json::json!({
-            "user_id": self.user_id,
-            "order_id": order_id,
-            "exchange_id": exchange_id,
-            "instrument_id": instrument_id,
-            "direction": req.direction,
-            "offset": req.offset,
-            "volume_orign": req.volume,
-            "volume_left": req.volume,
-            "price_type": req.price_type,
-            "limit_price": req.limit_price,
-            "status": "ALIVE",
-        });
-
-        self.dm.merge_data(
-            serde_json::json!({
-                "trade": {
-                    self.user_id.clone(): {
-                        "orders": {
-                            order_id.clone(): order_init
-                        }
-                    }
-                }
-            }),
-            false,
-            false,
-        );
-
-        // 返回初始订单对象
-        Ok(Order {
-            order_id: order_id.clone(),
-            exchange_id: exchange_id.to_string(),
-            instrument_id: instrument_id.to_string(),
-            direction: req.direction.clone(),
-            offset: req.offset.clone(),
-            volume_orign: req.volume,
-            volume_left: req.volume,
-            limit_price: req.limit_price,
-            price_type: req.price_type.clone(),
-            volume_condition: "ANY".to_string(),
-            time_condition: time_condition.to_string(),
-            insert_date_time: 0,
-            status: "ALIVE".to_string(),
-            frozen_margin: 0f64,
-            epoch: None,
-            seqno: 0,
-            user_id: self.user_id.clone(),
-            exchange_order_id: String::default(),
-            last_msg: String::default(),
-        })
+        Ok(order_id)
     }
 
     /// 撤单
@@ -651,6 +605,8 @@ impl TradeSession {
 
             if let Ok(position) = serde_json::from_value::<Position>(pos_data.clone()) {
                 positions.insert(symbol.clone(), position);
+            } else {
+                warn!("持仓数据解析失败: symbol={}", symbol);
             }
         }
 
@@ -678,6 +634,8 @@ impl TradeSession {
 
             if let Ok(order) = serde_json::from_value::<Order>(order_data.clone()) {
                 orders.insert(order_id.clone(), order);
+            } else {
+                warn!("委托数据解析失败: order_id={}", order_id);
             }
         }
 
@@ -705,6 +663,8 @@ impl TradeSession {
 
             if let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone()) {
                 trades.insert(trade_id.clone(), trade);
+            } else {
+                warn!("成交数据解析失败: trade_id={}", trade_id);
             }
         }
 
@@ -728,14 +688,23 @@ impl TradeSession {
         );
 
         // 初始化 WebSocket
-        self.ws.init(false).await?;
+        if let Err(e) = self.ws.init(false).await {
+            self.running.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
 
         // 先启动数据监听（注册数据更新回调）
         self.start_watching().await;
 
         // 再发送登录请求（避免错过初始数据）
-        self.send_login().await?;
-        self.send_confirm_settlement().await?;
+        if let Err(e) = self.send_login().await {
+            self.running.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+        if let Err(e) = self.send_confirm_settlement().await {
+            self.running.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -759,6 +728,9 @@ impl TradeSession {
         }
 
         info!("关闭交易会话");
+        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+            let _ = self.dm.off_data(id);
+        }
         self.ws.close().await?;
         Ok(())
     }

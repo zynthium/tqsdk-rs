@@ -47,8 +47,8 @@ impl Default for TqAuthConfig {
             std::env::var("TQ_AUTH_NO_PROXY").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
         );
-        let verify_jwt = !matches!(
-            std::env::var("TQ_AUTH_SKIP_JWT_VERIFY").as_deref(),
+        let verify_jwt = matches!(
+            std::env::var("TQ_AUTH_VERIFY_JWT").as_deref(),
             Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
         );
         let http_timeout_secs: u64 = std::env::var("TQ_HTTP_TIMEOUT_SECS")
@@ -282,14 +282,35 @@ impl TqAuth {
 
     async fn parse_token(&mut self) -> Result<()> {
         use jsonwebtoken::dangerous::insecure_decode;
-        let token_data =
-            insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| {
-                TqError::Jwt {
-                    context: "解析 token 失败".to_string(),
-                    source: e,
-                }
-            })?;
+        let token_data = insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| {
+            TqError::Jwt {
+                context: "解析 token 失败".to_string(),
+                source: e,
+            }
+        })?;
         let claims = token_data.claims;
+        if self.config.verify_jwt {
+            let now = chrono::Utc::now().timestamp();
+            if claims.exp <= now {
+                return Err(TqError::Jwt {
+                    context: "token 已过期".to_string(),
+                    source: jsonwebtoken::errors::ErrorKind::ExpiredSignature.into(),
+                });
+            }
+            let expected_iss = format!("{}/auth/realms/shinnytech", self.config.auth_url.trim_end_matches('/'));
+            if !claims.iss.starts_with(&expected_iss) {
+                return Err(TqError::Jwt {
+                    context: "token issuer 无效".to_string(),
+                    source: jsonwebtoken::errors::ErrorKind::InvalidIssuer.into(),
+                });
+            }
+            if claims.azp != self.config.client_id {
+                return Err(TqError::Jwt {
+                    context: "token azp 不匹配".to_string(),
+                    source: jsonwebtoken::errors::ErrorKind::InvalidAudience.into(),
+                });
+            }
+        }
         self.auth_id = claims.sub;
         self.grants = Grants::default();
 

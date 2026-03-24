@@ -415,27 +415,24 @@ println!("撤单成功");
 
 ```rust
 // 查询账户信息
-let account = session.get_account("CNY").await?;
+let account = session.get_account().await?;
 println!("账户余额: {}", account.balance);
 println!("可用资金: {}", account.available);
 println!("冻结保证金: {}", account.frozen_margin);
 println!("持仓盈亏: {}", account.position_profit);
 
-// 查询持仓
-let position = session.get_position("SHFE.au2602").await?;
-println!("多头持仓: {}", position.volume_long);
-println!("空头持仓: {}", position.volume_short);
-println!("持仓均价: {}", position.open_price_long);
+// 查询单品种持仓
+let pos = session.get_position("SHFE.au2602").await?;
+println!("多头持仓: {}", pos.volume_long_today + pos.volume_long_his);
+println!("空头持仓: {}", pos.volume_short_today + pos.volume_short_his);
 
-// 查询委托单
-let order = session.get_order(&order_id).await?;
-println!("委托状态: {}", order.status);
-println!("已成交: {} / {}", order.volume_orign - order.volume_left, order.volume_orign);
+// 查询所有委托单
+let orders = session.get_orders().await?;
+println!("委托单数量: {}", orders.len());
 
-// 查询成交记录
-let trade = session.get_trade(&trade_id).await?;
-println!("成交价格: {}", trade.price);
-println!("成交数量: {}", trade.volume);
+// 查询所有成交记录
+let trades = session.get_trades().await?;
+println!("成交记录数量: {}", trades.len());
 ```
 
 ### 3. 数据管理器（DataManager）

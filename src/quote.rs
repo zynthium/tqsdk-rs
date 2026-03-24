@@ -28,6 +28,7 @@ pub struct QuoteSubscription {
     on_quote: QuoteCallback,
     on_error: QuoteErrorCallback,
     running: Arc<RwLock<bool>>,
+    data_cb_id: Arc<std::sync::Mutex<Option<i64>>>,
 }
 
 impl QuoteSubscription {
@@ -52,6 +53,7 @@ impl QuoteSubscription {
             on_quote: Arc::new(RwLock::new(None)),
             on_error: Arc::new(RwLock::new(None)),
             running: Arc::new(RwLock::new(false)),
+            data_cb_id: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -70,7 +72,10 @@ impl QuoteSubscription {
         self.start_watching().await;
 
         // 再发送订阅请求（避免错过初始数据）
-        self.send_subscription().await?;
+        if let Err(e) = self.send_subscription().await {
+            *self.running.write().await = false;
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -153,7 +158,7 @@ impl QuoteSubscription {
 
         // 注册数据更新回调
         let dm_for_callback = Arc::clone(&dm_clone);
-        dm_clone.on_data(move || {
+        let cb_id = dm_clone.on_data_register(move || {
             worker_dirty.store(true, Ordering::SeqCst);
             if worker_running.swap(true, Ordering::SeqCst) {
                 return;
@@ -216,6 +221,7 @@ impl QuoteSubscription {
                 }
             });
         });
+        *self.data_cb_id.lock().unwrap() = Some(cb_id);
     }
 
     /// 关闭订阅
@@ -223,6 +229,9 @@ impl QuoteSubscription {
         {
             let mut running = self.running.write().await;
             *running = false;
+        }
+        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+            let _ = self.dm.off_data(id);
         }
 
         info!("关闭 Quote 订阅");
@@ -233,6 +242,9 @@ impl QuoteSubscription {
 impl Drop for QuoteSubscription {
     fn drop(&mut self) {
         info!("销毁 Quote 订阅: id={}", self.id);
+        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+            let _ = self.dm.off_data(id);
+        }
         let ws = Arc::clone(&self.ws);
         let id = self.id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {

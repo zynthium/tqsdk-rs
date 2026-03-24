@@ -18,7 +18,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, error};
 
-type DataCallbacks = Arc<RwLock<Vec<Arc<dyn Fn() + Send + Sync>>>>;
+struct DataCallbackEntry {
+    id: i64,
+    f: Arc<dyn Fn() + Send + Sync>,
+}
+type DataCallbacks = Arc<RwLock<Vec<DataCallbackEntry>>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct MergeSemanticsConfig {
@@ -70,6 +74,8 @@ pub struct DataManager {
     watchers: Arc<RwLock<HashMap<String, PathWatcher>>>,
     /// 数据更新回调（使用 Arc 以支持异步触发）
     on_data_callbacks: DataCallbacks,
+    /// 回调 ID 生成器
+    next_callback_id: AtomicI64,
 }
 
 #[derive(Clone)]
@@ -112,16 +118,35 @@ impl DataManager {
             config,
             watchers: Arc::new(RwLock::new(HashMap::new())),
             on_data_callbacks: Arc::new(RwLock::new(Vec::new())),
+            next_callback_id: AtomicI64::new(1),
         }
     }
 
-    /// 注册数据更新回调
+    /// 注册数据更新回调（无句柄版本，兼容旧调用）
     pub fn on_data<F>(&self, callback: F)
     where
         F: Fn() + Send + Sync + 'static,
     {
+        let _ = self.on_data_register(callback);
+    }
+
+    /// 注册数据更新回调，返回句柄 ID，用于后续注销
+    pub fn on_data_register<F>(&self, callback: F) -> i64
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        let id = self.next_callback_id.fetch_add(1, Ordering::SeqCst);
         let mut callbacks = self.on_data_callbacks.write().unwrap();
-        callbacks.push(Arc::new(callback));
+        callbacks.push(DataCallbackEntry { id, f: Arc::new(callback) });
+        id
+    }
+
+    /// 注销数据更新回调
+    pub fn off_data(&self, id: i64) -> bool {
+        let mut callbacks = self.on_data_callbacks.write().unwrap();
+        let before = callbacks.len();
+        callbacks.retain(|entry| entry.id != id);
+        callbacks.len() < before
     }
 
     /// 合并数据（DIFF 协议核心）
@@ -184,8 +209,8 @@ impl DataManager {
 
             // 触发回调
             let callbacks = self.on_data_callbacks.read().unwrap();
-            for callback in callbacks.iter() {
-                callback();
+            for entry in callbacks.iter() {
+                (entry.f)();
             }
             drop(callbacks);
 
