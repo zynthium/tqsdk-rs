@@ -117,7 +117,7 @@ impl SeriesAPI {
     /// - `data_length`: 数据条数，上限 10000；多合约模式下最小为 30
     ///
     /// # 返回
-    /// 返回可复用的订阅句柄 `SeriesSubscription`。
+    /// 返回未启动的订阅句柄 `SeriesSubscription`，需显式调用 `start()`。
     ///
     /// # 错误
     /// 当参数无效、权限不足或网络发送失败时返回错误。
@@ -142,7 +142,7 @@ impl SeriesAPI {
     /// - `data_length`: 数据条数，上限 10000
     ///
     /// # 返回
-    /// 返回 Tick 订阅句柄 `SeriesSubscription`。
+    /// 返回未启动的 Tick 订阅句柄 `SeriesSubscription`，需显式调用 `start()`。
     ///
     /// # 错误
     /// 当参数无效、权限不足或网络发送失败时返回错误。
@@ -174,7 +174,7 @@ impl SeriesAPI {
     /// - `left_kline_id`: 历史窗口左边界 ID
     ///
     /// # 返回
-    /// 返回历史窗口订阅句柄 `SeriesSubscription`。
+    /// 返回未启动的历史窗口订阅句柄 `SeriesSubscription`，需显式调用 `start()`。
     ///
     /// # 错误
     /// 当参数无效、权限不足或网络发送失败时返回错误。
@@ -214,7 +214,7 @@ impl SeriesAPI {
     /// - `focus_position`: 焦点在窗口中的位置，`1` 靠右，`-1` 靠左
     ///
     /// # 返回
-    /// 返回历史窗口订阅句柄 `SeriesSubscription`。
+    /// 返回未启动的历史窗口订阅句柄 `SeriesSubscription`，需显式调用 `start()`。
     ///
     /// # 错误
     /// 当参数无效、权限不足或网络发送失败时返回错误。
@@ -286,12 +286,6 @@ impl SeriesAPI {
             options,
         )?);
 
-        // 先启动监听（注册数据更新回调）
-        sub.start().await?;
-
-        // // 再发送 set_chart 请求（避免错过初始数据）
-        // sub.send_set_chart().await?;
-
         Ok(sub)
     }
 }
@@ -316,7 +310,7 @@ fn normalize_kline_duration(duration: StdDuration) -> Result<i64> {
     if secs == 0 {
         return Err(TqError::InvalidParameter("duration 必须大于 0".to_string()));
     }
-    if secs > 86_400 && secs % 86_400 != 0 {
+    if secs > 86_400 && !secs.is_multiple_of(86_400) {
         return Err(TqError::InvalidParameter(
             "日线以上周期必须为 86400 的整数倍".to_string(),
         ));
@@ -532,6 +526,7 @@ impl SeriesSubscription {
         self.start_watching().await;
         if let Err(e) = self.send_set_chart().await {
             *self.running.write().await = false;
+            self.detach_data_callback();
             return Err(e);
         }
         debug!(
@@ -539,6 +534,12 @@ impl SeriesSubscription {
             self.options.chart_id.as_deref().unwrap_or("")
         );
         Ok(())
+    }
+
+    fn detach_data_callback(&self) {
+        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
+            let _ = self.dm.off_data(id);
+        }
     }
 
     /// 刷新订阅状态并重新发起 `set_chart` 请求。
@@ -682,82 +683,74 @@ impl SeriesSubscription {
                         };
 
                         if chart_epoch > last_epoch || data_epoch > last_epoch {
-                            if let Some(chart_data) = dm.get_by_path(&["charts", chart_id]) {
-                                if let Ok(chart_info) =
+                            if let Some(chart_data) = dm.get_by_path(&["charts", chart_id])
+                                && let Ok(chart_info) =
                                     dm.convert_to_struct::<ChartInfo>(&chart_data)
+                                && chart_info.ready
+                                && !chart_info.more_data
+                            {
+                                match process_series_update(
+                                    &dm,
+                                    &options,
+                                    &last_ids,
+                                    &last_left_id,
+                                    &last_right_id,
+                                    &chart_ready,
+                                    &has_chart_sync,
+                                    last_epoch,
+                                )
+                                .await
                                 {
-                                    if chart_info.ready && !chart_info.more_data {
-                                        match process_series_update(
-                                            &dm,
-                                            &options,
-                                            &last_ids,
-                                            &last_left_id,
-                                            &last_right_id,
-                                            &chart_ready,
-                                            &has_chart_sync,
-                                            last_epoch,
-                                        )
-                                        .await
-                                        {
-                                            Ok((series_data, update_info)) => {
-                                                if update_info.chart_ready {
-                                                    let series_data = Arc::new(series_data);
-                                                    let update_info = Arc::new(update_info);
+                                    Ok((series_data, update_info)) => {
+                                        if update_info.chart_ready {
+                                            let series_data = Arc::new(series_data);
+                                            let update_info = Arc::new(update_info);
 
-                                                    if let Some(callback) =
-                                                        on_update.read().await.as_ref()
-                                                    {
-                                                        callback(
-                                                            Arc::clone(&series_data),
-                                                            Arc::clone(&update_info),
-                                                        );
-                                                    }
-
-                                                    if update_info.has_new_bar {
-                                                        if let Some(callback) =
-                                                            on_new_bar.read().await.as_ref()
-                                                        {
-                                                            callback(Arc::clone(&series_data));
-                                                        }
-                                                    }
-
-                                                    if update_info.has_bar_update {
-                                                        if let Some(callback) =
-                                                            on_bar_update.read().await.as_ref()
-                                                        {
-                                                            callback(Arc::clone(&series_data));
-                                                        }
-                                                    }
-
-                                                    let use_multi_init_view_width =
-                                                        options.duration != 0
-                                                            && options.symbols.len() > 1
-                                                            && options.left_kline_id.is_none()
-                                                            && options.focus_datetime.is_none()
-                                                            && options.focus_position.is_none()
-                                                            && options.view_width < 10000;
-                                                    if use_multi_init_view_width
-                                                        && !view_width_adjusted
-                                                            .swap(true, Ordering::SeqCst)
-                                                    {
-                                                        let chart_req = build_set_chart_request(
-                                                            &options,
-                                                            options.view_width,
-                                                        );
-                                                        let _ = ws.send(&chart_req).await;
-                                                    }
-                                                }
+                                            if let Some(callback) = on_update.read().await.as_ref()
+                                            {
+                                                callback(
+                                                    Arc::clone(&series_data),
+                                                    Arc::clone(&update_info),
+                                                );
                                             }
-                                            Err(e) => {
-                                                let err_str = e.to_string();
-                                                if !err_str.contains("数据未更新") {
-                                                    warn!("处理 Series 更新失败: {}", e);
-                                                    if let Some(callback) =
-                                                        on_error.read().await.as_ref()
-                                                    {
-                                                        callback(Arc::new(err_str));
-                                                    }
-                                                }
+
+                                            if update_info.has_new_bar
+                                                && let Some(callback) =
+                                                    on_new_bar.read().await.as_ref()
+                                            {
+                                                callback(Arc::clone(&series_data));
+                                            }
+
+                                            if update_info.has_bar_update
+                                                && let Some(callback) =
+                                                    on_bar_update.read().await.as_ref()
+                                            {
+                                                callback(Arc::clone(&series_data));
+                                            }
+
+                                            let use_multi_init_view_width = options.duration != 0
+                                                && options.symbols.len() > 1
+                                                && options.left_kline_id.is_none()
+                                                && options.focus_datetime.is_none()
+                                                && options.focus_position.is_none()
+                                                && options.view_width < 10000;
+                                            if use_multi_init_view_width
+                                                && !view_width_adjusted.swap(true, Ordering::SeqCst)
+                                            {
+                                                let chart_req = build_set_chart_request(
+                                                    &options,
+                                                    options.view_width,
+                                                );
+                                                let _ = ws.send(&chart_req).await;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let err_str = e.to_string();
+                                        if !err_str.contains("数据未更新") {
+                                            warn!("处理 Series 更新失败: {}", e);
+                                            if let Some(callback) = on_error.read().await.as_ref() {
+                                                callback(Arc::new(err_str));
                                             }
                                         }
                                     }
@@ -862,9 +855,7 @@ impl SeriesSubscription {
             let mut running = self.running.write().await;
             *running = false;
         }
-        if let Some(id) = *self.data_cb_id.lock().unwrap() {
-            let _ = self.dm.off_data(id);
-        }
+        self.detach_data_callback();
 
         info!(
             "关闭 Series 订阅: {}",
@@ -883,7 +874,7 @@ impl SeriesSubscription {
 
 impl Drop for SeriesSubscription {
     fn drop(&mut self) {
-        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
             let _ = self.dm.off_data(id);
         }
         if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
@@ -945,6 +936,10 @@ mod api_naming_tests {
 }
 
 /// 处理 Series 更新
+#[expect(
+    clippy::too_many_arguments,
+    reason = "序列更新计算需要共享多份增量状态"
+)]
 async fn process_series_update(
     dm: &DataManager,
     options: &SeriesOptions,
@@ -1222,5 +1217,116 @@ async fn detect_chart_range_change(
             *last_left, *last_right, chart.left_id, chart.right_id, *ready, chart.ready, *has_sync,
         );
         info.has_chart_sync = *has_sync
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datamanager::DataManagerConfig;
+    use crate::websocket::WebSocketConfig;
+    use async_trait::async_trait;
+    use reqwest::header::HeaderMap;
+
+    #[derive(Default)]
+    struct TestAuth;
+
+    #[async_trait]
+    impl Authenticator for TestAuth {
+        fn base_header(&self) -> HeaderMap {
+            HeaderMap::new()
+        }
+
+        async fn login(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_td_url(
+            &self,
+            _broker_id: &str,
+            _account_id: &str,
+        ) -> Result<crate::auth::BrokerInfo> {
+            Err(TqError::NotLoggedIn)
+        }
+
+        async fn get_md_url(&self, _stock: bool, _backtest: bool) -> Result<String> {
+            Ok("wss://example.com".to_string())
+        }
+
+        fn has_feature(&self, _feature: &str) -> bool {
+            false
+        }
+
+        fn has_md_grants(&self, _symbols: &[&str]) -> Result<()> {
+            Ok(())
+        }
+
+        fn has_td_grants(&self, _symbol: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_auth_id(&self) -> &str {
+            ""
+        }
+
+        fn get_access_token(&self) -> &str {
+            ""
+        }
+    }
+
+    #[tokio::test]
+    async fn kline_returns_unstarted_subscription() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let ws = Arc::new(TqQuoteWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+        let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+        let api = SeriesAPI::new(dm, ws, auth);
+
+        let sub = api
+            .kline("SHFE.au2602", StdDuration::from_secs(60), 32)
+            .await
+            .unwrap();
+
+        assert!(!*sub.running.read().await);
+        assert!(sub.data_cb_id.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn start_failure_rolls_back_series_callback_registration() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let ws = Arc::new(TqQuoteWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+        ws.force_send_failure_for_test();
+
+        let sub = SeriesSubscription::new(
+            dm,
+            ws,
+            SeriesOptions {
+                symbols: vec!["SHFE.au2602".to_string()],
+                duration: 60_000_000_000,
+                view_width: 32,
+                chart_id: Some("chart_test".to_string()),
+                left_kline_id: None,
+                focus_datetime: None,
+                focus_position: None,
+            },
+        )
+        .unwrap();
+
+        assert!(sub.start().await.is_err());
+        assert!(!*sub.running.read().await);
+        assert!(sub.data_cb_id.lock().unwrap().is_none());
     }
 }

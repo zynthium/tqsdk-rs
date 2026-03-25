@@ -282,12 +282,11 @@ impl TqAuth {
 
     async fn parse_token(&mut self) -> Result<()> {
         use jsonwebtoken::dangerous::insecure_decode;
-        let token_data = insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| {
-            TqError::Jwt {
+        let token_data =
+            insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| TqError::Jwt {
                 context: "解析 token 失败".to_string(),
                 source: e,
-            }
-        })?;
+            })?;
         let claims = token_data.claims;
         if self.config.verify_jwt {
             let now = chrono::Utc::now().timestamp();
@@ -297,7 +296,10 @@ impl TqAuth {
                     source: jsonwebtoken::errors::ErrorKind::ExpiredSignature.into(),
                 });
             }
-            let expected_iss = format!("{}/auth/realms/shinnytech", self.config.auth_url.trim_end_matches('/'));
+            let expected_iss = format!(
+                "{}/auth/realms/shinnytech",
+                self.config.auth_url.trim_end_matches('/')
+            );
             if !claims.iss.starts_with(&expected_iss) {
                 return Err(TqError::Jwt {
                     context: "token issuer 无效".to_string(),
@@ -337,10 +339,10 @@ impl Authenticator for TqAuth {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("tqsdk-python 3.8.1"));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
-        if !self.access_token.is_empty() {
-            if let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", self.access_token)) {
-                headers.insert(AUTHORIZATION, value);
-            }
+        if !self.access_token.is_empty()
+            && let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", self.access_token))
+        {
+            headers.insert(AUTHORIZATION, value);
         }
         headers
     }

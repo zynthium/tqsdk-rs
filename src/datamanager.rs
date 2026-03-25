@@ -9,7 +9,7 @@
 use crate::errors::{Result, TqError};
 use crate::types::*;
 use crate::utils::{nanos_to_datetime, value_to_i64};
-use async_channel::{Receiver, Sender, unbounded};
+use async_channel::{Receiver, Sender, TrySendError, unbounded};
 use chrono::Utc;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -53,6 +53,7 @@ impl Default for DataManagerConfig {
 
 /// 路径监听器
 struct PathWatcher {
+    id: i64,
     path: Vec<String>,
     tx: Sender<Value>,
 }
@@ -71,11 +72,13 @@ pub struct DataManager {
     /// 配置
     config: DataManagerConfig,
     /// 路径监听器
-    watchers: Arc<RwLock<HashMap<String, PathWatcher>>>,
+    watchers: Arc<RwLock<HashMap<String, Vec<PathWatcher>>>>,
     /// 数据更新回调（使用 Arc 以支持异步触发）
     on_data_callbacks: DataCallbacks,
     /// 回调 ID 生成器
     next_callback_id: AtomicI64,
+    /// watcher ID 生成器
+    next_watcher_id: AtomicI64,
 }
 
 #[derive(Clone)]
@@ -119,6 +122,7 @@ impl DataManager {
             watchers: Arc::new(RwLock::new(HashMap::new())),
             on_data_callbacks: Arc::new(RwLock::new(Vec::new())),
             next_callback_id: AtomicI64::new(1),
+            next_watcher_id: AtomicI64::new(1),
         }
     }
 
@@ -137,7 +141,10 @@ impl DataManager {
     {
         let id = self.next_callback_id.fetch_add(1, Ordering::SeqCst);
         let mut callbacks = self.on_data_callbacks.write().unwrap();
-        callbacks.push(DataCallbackEntry { id, f: Arc::new(callback) });
+        callbacks.push(DataCallbackEntry {
+            id,
+            f: Arc::new(callback),
+        });
         id
     }
 
@@ -190,18 +197,18 @@ impl DataManager {
             // 合并数据
             let mut data = self.data.write().unwrap();
             for item in source_arr.iter() {
-                if let Value::Object(obj) = item {
-                    if !obj.is_empty() {
-                        self.merge_object(
-                            &mut data,
-                            obj,
-                            current_epoch,
-                            options.delete_null,
-                            Some(&options.prototype),
-                            &options,
-                            options.persist,
-                        );
-                    }
+                if let Value::Object(obj) = item
+                    && !obj.is_empty()
+                {
+                    self.merge_object(
+                        &mut data,
+                        obj,
+                        current_epoch,
+                        options.delete_null,
+                        Some(&options.prototype),
+                        &options,
+                        options.persist,
+                    );
                 }
             }
             self.apply_python_data_semantics(&mut data, current_epoch);
@@ -227,18 +234,18 @@ impl DataManager {
 
             let mut data = self.data.write().unwrap();
             for item in source_arr.iter() {
-                if let Value::Object(obj) = item {
-                    if !obj.is_empty() {
-                        self.merge_object(
-                            &mut data,
-                            obj,
-                            current_epoch,
-                            options.delete_null,
-                            Some(&options.prototype),
-                            &options,
-                            options.persist,
-                        );
-                    }
+                if let Value::Object(obj) = item
+                    && !obj.is_empty()
+                {
+                    self.merge_object(
+                        &mut data,
+                        obj,
+                        current_epoch,
+                        options.delete_null,
+                        Some(&options.prototype),
+                        &options,
+                        options.persist,
+                    );
                 }
             }
             self.apply_python_data_semantics(&mut data, current_epoch);
@@ -252,6 +259,10 @@ impl DataManager {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "递归合并需要显式传递上下文，避免频繁构造中间对象"
+    )]
     fn merge_object(
         &self,
         target: &mut HashMap<String, Value>,
@@ -348,6 +359,10 @@ impl DataManager {
         changed
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "递归合并需要显式传递上下文，避免频繁构造中间对象"
+    )]
     fn merge_object_map(
         &self,
         target: &mut Map<String, Value>,
@@ -444,6 +459,10 @@ impl DataManager {
         changed
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "行情合并路径需要携带完整上下文参数"
+    )]
     fn merge_quotes(
         &self,
         target: &mut HashMap<String, Value>,
@@ -510,6 +529,10 @@ impl DataManager {
         changed
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "行情合并路径需要携带完整上下文参数"
+    )]
     fn merge_quotes_map(
         &self,
         target: &mut Map<String, Value>,
@@ -695,12 +718,11 @@ impl DataManager {
             let Some(order) = order_val.as_object_mut() else {
                 continue;
             };
-            if let Some((sum_volume, sum_amount)) = order_trade_stats.get(order_id) {
-                if let Some(number) = serde_json::Number::from_f64(*sum_amount / *sum_volume as f64)
-                {
-                    order.insert("trade_price".to_string(), Value::Number(number));
-                    order.insert("_epoch".to_string(), Value::Number(epoch.into()));
-                }
+            if let Some((sum_volume, sum_amount)) = order_trade_stats.get(order_id)
+                && let Some(number) = serde_json::Number::from_f64(*sum_amount / *sum_volume as f64)
+            {
+                order.insert("trade_price".to_string(), Value::Number(number));
+                order.insert("_epoch".to_string(), Value::Number(epoch.into()));
             }
         }
     }
@@ -731,12 +753,11 @@ impl DataManager {
             }
         }
 
-        if let Some(Value::Object(map)) = current_value {
-            if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
-                if let Some(epoch) = epoch_val.as_i64() {
-                    return epoch;
-                }
-            }
+        if let Some(Value::Object(map)) = current_value
+            && let Some(Value::Number(epoch_val)) = map.get("_epoch")
+            && let Some(epoch) = epoch_val.as_i64()
+        {
+            return epoch;
         }
 
         0
@@ -764,12 +785,11 @@ impl DataManager {
         }
 
         // 检查 _epoch
-        if let Some(Value::Object(map)) = current_value {
-            if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
-                if let Some(epoch) = epoch_val.as_i64() {
-                    return epoch == current_epoch;
-                }
-            }
+        if let Some(Value::Object(map)) = current_value
+            && let Some(Value::Number(epoch_val)) = map.get("_epoch")
+            && let Some(epoch) = epoch_val.as_i64()
+        {
+            return epoch == current_epoch;
         }
 
         false
@@ -812,18 +832,24 @@ impl DataManager {
     ///
     /// 返回一个 receiver，数据变化时会推送到这个 channel
     pub fn watch(&self, path: Vec<String>) -> Receiver<Value> {
+        self.watch_register(path).1
+    }
+
+    pub(crate) fn watch_register(&self, path: Vec<String>) -> (i64, Receiver<Value>) {
         let path_key = path.join(".");
         let (tx, rx) = unbounded();
+        let watcher_id = self.next_watcher_id.fetch_add(1, Ordering::SeqCst);
 
         let watcher = PathWatcher {
+            id: watcher_id,
             path: path.clone(),
             tx,
         };
 
         let mut watchers = self.watchers.write().unwrap();
-        watchers.insert(path_key, watcher);
+        watchers.entry(path_key).or_default().push(watcher);
 
-        rx
+        (watcher_id, rx)
     }
 
     /// 取消路径监听
@@ -838,18 +864,44 @@ impl DataManager {
         Ok(())
     }
 
+    pub(crate) fn unwatch_by_id(&self, path: &[String], watcher_id: i64) -> bool {
+        let path_key = path.join(".");
+        let mut watchers = self.watchers.write().unwrap();
+        let Some(entries) = watchers.get_mut(&path_key) else {
+            return false;
+        };
+
+        let before = entries.len();
+        entries.retain(|watcher| watcher.id != watcher_id);
+        let removed = entries.len() < before;
+        if entries.is_empty() {
+            watchers.remove(&path_key);
+        }
+
+        removed
+    }
+
     /// 通知所有 watchers
     fn notify_watchers(&self) {
         let current_epoch = self.epoch.load(Ordering::SeqCst);
-        let watchers = self.watchers.read().unwrap();
         let data = self.data.read().unwrap();
-        for watcher in watchers.values() {
-            if is_path_epoch_changed(&data, &watcher.path, current_epoch) {
-                if let Some(data) = get_by_path_ref_strings(&data, &watcher.path).cloned() {
-                    let _ = watcher.tx.try_send(data);
+        let mut watchers = self.watchers.write().unwrap();
+        watchers.retain(|_, entries| {
+            entries.retain(|watcher| {
+                if !is_path_epoch_changed(&data, &watcher.path, current_epoch) {
+                    return true;
                 }
-            }
-        }
+                let Some(payload) = get_by_path_ref_strings(&data, &watcher.path).cloned() else {
+                    return true;
+                };
+                match watcher.tx.try_send(payload) {
+                    Ok(()) => true,
+                    Err(TrySendError::Closed(_)) => false,
+                    Err(TrySendError::Full(_)) => true,
+                }
+            });
+            !entries.is_empty()
+        });
     }
 
     /// 转换为结构体
@@ -1301,12 +1353,11 @@ fn is_path_epoch_changed(
     path: &[String],
     current_epoch: i64,
 ) -> bool {
-    if let Some(Value::Object(map)) = get_by_path_ref_strings(data, path) {
-        if let Some(Value::Number(epoch_val)) = map.get("_epoch") {
-            if let Some(epoch) = epoch_val.as_i64() {
-                return epoch == current_epoch;
-            }
-        }
+    if let Some(Value::Object(map)) = get_by_path_ref_strings(data, path)
+        && let Some(Value::Number(epoch_val)) = map.get("_epoch")
+        && let Some(epoch) = epoch_val.as_i64()
+    {
+        return epoch == current_epoch;
     }
     false
 }
@@ -1777,6 +1828,31 @@ mod tests {
 
         let quote = dm.get_by_path(&["quotes", "SHFE.au2602"]).unwrap();
         assert!(quote.get("last_price").is_none());
+    }
+
+    #[test]
+    fn test_watch_allows_multiple_receivers_for_same_path() {
+        let mut initial_data = HashMap::new();
+        initial_data.insert("quotes".to_string(), json!({}));
+        let dm = DataManager::new(initial_data, DataManagerConfig::default());
+
+        let rx1 = dm.watch(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+        let rx2 = dm.watch(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

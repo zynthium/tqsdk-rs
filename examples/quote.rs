@@ -8,7 +8,6 @@
 
 use std::time::Duration;
 use std::{env, vec};
-use tokio;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
@@ -19,19 +18,20 @@ fn get_credentials() -> (String, String) {
 }
 
 /// Quote 订阅示例
+#[allow(dead_code)]
 async fn quote_subscription_example() {
     info!("==================== Quote 订阅示例 ====================");
 
     let (username, password) = get_credentials();
 
     // 创建客户端
-    let mut config = ClientConfig::default();
-    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    config.view_width = 10000;
-    config.development = true;
-    config.stock = false;
-    config.stock = false;
-    config.development = true;
+    let config = ClientConfig {
+        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        view_width: 10000,
+        development: true,
+        stock: false,
+        ..Default::default()
+    };
 
     let mut client = Client::new(&username, &password, config)
         .await
@@ -96,21 +96,26 @@ async fn quote_subscription_example() {
         })
         .await;
 
+    quote_sub.start().await.expect("启动监听失败");
+
     // 运行 30 秒
     tokio::time::sleep(Duration::from_secs(30)).await;
     info!("Quote 订阅示例结束");
 }
 
 /// 单合约 K线订阅示例（推荐用法：延迟启动模式）
+#[allow(dead_code)]
 async fn single_kline_subscription_example() {
     info!("==================== 单合约 K线订阅示例 ====================");
 
     let (username, password) = get_credentials();
 
-    let mut config = ClientConfig::default();
-    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    config.view_width = 20000;
-    config.stock = false;
+    let config = ClientConfig {
+        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        view_width: 20000,
+        stock: false,
+        ..Default::default()
+    };
 
     // let symbol = "SHFE.au2602";
     let symbol = "CFFEX.IF2512";
@@ -172,15 +177,14 @@ async fn single_kline_subscription_example() {
                 );
             }
 
-            if info.has_chart_sync {
-                if let Some(single) = &data.single {
-                    if let Some(chart) = &single.chart {
-                        info!(
-                            "✅ Chart 同步完成! 范围: [{},{}]",
-                            chart.left_id, chart.right_id
-                        );
-                    }
-                }
+            if info.has_chart_sync
+                && let Some(single) = &data.single
+                && let Some(chart) = &single.chart
+            {
+                info!(
+                    "✅ Chart 同步完成! 范围: [{},{}]",
+                    chart.left_id, chart.right_id
+                );
             }
         }
     })
@@ -189,35 +193,35 @@ async fn single_kline_subscription_example() {
     let symbol3 = symbol;
     // 方式 2: 使用专门的新 K线回调
     sub.on_new_bar(|data| {
-        if let Some(sym_data) = data.get_symbol_klines(symbol3) {
-            if let Some(latest) = sym_data.data.last() {
-                info!(
-                    "🎯 新 K线: [{}] C={:.2} V={} (序列长度={})",
-                    latest.id,
-                    latest.close,
-                    latest.volume,
-                    sym_data.data.len()
-                );
+        if let Some(sym_data) = data.get_symbol_klines(symbol3)
+            && let Some(latest) = sym_data.data.last()
+        {
+            info!(
+                "🎯 新 K线: [{}] C={:.2} V={} (序列长度={})",
+                latest.id,
+                latest.close,
+                latest.volume,
+                sym_data.data.len()
+            );
 
-                // 示例：计算最近5根K线的平均价格
-                if sym_data.data.len() >= 5 {
-                    let sum: f64 = sym_data.data[sym_data.data.len() - 5..]
-                        .iter()
-                        .map(|k| k.close)
-                        .sum();
-                    let ma5 = sum / 5.0;
-                    info!("   MA5={:.2}", ma5);
-                }
+            // 示例：计算最近5根K线的平均价格
+            if sym_data.data.len() >= 5 {
+                let sum: f64 = sym_data.data[sym_data.data.len() - 5..]
+                    .iter()
+                    .map(|k| k.close)
+                    .sum();
+                let ma5 = sum / 5.0;
+                info!("   MA5={:.2}", ma5);
             }
         }
     })
     .await;
 
     sub.on_bar_update(|data| {
-        if let Some(sym_data) = data.get_symbol_klines(symbol) {
-            if let Some(latest) = sym_data.data.last() {
-                info!("⏰ K线更新: [{}] C={:.2} (实时)", latest.id, latest.close);
-            }
+        if let Some(sym_data) = data.get_symbol_klines(symbol)
+            && let Some(latest) = sym_data.data.last()
+        {
+            info!("⏰ K线更新: [{}] C={:.2} (实时)", latest.id, latest.close);
         }
     })
     .await;
@@ -237,9 +241,11 @@ async fn multi_kline_subscription_example() {
 
     let (username, password) = get_credentials();
 
-    let mut config = ClientConfig::default();
-    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    config.view_width = 500;
+    let config = ClientConfig {
+        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        view_width: 500,
+        ..Default::default()
+    };
 
     let mut client = Client::new(&username, &password, config)
         .await
@@ -263,39 +269,39 @@ async fn multi_kline_subscription_example() {
             }
 
             // 显示对齐的数据
-            if let Some(multi) = &data.multi {
-                if let Some(latest) = multi.data.last() {
-                    info!(
-                        "\n时间: {} (MainID={})",
-                        latest.timestamp.format("%H:%M:%S"),
-                        latest.main_id
-                    );
+            if let Some(multi) = &data.multi
+                && let Some(latest) = multi.data.last()
+            {
+                info!(
+                    "\n时间: {} (MainID={})",
+                    latest.timestamp.format("%H:%M:%S"),
+                    latest.main_id
+                );
 
-                    for (symbol, kline) in &latest.klines {
-                        info!(
-                            "  {}: O={:.2} C={:.2} H={:.2} L={:.2} V={}",
-                            symbol, kline.open, kline.close, kline.high, kline.low, kline.volume
-                        );
-                    }
+                for (symbol, kline) in &latest.klines {
+                    info!(
+                        "  {}: O={:.2} C={:.2} H={:.2} L={:.2} V={}",
+                        symbol, kline.open, kline.close, kline.high, kline.low, kline.volume
+                    );
                 }
             }
         }
 
-        if info.has_chart_sync {
-            if let Some(multi) = &data.multi {
-                info!("✅ 多合约 Chart 同步完成!");
-                info!(
-                    "主合约: {}, 合约数: {}",
-                    multi.main_symbol,
-                    multi.symbols.len()
-                );
-                info!(
-                    "数据范围: [{}, {}], 总共 {} 根K线",
-                    multi.left_id,
-                    multi.right_id,
-                    multi.data.len()
-                );
-            }
+        if info.has_chart_sync
+            && let Some(multi) = &data.multi
+        {
+            info!("✅ 多合约 Chart 同步完成!");
+            info!(
+                "主合约: {}, 合约数: {}",
+                multi.main_symbol,
+                multi.symbols.len()
+            );
+            info!(
+                "数据范围: [{}, {}], 总共 {} 根K线",
+                multi.left_id,
+                multi.right_id,
+                multi.data.len()
+            );
         }
     })
     .await;
@@ -308,15 +314,18 @@ async fn multi_kline_subscription_example() {
 }
 
 /// Tick 订阅示例（推荐用法：延迟启动模式）
+#[allow(dead_code)]
 async fn tick_subscription_example() {
     info!("==================== Tick 订阅示例 ====================");
 
     let (username, password) = get_credentials();
 
-    let mut config = ClientConfig::default();
-    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    config.development = true;
-    config.view_width = 500;
+    let config = ClientConfig {
+        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        development: true,
+        view_width: 500,
+        ..Default::default()
+    };
 
     let mut client = Client::new(&username, &password, config)
         .await
@@ -330,8 +339,8 @@ async fn tick_subscription_example() {
 
     // 先注册所有回调函数
     sub.on_new_bar(|data| {
-        if let Some(tick_data) = &data.tick_data {
-            if let Some(tick) = tick_data.data.last() {
+        if let Some(tick_data) = &data.tick_data
+            && let Some(tick) = tick_data.data.last() {
                 info!(
                     "📈 新 Tick: [{}] 最新价={:.2} 买一={:.2}({}) 卖一={:.2}({}) 成交量={} (序列长度={})",
                     tick.id,
@@ -344,14 +353,13 @@ async fn tick_subscription_example() {
                     tick_data.data.len()
                 );
             }
-        }
     }).await;
 
     sub.on_bar_update(|data| {
-        if let Some(tick_data) = &data.tick_data {
-            if let Some(tick) = tick_data.data.last() {
-                info!("🔄 Tick 更新: [{}] 最新价={:.2}", tick.id, tick.last_price);
-            }
+        if let Some(tick_data) = &data.tick_data
+            && let Some(tick) = tick_data.data.last()
+        {
+            info!("🔄 Tick 更新: [{}] 最新价={:.2}", tick.id, tick.last_price);
         }
     })
     .await;

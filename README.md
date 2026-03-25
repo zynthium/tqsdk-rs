@@ -480,7 +480,8 @@ async fn main() -> tqsdk_rs::Result<()> {
     let end = Utc::now();
     let backtest = client.init_market_backtest(BacktestConfig::new(start, end)).await?;
 
-    client.subscribe_quote(&["SHFE.au2602"]).await?;
+    let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
+    quote_sub.start().await?;
 
     loop {
         match backtest.next().await? {

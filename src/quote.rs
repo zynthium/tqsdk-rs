@@ -74,10 +74,17 @@ impl QuoteSubscription {
         // 再发送订阅请求（避免错过初始数据）
         if let Err(e) = self.send_subscription().await {
             *self.running.write().await = false;
+            self.detach_data_callback();
             return Err(e);
         }
 
         Ok(())
+    }
+
+    fn detach_data_callback(&self) {
+        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
+            let _ = self.dm.off_data(id);
+        }
     }
 
     /// 添加合约
@@ -230,9 +237,7 @@ impl QuoteSubscription {
             let mut running = self.running.write().await;
             *running = false;
         }
-        if let Some(id) = *self.data_cb_id.lock().unwrap() {
-            let _ = self.dm.off_data(id);
-        }
+        self.detach_data_callback();
 
         info!("关闭 Quote 订阅");
         self.ws.remove_quote_subscription(&self.id).await
@@ -242,7 +247,7 @@ impl QuoteSubscription {
 impl Drop for QuoteSubscription {
     fn drop(&mut self) {
         info!("销毁 Quote 订阅: id={}", self.id);
-        if let Some(id) = *self.data_cb_id.lock().unwrap() {
+        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
             let _ = self.dm.off_data(id);
         }
         let ws = Arc::clone(&self.ws);
@@ -263,5 +268,33 @@ impl Drop for QuoteSubscription {
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datamanager::DataManagerConfig;
+    use crate::websocket::WebSocketConfig;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn start_failure_rolls_back_quote_callback_registration() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let ws = Arc::new(TqQuoteWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+        ws.force_send_failure_for_test();
+
+        let sub = QuoteSubscription::new(dm, ws, vec!["SHFE.au2602".to_string()]);
+
+        assert!(sub.start().await.is_err());
+        assert!(!*sub.running.read().await);
+        assert!(sub.data_cb_id.lock().unwrap().is_none());
     }
 }

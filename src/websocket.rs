@@ -121,6 +121,10 @@ fn derive_message_backlog_max(
         .max(64)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "背压队列入参就是发送路径的完整状态集合"
+)]
 fn enqueue_message_with_backpressure(
     sender: &tokio::sync::mpsc::Sender<Value>,
     backlog: &Arc<std::sync::Mutex<VecDeque<Value>>>,
@@ -145,13 +149,13 @@ fn enqueue_message_with_backpressure(
             let backlog_max = backlog_max.max(1);
             let mut queue = backlog.lock().unwrap();
             let mut data_opt = Some(data);
-            if let Some(tail) = queue.back_mut() {
-                if let Some(d) = data_opt.take() {
-                    match try_merge_rtn_data_inplace(tail, d) {
-                        Ok(()) => {}
-                        Err(unmerged) => {
-                            data_opt = Some(unmerged);
-                        }
+            if let Some(tail) = queue.back_mut()
+                && let Some(d) = data_opt.take()
+            {
+                match try_merge_rtn_data_inplace(tail, d) {
+                    Ok(()) => {}
+                    Err(unmerged) => {
+                        data_opt = Some(unmerged);
                     }
                 }
             }
@@ -618,10 +622,10 @@ impl TqWebsocket {
             return Ok(());
         }
         let res = self.send(&json!({"aid": "peek_message"})).await;
-        if res.is_ok() {
-            if let Ok(mut t) = self.last_peek_sent.lock() {
-                *t = std::time::Instant::now();
-            }
+        if res.is_ok()
+            && let Ok(mut t) = self.last_peek_sent.lock()
+        {
+            *t = std::time::Instant::now();
         }
         if res.is_err() {
             self.pending_peek.store(false, Ordering::SeqCst);
@@ -833,6 +837,10 @@ impl TqWebsocket {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "I/O actor 需要显式持有连接生命周期的全部共享状态"
+)]
 async fn ws_io_actor_loop(
     mut ws: yawc::WebSocket,
     mut cmd_rx: tokio::sync::mpsc::Receiver<WsIoCommand>,
@@ -932,11 +940,10 @@ async fn ws_io_actor_loop(
                         if let Some(timeout) = peek_timeout {
                             let last_recv_elapsed = last_recv_time.lock().ok().map(|t| t.elapsed());
                             let last_peek_elapsed = last_peek_sent.lock().ok().map(|t| t.elapsed());
-                            if let (Some(recv_elapsed), Some(peek_elapsed)) = (last_recv_elapsed, last_peek_elapsed) {
-                                if recv_elapsed > timeout && peek_elapsed > timeout {
+                            if let (Some(recv_elapsed), Some(peek_elapsed)) = (last_recv_elapsed, last_peek_elapsed)
+                                && recv_elapsed > timeout && peek_elapsed > timeout {
                                     pending_peek.store(false, Ordering::SeqCst);
                                 }
-                            }
                         }
                         continue;
                     }
@@ -1200,12 +1207,11 @@ fn sanitize_log_pack_value(value: &Value) -> String {
         .and_then(|v| v.as_str())
         .map(|aid| aid == "req_login")
         .unwrap_or(false)
+        && let Some(obj) = value.as_object()
     {
-        if let Some(obj) = value.as_object() {
-            let mut cloned = obj.clone();
-            cloned.remove("password");
-            return Value::Object(cloned).to_string();
-        }
+        let mut cloned = obj.clone();
+        cloned.remove("password");
+        return Value::Object(cloned).to_string();
     }
     value.to_string()
 }
@@ -1323,10 +1329,10 @@ fn is_md_reconnect_complete(
             "focus_datetime",
             "focus_position",
         ] {
-            if let Some(req_val) = req.get(key) {
-                if state.get(key) != Some(req_val) {
-                    return false;
-                }
+            if let Some(req_val) = req.get(key)
+                && state.get(key) != Some(req_val)
+            {
+                return false;
             }
         }
 
@@ -1364,16 +1370,16 @@ fn is_md_reconnect_complete(
         }
     }
 
-    if let Some(sub) = subscribe_quote.as_ref() {
-        if let Some(sub_ins_list) = sub.get("ins_list").and_then(|v| v.as_str()) {
-            match dm.get_by_path(&["ins_list"]) {
-                Some(Value::String(data_ins_list)) => {
-                    if data_ins_list != sub_ins_list {
-                        return false;
-                    }
+    if let Some(sub) = subscribe_quote.as_ref()
+        && let Some(sub_ins_list) = sub.get("ins_list").and_then(|v| v.as_str())
+    {
+        match dm.get_by_path(&["ins_list"]) {
+            Some(Value::String(data_ins_list)) => {
+                if data_ins_list != sub_ins_list {
+                    return false;
                 }
-                _ => return false,
             }
+            _ => return false,
         }
     }
 
@@ -1387,11 +1393,11 @@ fn extract_trade_positions(dm: &DataManager) -> HashMap<String, HashSet<String>>
         _ => return result,
     };
     for (user, value) in trade.iter() {
-        if let Value::Object(user_obj) = value {
-            if let Some(Value::Object(positions)) = user_obj.get("positions") {
-                let symbols = positions.keys().cloned().collect::<HashSet<_>>();
-                result.insert(user.to_string(), symbols);
-            }
+        if let Value::Object(user_obj) = value
+            && let Some(Value::Object(positions)) = user_obj.get("positions")
+        {
+            let symbols = positions.keys().cloned().collect::<HashSet<_>>();
+            result.insert(user.to_string(), symbols);
         }
     }
     result
@@ -1506,14 +1512,14 @@ impl TqQuoteWebsocket {
                                 if let Some(payload) = data.get("data") {
                                     if let Some(array) = payload.as_array() {
                                         for item in array {
-                                            if let Some(symbols) = item.get("symbols") {
-                                                if let Some(obj) = symbols.as_object() {
-                                                    let mut pending_guard =
-                                                        pending_ins_query.write().unwrap();
-                                                    for (query_id, value) in obj {
-                                                        if !value.is_null() {
-                                                            pending_guard.remove(query_id);
-                                                        }
+                                            if let Some(symbols) = item.get("symbols")
+                                                && let Some(obj) = symbols.as_object()
+                                            {
+                                                let mut pending_guard =
+                                                    pending_ins_query.write().unwrap();
+                                                for (query_id, value) in obj {
+                                                    if !value.is_null() {
+                                                        pending_guard.remove(query_id);
                                                     }
                                                 }
                                             }
@@ -1549,11 +1555,10 @@ impl TqQuoteWebsocket {
                                                     if let Some(view_width) = chart
                                                         .get("view_width")
                                                         .and_then(|v| v.as_f64())
+                                                        && view_width > 0.0
                                                     {
-                                                        if view_width > 0.0 {
-                                                            debug!(pack = ?chart, "resend request");
-                                                            let _ = base_for_send.send(chart).await;
-                                                        }
+                                                        debug!(pack = ?chart, "resend request");
+                                                        let _ = base_for_send.send(chart).await;
                                                     }
                                                 }
                                                 let _ = base_for_send.send_peek_message().await;
@@ -1935,69 +1940,67 @@ impl TqTradingStatusWebsocket {
             let subscribe_trading_status = Arc::clone(&subscribe_trading_status);
             let base_clone = Arc::clone(&base);
             move |data: Value| {
-                if let Some(aid) = data.get("aid").and_then(|v| v.as_str()) {
-                    if aid == "rtn_data" {
-                        if let Some(payload) = data.get("data").and_then(|v| v.as_array()) {
-                            if payload.iter().any(has_reconnect_notify) {
-                                let sub = subscribe_trading_status.read().unwrap().clone();
-                                let base_for_send = Arc::clone(&base_clone);
-                                tokio::spawn(async move {
-                                    if let Some(sub) = sub {
-                                        let _ = base_for_send.send(&sub).await;
-                                    }
-                                    let _ = base_for_send.send_peek_message().await;
-                                });
+                if let Some(aid) = data.get("aid").and_then(|v| v.as_str())
+                    && aid == "rtn_data"
+                    && let Some(payload) = data.get("data").and_then(|v| v.as_array())
+                {
+                    if payload.iter().any(has_reconnect_notify) {
+                        let sub = subscribe_trading_status.read().unwrap().clone();
+                        let base_for_send = Arc::clone(&base_clone);
+                        tokio::spawn(async move {
+                            if let Some(sub) = sub {
+                                let _ = base_for_send.send(&sub).await;
                             }
-                            let mut diffs = payload.clone();
-                            let mut received: HashMap<String, String> = HashMap::new();
-                            for diff in diffs.iter_mut() {
-                                if let Some(map) = diff
-                                    .get_mut("trading_status")
-                                    .and_then(|v| v.as_object_mut())
-                                {
-                                    for (symbol, ts_val) in map.iter_mut() {
-                                        if let Some(ts_map) = ts_val.as_object_mut() {
-                                            if !ts_map.contains_key("symbol") {
-                                                ts_map.insert(
-                                                    "symbol".to_string(),
-                                                    Value::String(symbol.clone()),
-                                                );
-                                            }
-                                            if let Some(status_val) = ts_map.get_mut("trade_status")
-                                            {
-                                                if let Some(status) = status_val.as_str() {
-                                                    let normalized = if status == "AUCTIONORDERING"
-                                                        || status == "CONTINOUS"
-                                                    {
-                                                        status.to_string()
-                                                    } else {
-                                                        "NOTRADING".to_string()
-                                                    };
-                                                    *status_val = Value::String(normalized.clone());
-                                                    received.insert(symbol.clone(), normalized);
-                                                }
-                                            }
-                                        }
+                            let _ = base_for_send.send_peek_message().await;
+                        });
+                    }
+                    let mut diffs = payload.clone();
+                    let mut received: HashMap<String, String> = HashMap::new();
+                    for diff in diffs.iter_mut() {
+                        if let Some(map) = diff
+                            .get_mut("trading_status")
+                            .and_then(|v| v.as_object_mut())
+                        {
+                            for (symbol, ts_val) in map.iter_mut() {
+                                if let Some(ts_map) = ts_val.as_object_mut() {
+                                    if !ts_map.contains_key("symbol") {
+                                        ts_map.insert(
+                                            "symbol".to_string(),
+                                            Value::String(symbol.clone()),
+                                        );
+                                    }
+                                    if let Some(status_val) = ts_map.get_mut("trade_status")
+                                        && let Some(status) = status_val.as_str()
+                                    {
+                                        let normalized = if status == "AUCTIONORDERING"
+                                            || status == "CONTINOUS"
+                                        {
+                                            status.to_string()
+                                        } else {
+                                            "NOTRADING".to_string()
+                                        };
+                                        *status_val = Value::String(normalized.clone());
+                                        received.insert(symbol.clone(), normalized);
                                     }
                                 }
                             }
-
-                            let option_map = option_underlyings.read().unwrap();
-                            for (option, underlying) in option_map.iter() {
-                                if let Some(status) = received.get(underlying) {
-                                    diffs.push(json!({
-                                        "trading_status": {
-                                            option: {
-                                                "symbol": option,
-                                                "trade_status": status
-                                            }
-                                        }
-                                    }));
-                                }
-                            }
-                            dm.merge_data(Value::Array(diffs), true, true);
                         }
                     }
+
+                    let option_map = option_underlyings.read().unwrap();
+                    for (option, underlying) in option_map.iter() {
+                        if let Some(status) = received.get(underlying) {
+                            diffs.push(json!({
+                                "trading_status": {
+                                    option: {
+                                        "symbol": option,
+                                        "trade_status": status
+                                    }
+                                }
+                            }));
+                        }
+                    }
+                    dm.merge_data(Value::Array(diffs), true, true);
                 }
             }
         });
@@ -2045,33 +2048,33 @@ impl TqTradingStatusWebsocket {
             source: e,
         })?;
 
-        if let Some(aid) = value.get("aid").and_then(|v| v.as_str()) {
-            if aid == "subscribe_trading_status" {
-                let mut should_send = false;
-                {
-                    let mut subscribe_guard = self.subscribe_trading_status.write().unwrap();
-                    if let Some(old_sub) = subscribe_guard.as_ref() {
-                        let old_list = old_sub.get("ins_list");
-                        let new_list = value.get("ins_list");
-                        if old_list != new_list {
-                            *subscribe_guard = Some(value.clone());
-                            should_send = true;
-                        }
-                    } else {
+        if let Some(aid) = value.get("aid").and_then(|v| v.as_str())
+            && aid == "subscribe_trading_status"
+        {
+            let mut should_send = false;
+            {
+                let mut subscribe_guard = self.subscribe_trading_status.write().unwrap();
+                if let Some(old_sub) = subscribe_guard.as_ref() {
+                    let old_list = old_sub.get("ins_list");
+                    let new_list = value.get("ins_list");
+                    if old_list != new_list {
                         *subscribe_guard = Some(value.clone());
                         should_send = true;
                     }
+                } else {
+                    *subscribe_guard = Some(value.clone());
+                    should_send = true;
                 }
-                if should_send {
-                    let res = self.base.send(&value).await;
-                    if res.is_ok() {
-                        let _ = self.base.send_peek_message().await;
-                    }
-                    return res;
-                }
-                let _ = self.base.send_peek_message().await;
-                return Ok(());
             }
+            if should_send {
+                let res = self.base.send(&value).await;
+                if res.is_ok() {
+                    let _ = self.base.send_peek_message().await;
+                }
+                return res;
+            }
+            let _ = self.base.send_peek_message().await;
+            return Ok(());
         }
 
         self.base.send(&value).await
@@ -2357,44 +2360,44 @@ impl TqTradeWebsocket {
         for mut item in data {
             if let Some(obj) = item.as_object_mut() {
                 // 提取 notify 字段
-                if let Some(notify_data) = obj.remove("notify") {
-                    if let Some(notify_map) = notify_data.as_object() {
-                        for (_key, notify_value) in notify_map {
-                            if let Some(n) = notify_value.as_object() {
-                                let notification = crate::types::Notification {
-                                    code: n
-                                        .get("code")
-                                        .and_then(extract_notify_code)
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_default(),
-                                    level: n
-                                        .get("level")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    r#type: n
-                                        .get("type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    content: n
-                                        .get("content")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    bid: n
-                                        .get("bid")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    user_id: n
-                                        .get("user_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                };
-                                notifies.push(notification);
-                            }
+                if let Some(notify_data) = obj.remove("notify")
+                    && let Some(notify_map) = notify_data.as_object()
+                {
+                    for (_key, notify_value) in notify_map {
+                        if let Some(n) = notify_value.as_object() {
+                            let notification = crate::types::Notification {
+                                code: n
+                                    .get("code")
+                                    .and_then(extract_notify_code)
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_default(),
+                                level: n
+                                    .get("level")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                r#type: n
+                                    .get("type")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                content: n
+                                    .get("content")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                bid: n
+                                    .get("bid")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                user_id: n
+                                    .get("user_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                            };
+                            notifies.push(notification);
                         }
                     }
                 }
@@ -2471,6 +2474,34 @@ impl TqTradeWebsocket {
     /// 关闭连接
     pub async fn close(&self) -> Result<()> {
         self.base.close().await
+    }
+}
+
+#[cfg(test)]
+impl TqWebsocket {
+    pub(crate) fn force_send_failure_for_test(&self) {
+        *self.status.write().unwrap() = WebSocketStatus::Open;
+        let (tx, rx) = tokio::sync::mpsc::channel::<WsIoCommand>(1);
+        drop(rx);
+        *self.io.lock().unwrap() = Some(WsIoHandle {
+            tx,
+            close_notify: Arc::new(Notify::new()),
+        });
+    }
+}
+
+#[cfg(test)]
+impl TqQuoteWebsocket {
+    pub(crate) fn force_send_failure_for_test(&self) {
+        self.base.force_send_failure_for_test();
+    }
+}
+
+#[cfg(test)]
+impl TqTradeWebsocket {
+    #[allow(dead_code)]
+    pub(crate) fn force_send_failure_for_test(&self) {
+        self.base.force_send_failure_for_test();
     }
 }
 

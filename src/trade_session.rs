@@ -165,6 +165,12 @@ impl TradeSession {
         Ok(())
     }
 
+    fn detach_data_callback(&self) {
+        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
+            let _ = self.dm.off_data(id);
+        }
+    }
+
     /// 启动数据监听
     async fn start_watching(&self) {
         let dm_clone = Arc::clone(&self.dm);
@@ -218,21 +224,14 @@ impl TradeSession {
 
                         if let Some(serde_json::Value::Object(session_map)) =
                             dm.get_by_path(&["trade", &user_id, "session"])
-                        {
-                            if session_map
+                            && session_map
                                 .get("trading_day")
                                 .is_some_and(|trading_day| !trading_day.is_null())
-                                && logged_in
-                                    .compare_exchange(
-                                        false,
-                                        true,
-                                        Ordering::SeqCst,
-                                        Ordering::SeqCst,
-                                    )
-                                    .is_ok()
-                            {
-                                info!("交易会话已登录: user_id={}", user_id);
-                            }
+                            && logged_in
+                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                                .is_ok()
+                        {
+                            info!("交易会话已登录: user_id={}", user_id);
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "accounts", "CNY"]) > last_epoch {
@@ -409,22 +408,22 @@ impl TradeSession {
                 }
 
                 // 检查单个成交是否有更新
-                if dm.get_path_epoch(&["trade", user_id, "trades", trade_id]) > last_epoch {
-                    if let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone()) {
-                        debug!("成交更新: trade_id={}", trade_id);
+                if dm.get_path_epoch(&["trade", user_id, "trades", trade_id]) > last_epoch
+                    && let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone())
+                {
+                    debug!("成交更新: trade_id={}", trade_id);
 
-                        match trade_tx.try_send(trade.clone()) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                warn!("TradeSession 成交队列已满，丢弃一次更新");
-                            }
-                            Err(TrySendError::Closed(_)) => {}
+                    match trade_tx.try_send(trade.clone()) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            warn!("TradeSession 成交队列已满，丢弃一次更新");
                         }
+                        Err(TrySendError::Closed(_)) => {}
+                    }
 
-                        let callback = on_trade.read().await.clone();
-                        if let Some(callback) = callback {
-                            callback(trade);
-                        }
+                    let callback = on_trade.read().await.clone();
+                    if let Some(callback) = callback {
+                        callback(trade);
                     }
                 }
             }
@@ -682,6 +681,8 @@ impl TradeSession {
             return Ok(()); // 已经在运行
         }
 
+        self.logged_in.store(false, Ordering::SeqCst);
+
         info!(
             "连接交易服务器: broker={}, user_id={}",
             self.broker, self.user_id
@@ -690,6 +691,7 @@ impl TradeSession {
         // 初始化 WebSocket
         if let Err(e) = self.ws.init(false).await {
             self.running.store(false, Ordering::SeqCst);
+            self.logged_in.store(false, Ordering::SeqCst);
             return Err(e);
         }
 
@@ -699,10 +701,14 @@ impl TradeSession {
         // 再发送登录请求（避免错过初始数据）
         if let Err(e) = self.send_login().await {
             self.running.store(false, Ordering::SeqCst);
+            self.logged_in.store(false, Ordering::SeqCst);
+            self.detach_data_callback();
             return Err(e);
         }
         if let Err(e) = self.send_confirm_settlement().await {
             self.running.store(false, Ordering::SeqCst);
+            self.logged_in.store(false, Ordering::SeqCst);
+            self.detach_data_callback();
             return Err(e);
         }
 
@@ -724,13 +730,13 @@ impl TradeSession {
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
+            self.logged_in.store(false, Ordering::SeqCst);
             return Ok(()); // 已经关闭
         }
 
         info!("关闭交易会话");
-        if let Some(id) = *self.data_cb_id.lock().unwrap() {
-            let _ = self.dm.off_data(id);
-        }
+        self.logged_in.store(false, Ordering::SeqCst);
+        self.detach_data_callback();
         self.ws.close().await?;
         Ok(())
     }
@@ -812,5 +818,49 @@ mod tests {
         assert_eq!(fired.load(AtomicOrdering::SeqCst), 2);
         assert!(order_rx.try_recv().is_ok());
         assert!(order_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn trade_session_close_resets_logged_in_state() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let session = TradeSession::new(
+            "simnow".to_string(),
+            "u".to_string(),
+            "p".to_string(),
+            dm,
+            "wss://example.com".to_string(),
+            WebSocketConfig::default(),
+        );
+
+        session.running.store(true, Ordering::SeqCst);
+        session.logged_in.store(true, Ordering::SeqCst);
+
+        session.close().await.unwrap();
+
+        assert!(!session.logged_in.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn trade_session_failed_connect_clears_stale_logged_in_state() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let session = TradeSession::new(
+            "simnow".to_string(),
+            "u".to_string(),
+            "p".to_string(),
+            dm,
+            "not-a-valid-url".to_string(),
+            WebSocketConfig::default(),
+        );
+
+        session.logged_in.store(true, Ordering::SeqCst);
+
+        assert!(session.connect().await.is_err());
+        assert!(!session.logged_in.load(Ordering::SeqCst));
     }
 }

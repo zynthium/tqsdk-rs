@@ -21,6 +21,7 @@ use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::RwLock;
 
 pub const TQ_INS_URL_DEFAULT: &str = "https://openmd.shinnytech.com/t/md/symbols/latest.json";
@@ -206,6 +207,7 @@ impl ClientBuilder {
             quotes_ws: None,
             series_api: None,
             ins_api: None,
+            market_active: AtomicBool::new(false),
             trade_sessions: Arc::new(RwLock::new(HashMap::new())),
         })
     }
@@ -220,6 +222,7 @@ pub struct Client {
     quotes_ws: Option<Arc<TqQuoteWebsocket>>,
     series_api: Option<Arc<SeriesAPI>>,
     ins_api: Option<Arc<InsAPI>>,
+    market_active: AtomicBool,
     trade_sessions: Arc<RwLock<HashMap<String, Arc<TradeSession>>>>,
 }
 
@@ -396,15 +399,14 @@ impl Client {
         }
 
         for (symbol, quote_value) in quotes.iter_mut() {
-            if symbol.starts_with("CFFEX.IO") {
-                if let Some(obj) = quote_value.as_object_mut() {
-                    if obj.get("ins_class").and_then(Value::as_str) == Some("OPTION") {
-                        obj.insert(
-                            "underlying_symbol".to_string(),
-                            Value::String("SSE.000300".to_string()),
-                        );
-                    }
-                }
+            if symbol.starts_with("CFFEX.IO")
+                && let Some(obj) = quote_value.as_object_mut()
+                && obj.get("ins_class").and_then(Value::as_str) == Some("OPTION")
+            {
+                obj.insert(
+                    "underlying_symbol".to_string(),
+                    Value::String("SSE.000300".to_string()),
+                );
             }
         }
 
@@ -515,6 +517,7 @@ impl Client {
             Arc::clone(&self.auth),
             self._config.stock,
         )));
+        self.market_active.store(true, Ordering::SeqCst);
 
         Ok(())
     }
@@ -577,6 +580,7 @@ impl Client {
             Arc::clone(&self.auth),
             self._config.stock,
         )));
+        self.market_active.store(true, Ordering::SeqCst);
 
         Ok(BacktestHandle::new(Arc::clone(&self.dm), quotes_ws, config))
     }
@@ -657,6 +661,11 @@ impl Client {
 
     /// 获取 Series API
     pub fn series(&self) -> Result<Arc<SeriesAPI>> {
+        if !self.market_active.load(Ordering::SeqCst) {
+            return Err(TqError::InternalError(
+                "Series API 未初始化或已关闭".to_string(),
+            ));
+        }
         self.series_api
             .clone()
             .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))
@@ -664,6 +673,11 @@ impl Client {
 
     /// 获取合约查询 API
     pub fn ins(&self) -> Result<Arc<InsAPI>> {
+        if !self.market_active.load(Ordering::SeqCst) {
+            return Err(TqError::InternalError(
+                "合约查询 API 未初始化或已关闭".to_string(),
+            ));
+        }
         self.ins_api
             .clone()
             .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))
@@ -725,6 +739,10 @@ impl Client {
             .await
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "对外 API 保持与 InsAPI/Python SDK 参数一致"
+    )]
     pub async fn query_atm_options(
         &self,
         underlying_symbol: &str,
@@ -838,11 +856,13 @@ impl Client {
         self.ins()?.get_trading_status(symbol).await
     }
 
-    /// 订阅 Quote
+    /// 订阅 Quote。
+    ///
+    /// 返回未启动的订阅句柄；调用方需在注册回调或获取 channel 后显式调用 `start()`。
     pub async fn subscribe_quote(&self, symbols: &[&str]) -> Result<Arc<QuoteSubscription>> {
-        if self.quotes_ws.is_none() {
+        if !self.market_active.load(Ordering::SeqCst) || self.quotes_ws.is_none() {
             return Err(TqError::InternalError(
-                "行情 WebSocket 未初始化".to_string(),
+                "行情 WebSocket 未初始化或已关闭".to_string(),
             ));
         }
         {
@@ -855,9 +875,6 @@ impl Client {
             self.quotes_ws.as_ref().unwrap().clone(),
             symbol_list,
         ));
-
-        // 启动订阅
-        qs.start().await?;
 
         Ok(qs)
     }
@@ -957,6 +974,7 @@ impl Client {
     }
 
     async fn close_market(&self) -> Result<()> {
+        self.market_active.store(false, Ordering::SeqCst);
         if let Some(ws) = &self.quotes_ws {
             ws.close().await?;
         }
@@ -964,5 +982,156 @@ impl Client {
             ins.close().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use reqwest::header::HeaderMap;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::{Duration, sleep};
+
+    #[derive(Default)]
+    struct TestAuth;
+
+    #[async_trait]
+    impl Authenticator for TestAuth {
+        fn base_header(&self) -> HeaderMap {
+            HeaderMap::new()
+        }
+
+        async fn login(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn get_td_url(
+            &self,
+            _broker_id: &str,
+            _account_id: &str,
+        ) -> Result<crate::auth::BrokerInfo> {
+            Err(TqError::NotLoggedIn)
+        }
+
+        async fn get_md_url(&self, _stock: bool, _backtest: bool) -> Result<String> {
+            Ok("wss://example.com".to_string())
+        }
+
+        fn has_feature(&self, _feature: &str) -> bool {
+            false
+        }
+
+        fn has_md_grants(&self, _symbols: &[&str]) -> Result<()> {
+            Ok(())
+        }
+
+        fn has_td_grants(&self, _symbol: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn get_auth_id(&self) -> &str {
+            ""
+        }
+
+        fn get_access_token(&self) -> &str {
+            ""
+        }
+    }
+
+    fn build_client_with_market() -> Client {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+        let quotes_ws = Arc::new(TqQuoteWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+        let series_api = Arc::new(SeriesAPI::new(
+            Arc::clone(&dm),
+            Arc::clone(&quotes_ws),
+            Arc::clone(&auth),
+        ));
+        let ins_api = Arc::new(InsAPI::new(
+            Arc::clone(&dm),
+            Arc::clone(&quotes_ws),
+            None,
+            Arc::clone(&auth),
+            true,
+        ));
+
+        Client {
+            _username: "tester".to_string(),
+            _config: ClientConfig::default(),
+            auth,
+            dm,
+            quotes_ws: Some(quotes_ws),
+            series_api: Some(series_api),
+            ins_api: Some(ins_api),
+            market_active: AtomicBool::new(true),
+            trade_sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribe_quote_requires_explicit_start() {
+        let client = build_client_with_market();
+        let sub = client.subscribe_quote(&["SHFE.au2602"]).await.unwrap();
+
+        let fired = Arc::new(AtomicUsize::new(0));
+        {
+            let fired = Arc::clone(&fired);
+            sub.on_quote(move |_quote| {
+                fired.fetch_add(1, Ordering::SeqCst);
+            })
+            .await;
+        }
+
+        client.dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "instrument_id": "SHFE.au2602",
+                        "datetime": "2024-01-01 09:00:00.000000",
+                        "last_price": 500.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+        sleep(Duration::from_millis(30)).await;
+        assert_eq!(fired.load(Ordering::SeqCst), 0);
+
+        sub.start().await.unwrap();
+        client.dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.au2602": {
+                        "instrument_id": "SHFE.au2602",
+                        "datetime": "2024-01-01 09:00:01.000000",
+                        "last_price": 501.0
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+        sleep(Duration::from_millis(30)).await;
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn close_invalidates_market_interfaces() {
+        let client = build_client_with_market();
+        client.close().await.unwrap();
+
+        assert!(client.series().is_err());
+        assert!(client.ins().is_err());
+        assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
     }
 }

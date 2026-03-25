@@ -79,7 +79,8 @@ async fn main() -> tqsdk_rs::Result<()> {
 
     client.query_symbol_info(&[symbol]).await?;
 
-    client.subscribe_quote(&[symbol]).await?;
+    let quote_sub = client.subscribe_quote(&[symbol]).await?;
+    quote_sub.start().await?;
 
     let series_api = client.series()?;
     let sub = series_api
@@ -95,10 +96,10 @@ async fn main() -> tqsdk_rs::Result<()> {
         if let Ok(mut guard) = latest_data_clone.lock() {
             *guard = Some(data.clone());
         }
-        if info.chart_ready {
-            if let Some(tx) = ready_tx_clone.lock().unwrap().take() {
-                let _ = tx.send(());
-            }
+        if info.chart_ready
+            && let Some(tx) = ready_tx_clone.lock().unwrap().take()
+        {
+            let _ = tx.send(());
         }
     })
     .await;
@@ -198,10 +199,10 @@ async fn main() -> tqsdk_rs::Result<()> {
         prev_close = Some(close);
         updates += 1;
 
-        if let Some(max) = max_updates {
-            if updates >= max {
-                break;
-            }
+        if let Some(max) = max_updates
+            && updates >= max
+        {
+            break;
         }
     }
 

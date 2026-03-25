@@ -152,6 +152,7 @@ async fn history_kline_with_left_id_example() {
 }
 
 /// 使用 focus_datetime + focus_position 订阅历史 K线
+#[allow(dead_code)]
 async fn history_kline_with_focus_example() {
     info!("==================== 历史 K线订阅示例（使用 focus_datetime） ====================");
 
@@ -181,17 +182,17 @@ async fn history_kline_with_focus_example() {
         .expect("订阅失败");
 
     sub.on_update(move |data, info| {
-        if info.chart_ready {
-            if let Some(sym_data) = data.get_symbol_klines("SHFE.au2512") {
-                info!("\n🎉 历史数据传输完成！");
-                info!("   焦点时间: {}", focus_time.format("%Y-%m-%d %H:%M:%S"));
+        if info.chart_ready
+            && let Some(sym_data) = data.get_symbol_klines("SHFE.au2512")
+        {
+            info!("\n🎉 历史数据传输完成！");
+            info!("   焦点时间: {}", focus_time.format("%Y-%m-%d %H:%M:%S"));
 
-                if let Some(single) = &data.single {
-                    if let Some(chart) = &single.chart {
-                        info!("   范围: [{}, {}]", chart.left_id, chart.right_id);
-                    }
-                    info!("   数据量: {} 根K线", sym_data.data.len());
+            if let Some(single) = &data.single {
+                if let Some(chart) = &single.chart {
+                    info!("   范围: [{}, {}]", chart.left_id, chart.right_id);
                 }
+                info!("   数据量: {} 根K线", sym_data.data.len());
             }
         }
     })

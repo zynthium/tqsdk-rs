@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
@@ -115,7 +114,7 @@ async fn data_access_example() {
     }
 
     // 访问不存在的路径
-    if let None = dm.get_by_path(&["quotes", "INVALID"]) {
+    if dm.get_by_path(&["quotes", "INVALID"]).is_none() {
         info!("预期的行为: 路径不存在返回 None");
     }
 

@@ -23,14 +23,17 @@ async fn main() -> Result<()> {
     let nearbys = vec![0, 1];
     let price_level = vec![1, 0, -1];
 
-    let mut config = ClientConfig::default();
-    config.log_level = env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
-    config.stock = true;
+    let config = ClientConfig {
+        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        stock: true,
+        ..Default::default()
+    };
     let mut client = Client::new(&user, &pass, config).await?;
     client.init_market().await?;
 
     let quote_sub = client.subscribe_quote(&[underlying.as_str()]).await?;
     let quote_rx = quote_sub.quote_channel();
+    quote_sub.start().await?;
 
     let underlying_price = tokio::time::timeout(Duration::from_secs(20), async {
         loop {

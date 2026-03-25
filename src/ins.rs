@@ -52,12 +52,12 @@ fn validate_query_variables(variables: &Value) -> Result<()> {
                     ));
                 }
                 for item in items {
-                    if let Value::String(s) = item {
-                        if s.is_empty() {
-                            return Err(TqError::InvalidParameter(
-                                "variables 不支持列表中包含空字符串".to_string(),
-                            ));
-                        }
+                    if let Value::String(s) = item
+                        && s.is_empty()
+                    {
+                        return Err(TqError::InvalidParameter(
+                            "variables 不支持列表中包含空字符串".to_string(),
+                        ));
                     }
                 }
             }
@@ -76,20 +76,19 @@ fn match_query_cache(symbol: &Map<String, Value>, query: &Value, variables: &Val
 
 fn parse_query_quotes_result(res: &Value, target_ex: Option<&str>) -> Vec<String> {
     let mut list = Vec::new();
-    if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj
+    if let Some(result_obj) = res.get("result")
+        && let Some(arr) = result_obj
             .get("multi_symbol_info")
             .and_then(|v| v.as_array())
-        {
-            for item in arr {
-                if let Some(ins) = item.get("instrument_id").and_then(|v| v.as_str()) {
-                    if let Some(ex) = target_ex {
-                        if ins.contains(ex) {
-                            list.push(ins.to_string());
-                        }
-                    } else {
+    {
+        for item in arr {
+            if let Some(ins) = item.get("instrument_id").and_then(|v| v.as_str()) {
+                if let Some(ex) = target_ex {
+                    if ins.contains(ex) {
                         list.push(ins.to_string());
                     }
+                } else {
+                    list.push(ins.to_string());
                 }
             }
         }
@@ -103,40 +102,38 @@ fn parse_query_cont_quotes_result(
     product_id: Option<&str>,
 ) -> Vec<String> {
     let mut list = Vec::new();
-    if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj
+    if let Some(result_obj) = res.get("result")
+        && let Some(arr) = result_obj
             .get("multi_symbol_info")
             .and_then(|v| v.as_array())
-        {
-            for item in arr {
-                if let Some(underlying) = item.get("underlying") {
-                    if let Some(edges) = underlying.get("edges").and_then(|v| v.as_array()) {
-                        for edge in edges {
-                            if let Some(node) = edge.get("node") {
-                                let ex_ok = match exchange_id {
-                                    Some(ex) => node
-                                        .get("exchange_id")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s == ex)
-                                        .unwrap_or(false),
-                                    None => true,
-                                };
-                                let prod_ok = match product_id {
-                                    Some(pid) => node
-                                        .get("product_id")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s == pid)
-                                        .unwrap_or(false),
-                                    None => true,
-                                };
-                                if ex_ok && prod_ok {
-                                    if let Some(ins) =
-                                        node.get("instrument_id").and_then(|v| v.as_str())
-                                    {
-                                        list.push(ins.to_string());
-                                    }
-                                }
-                            }
+    {
+        for item in arr {
+            if let Some(underlying) = item.get("underlying")
+                && let Some(edges) = underlying.get("edges").and_then(|v| v.as_array())
+            {
+                for edge in edges {
+                    if let Some(node) = edge.get("node") {
+                        let ex_ok = match exchange_id {
+                            Some(ex) => node
+                                .get("exchange_id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == ex)
+                                .unwrap_or(false),
+                            None => true,
+                        };
+                        let prod_ok = match product_id {
+                            Some(pid) => node
+                                .get("product_id")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s == pid)
+                                .unwrap_or(false),
+                            None => true,
+                        };
+                        if ex_ok
+                            && prod_ok
+                            && let Some(ins) = node.get("instrument_id").and_then(|v| v.as_str())
+                        {
+                            list.push(ins.to_string());
                         }
                     }
                 }
@@ -156,89 +153,85 @@ fn parse_query_options_result(
     has_a: Option<bool>,
 ) -> Vec<String> {
     let mut options = Vec::new();
-    if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj
+    if let Some(result_obj) = res.get("result")
+        && let Some(arr) = result_obj
             .get("multi_symbol_info")
             .and_then(|v| v.as_array())
-        {
-            for item in arr {
-                if let Some(der) = item.get("derivatives") {
-                    if let Some(edges) = der.get("edges").and_then(|v| v.as_array()) {
-                        for edge in edges {
-                            if let Some(node) = edge.get("node") {
-                                let mut ok = true;
-                                if let Some(cls) = option_class {
-                                    ok = ok
-                                        && node
-                                            .get("call_or_put")
-                                            .and_then(|v| v.as_str())
-                                            .map(|s| s == cls)
-                                            .unwrap_or(false);
-                                }
-                                if let Some(y) = exercise_year {
-                                    if let Some(ts) =
-                                        node.get("last_exercise_datetime").and_then(|v| v.as_i64())
-                                    {
-                                        let dt = chrono::DateTime::<Utc>::from_timestamp(
-                                            ts / 1_000_000_000,
-                                            (ts % 1_000_000_000) as u32,
-                                        )
-                                        .unwrap_or_else(|| {
-                                            chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap()
-                                        });
-                                        ok = ok && dt.year() == y;
-                                    } else {
-                                        ok = false;
-                                    }
-                                }
-                                if let Some(m) = exercise_month {
-                                    if let Some(ts) =
-                                        node.get("last_exercise_datetime").and_then(|v| v.as_i64())
-                                    {
-                                        let dt = chrono::DateTime::<Utc>::from_timestamp(
-                                            ts / 1_000_000_000,
-                                            (ts % 1_000_000_000) as u32,
-                                        )
-                                        .unwrap_or_else(|| {
-                                            chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap()
-                                        });
-                                        ok = ok && dt.month() as i32 == m;
-                                    } else {
-                                        ok = false;
-                                    }
-                                }
-                                if let Some(sp) = strike_price {
-                                    ok = ok
-                                        && node
-                                            .get("strike_price")
-                                            .and_then(|v| v.as_f64())
-                                            .map(|x| (x - sp).abs() < f64::EPSILON)
-                                            .unwrap_or(false);
-                                }
-                                if let Some(e) = expired {
-                                    ok = ok
-                                        && node
-                                            .get("expired")
-                                            .and_then(|v| v.as_bool())
-                                            .map(|b| b == e)
-                                            .unwrap_or(false);
-                                }
-                                if let Some(a) = has_a {
-                                    let cnt = node
-                                        .get("english_name")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.matches('A').count())
-                                        .unwrap_or(0);
-                                    ok = ok && ((a && cnt > 0) || (!a && cnt == 0));
-                                }
-                                if ok {
-                                    if let Some(ins) =
-                                        node.get("instrument_id").and_then(|v| v.as_str())
-                                    {
-                                        options.push(ins.to_string());
-                                    }
-                                }
+    {
+        for item in arr {
+            if let Some(der) = item.get("derivatives")
+                && let Some(edges) = der.get("edges").and_then(|v| v.as_array())
+            {
+                for edge in edges {
+                    if let Some(node) = edge.get("node") {
+                        let mut ok = true;
+                        if let Some(cls) = option_class {
+                            ok = ok
+                                && node
+                                    .get("call_or_put")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s == cls)
+                                    .unwrap_or(false);
+                        }
+                        if let Some(y) = exercise_year {
+                            if let Some(ts) =
+                                node.get("last_exercise_datetime").and_then(|v| v.as_i64())
+                            {
+                                let dt = chrono::DateTime::<Utc>::from_timestamp(
+                                    ts / 1_000_000_000,
+                                    (ts % 1_000_000_000) as u32,
+                                )
+                                .unwrap_or_else(|| {
+                                    chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap()
+                                });
+                                ok = ok && dt.year() == y;
+                            } else {
+                                ok = false;
                             }
+                        }
+                        if let Some(m) = exercise_month {
+                            if let Some(ts) =
+                                node.get("last_exercise_datetime").and_then(|v| v.as_i64())
+                            {
+                                let dt = chrono::DateTime::<Utc>::from_timestamp(
+                                    ts / 1_000_000_000,
+                                    (ts % 1_000_000_000) as u32,
+                                )
+                                .unwrap_or_else(|| {
+                                    chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap()
+                                });
+                                ok = ok && dt.month() as i32 == m;
+                            } else {
+                                ok = false;
+                            }
+                        }
+                        if let Some(sp) = strike_price {
+                            ok = ok
+                                && node
+                                    .get("strike_price")
+                                    .and_then(|v| v.as_f64())
+                                    .map(|x| (x - sp).abs() < f64::EPSILON)
+                                    .unwrap_or(false);
+                        }
+                        if let Some(e) = expired {
+                            ok = ok
+                                && node
+                                    .get("expired")
+                                    .and_then(|v| v.as_bool())
+                                    .map(|b| b == e)
+                                    .unwrap_or(false);
+                        }
+                        if let Some(a) = has_a {
+                            let cnt = node
+                                .get("english_name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.matches('A').count())
+                                .unwrap_or(0);
+                            ok = ok && ((a && cnt > 0) || (!a && cnt == 0));
+                        }
+                        if ok && let Some(ins) = node.get("instrument_id").and_then(|v| v.as_str())
+                        {
+                            options.push(ins.to_string());
                         }
                     }
                 }
@@ -262,66 +255,58 @@ struct OptionNode {
 
 fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
     let mut options = Vec::new();
-    if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj
+    if let Some(result_obj) = res.get("result")
+        && let Some(arr) = result_obj
             .get("multi_symbol_info")
             .and_then(|v| v.as_array())
-        {
-            for item in arr {
-                if let Some(der) = item.get("derivatives") {
-                    if let Some(edges) = der.get("edges").and_then(|v| v.as_array()) {
-                        for edge in edges {
-                            let Some(node) = edge.get("node").and_then(|v| v.as_object()) else {
-                                continue;
-                            };
-                            let Some(instrument_id) =
-                                node.get("instrument_id").and_then(|v| v.as_str())
-                            else {
-                                continue;
-                            };
-                            let Some(call_or_put) =
-                                node.get("call_or_put").and_then(|v| v.as_str())
-                            else {
-                                continue;
-                            };
-                            let Some(strike_price) =
-                                node.get("strike_price").and_then(|v| v.as_f64())
-                            else {
-                                continue;
-                            };
-                            let expired = node
-                                .get("expired")
-                                .and_then(|v| v.as_bool())
-                                .unwrap_or(false);
-                            let Some(ts) =
-                                node.get("last_exercise_datetime").and_then(|v| v.as_i64())
-                            else {
-                                continue;
-                            };
-                            let english_name = node
-                                .get("english_name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let dt = chrono::DateTime::<Utc>::from_timestamp(
-                                ts / 1_000_000_000,
-                                (ts % 1_000_000_000) as u32,
-                            )
-                            .unwrap_or_else(|| {
-                                chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap()
-                            });
-                            options.push(OptionNode {
-                                instrument_id: instrument_id.to_string(),
-                                english_name,
-                                call_or_put: call_or_put.to_string(),
-                                strike_price,
-                                expired,
-                                last_exercise_datetime: ts,
-                                exercise_year: dt.year(),
-                                exercise_month: dt.month() as i32,
-                            });
-                        }
-                    }
+    {
+        for item in arr {
+            if let Some(der) = item.get("derivatives")
+                && let Some(edges) = der.get("edges").and_then(|v| v.as_array())
+            {
+                for edge in edges {
+                    let Some(node) = edge.get("node").and_then(|v| v.as_object()) else {
+                        continue;
+                    };
+                    let Some(instrument_id) = node.get("instrument_id").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(call_or_put) = node.get("call_or_put").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let Some(strike_price) = node.get("strike_price").and_then(|v| v.as_f64())
+                    else {
+                        continue;
+                    };
+                    let expired = node
+                        .get("expired")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let Some(ts) = node.get("last_exercise_datetime").and_then(|v| v.as_i64())
+                    else {
+                        continue;
+                    };
+                    let english_name = node
+                        .get("english_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let dt = chrono::DateTime::<Utc>::from_timestamp(
+                        ts / 1_000_000_000,
+                        (ts % 1_000_000_000) as u32,
+                    )
+                    .unwrap_or_else(|| chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+                    options.push(OptionNode {
+                        instrument_id: instrument_id.to_string(),
+                        english_name,
+                        call_or_put: call_or_put.to_string(),
+                        strike_price,
+                        expired,
+                        last_exercise_datetime: ts,
+                        exercise_year: dt.year(),
+                        exercise_month: dt.month() as i32,
+                    });
                 }
             }
         }
@@ -350,12 +335,10 @@ fn bisect_value_index(a: &[f64], x: f64, priority: BisectPriority) -> usize {
         } else {
             insert_index
         }
+    } else if insert_index == 0 {
+        0
     } else {
-        if insert_index == 0 {
-            0
-        } else {
-            a.len().saturating_sub(1)
-        }
+        a.len().saturating_sub(1)
     }
 }
 
@@ -401,13 +384,13 @@ fn validate_finance_nearbys(underlying_symbol: &str, nearbys: &[i32]) -> Result<
         "SSE.000300" | "SSE.000852" | "SSE.000016"
     );
     if is_index {
-        if nearbys.iter().any(|v| !matches!(v, 0 | 1 | 2 | 3 | 4 | 5)) {
+        if nearbys.iter().any(|v| !matches!(v, 0..=5)) {
             return Err(TqError::InvalidParameter(format!(
                 "股指期权标的为：{}，exercise_date 参数应该是在 [0, 1, 2, 3, 4, 5] 之间。",
                 underlying_symbol
             )));
         }
-    } else if nearbys.iter().any(|v| !matches!(v, 0 | 1 | 2 | 3)) {
+    } else if nearbys.iter().any(|v| !matches!(v, 0..=3)) {
         return Err(TqError::InvalidParameter(format!(
             "ETF 期权标的为：{}，exercise_date 参数应该是在 [0, 1, 2, 3] 之间。",
             underlying_symbol
@@ -461,7 +444,7 @@ fn filter_option_nodes(
 }
 
 fn sort_options_and_get_atm_index(
-    options: &mut Vec<OptionNode>,
+    options: &mut [OptionNode],
     underlying_price: f64,
     option_class: &str,
 ) -> Result<usize> {
@@ -678,57 +661,54 @@ fn parse_query_symbol_info_result(
     let mut quotes: HashMap<String, Map<String, Value>> = HashMap::new();
     let mut combine_leg1: HashMap<String, String> = HashMap::new();
 
-    if let Some(result_obj) = res.get("result") {
-        if let Some(arr) = result_obj
+    if let Some(result_obj) = res.get("result")
+        && let Some(arr) = result_obj
             .get("multi_symbol_info")
             .and_then(|v| v.as_array())
-        {
-            for item in arr {
-                let symbol = match item.as_object() {
-                    Some(obj) => obj,
-                    None => continue,
-                };
-                let instrument_id = match symbol.get("instrument_id").and_then(|v| v.as_str()) {
-                    Some(id) => id.to_string(),
-                    None => continue,
-                };
-                let mut underlying_nodes: Vec<(String, Map<String, Value>)> = Vec::new();
-                let mut entry = quotes.remove(&instrument_id).unwrap_or_default();
-                update_symbol_info_map(&mut entry, symbol);
+    {
+        for item in arr {
+            let symbol = match item.as_object() {
+                Some(obj) => obj,
+                None => continue,
+            };
+            let instrument_id = match symbol.get("instrument_id").and_then(|v| v.as_str()) {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            let mut underlying_nodes: Vec<(String, Map<String, Value>)> = Vec::new();
+            let mut entry = quotes.remove(&instrument_id).unwrap_or_default();
+            update_symbol_info_map(&mut entry, symbol);
 
-                if let Some(leg1) = symbol
-                    .get("leg1")
-                    .and_then(|v| v.get("instrument_id"))
-                    .and_then(|v| v.as_str())
-                {
-                    combine_leg1.insert(instrument_id.clone(), leg1.to_string());
-                }
+            if let Some(leg1) = symbol
+                .get("leg1")
+                .and_then(|v| v.get("instrument_id"))
+                .and_then(|v| v.as_str())
+            {
+                combine_leg1.insert(instrument_id.clone(), leg1.to_string());
+            }
 
-                if let Some(underlying) = symbol.get("underlying") {
-                    if let Some(edges) = underlying.get("edges").and_then(|v| v.as_array()) {
-                        for edge in edges {
-                            if let Some(node) = edge.get("node").and_then(|v| v.as_object()) {
-                                if let Some(under_id) =
-                                    node.get("instrument_id").and_then(|v| v.as_str())
-                                {
-                                    entry.insert(
-                                        "underlying_symbol".to_string(),
-                                        Value::String(under_id.to_string()),
-                                    );
-                                    underlying_nodes.push((under_id.to_string(), node.clone()));
-                                }
-                            }
-                        }
+            if let Some(underlying) = symbol.get("underlying")
+                && let Some(edges) = underlying.get("edges").and_then(|v| v.as_array())
+            {
+                for edge in edges {
+                    if let Some(node) = edge.get("node").and_then(|v| v.as_object())
+                        && let Some(under_id) = node.get("instrument_id").and_then(|v| v.as_str())
+                    {
+                        entry.insert(
+                            "underlying_symbol".to_string(),
+                            Value::String(under_id.to_string()),
+                        );
+                        underlying_nodes.push((under_id.to_string(), node.clone()));
                     }
                 }
+            }
 
-                quotes.insert(instrument_id.clone(), entry);
+            quotes.insert(instrument_id.clone(), entry);
 
-                for (under_id, node) in underlying_nodes {
-                    let mut underlying_entry = quotes.remove(&under_id).unwrap_or_default();
-                    update_symbol_info_map(&mut underlying_entry, &node);
-                    quotes.insert(under_id, underlying_entry);
-                }
+            for (under_id, node) in underlying_nodes {
+                let mut underlying_entry = quotes.remove(&under_id).unwrap_or_default();
+                update_symbol_info_map(&mut underlying_entry, &node);
+                quotes.insert(under_id, underlying_entry);
             }
         }
     }
@@ -748,10 +728,8 @@ fn parse_query_symbol_info_result(
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0)
                 == 0;
-            if volume_missing {
-                if let Some(v) = leg1_volume {
-                    combine.insert("volume_multiple".to_string(), v);
-                }
+            if volume_missing && let Some(v) = leg1_volume {
+                combine.insert("volume_multiple".to_string(), v);
             }
         }
     }
@@ -779,28 +757,23 @@ fn parse_query_symbol_info_result(
         let last_exercise_ts = info.get("last_exercise_datetime").and_then(|v| v.as_i64());
         let expire_ts = info.get("expire_datetime").and_then(|v| v.as_i64());
 
-        if let Some(ins_class) = ins_class {
-            if ins_class == "OPTION" {
-                if let Some(exchange_id) = exchange_id {
-                    if matches!(exchange_id.as_str(), "DCE" | "CZCE" | "SHFE" | "GFEX") {
-                        if let Some(underlying_symbol) = &underlying_symbol {
-                            if let Some((year, month)) = underlying_delivery.get(underlying_symbol)
-                            {
-                                info.insert("delivery_year".to_string(), year.clone());
-                                info.insert("delivery_month".to_string(), month.clone());
-                            }
-                        }
-                    }
-                    if exchange_id == "CFFEX" {
-                        if let Some(ts_i64) = last_exercise_ts {
-                            if let Some(dt) = timestamp_nano_to_cst_datetime(ts_i64 * 1_000_000_000)
-                            {
-                                info.insert("delivery_year".to_string(), json!(dt.year()));
-                                info.insert("delivery_month".to_string(), json!(dt.month() as i32));
-                            }
-                        }
-                    }
-                }
+        if let Some(ins_class) = ins_class
+            && ins_class == "OPTION"
+            && let Some(exchange_id) = exchange_id
+        {
+            if matches!(exchange_id.as_str(), "DCE" | "CZCE" | "SHFE" | "GFEX")
+                && let Some(underlying_symbol) = &underlying_symbol
+                && let Some((year, month)) = underlying_delivery.get(underlying_symbol)
+            {
+                info.insert("delivery_year".to_string(), year.clone());
+                info.insert("delivery_month".to_string(), month.clone());
+            }
+            if exchange_id == "CFFEX"
+                && let Some(ts_i64) = last_exercise_ts
+                && let Some(dt) = timestamp_nano_to_cst_datetime(ts_i64 * 1_000_000_000)
+            {
+                info.insert("delivery_year".to_string(), json!(dt.year()));
+                info.insert("delivery_month".to_string(), json!(dt.month() as i32));
             }
         }
 
@@ -882,10 +855,10 @@ impl InsAPI {
 
         if let Some(Value::Object(symbols)) = self.dm.get_by_path(&["symbols"]) {
             for symbol in symbols.values() {
-                if let Value::Object(symbol_obj) = symbol {
-                    if match_query_cache(symbol_obj, &query_value, &variables_value) {
-                        return Ok(Value::Object(symbol_obj.clone()));
-                    }
+                if let Value::Object(symbol_obj) = symbol
+                    && match_query_cache(symbol_obj, &query_value, &variables_value)
+                {
+                    return Ok(Value::Object(symbol_obj.clone()));
                 }
             }
         }
@@ -903,15 +876,18 @@ impl InsAPI {
 
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
-        let rx = self.dm.watch(vec!["symbols".to_string(), id.clone()]);
+        let watch_path = vec!["symbols".to_string(), id.clone()];
+        let (watch_id, rx) = self.dm.watch_register(watch_path.clone());
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
             if let Some(val) = self.dm.get_by_path(&["symbols", &id]) {
+                let _ = self.dm.unwatch_by_id(&watch_path, watch_id);
                 return Ok(val);
             }
             if start.elapsed() >= timeout {
+                let _ = self.dm.unwatch_by_id(&watch_path, watch_id);
                 return Err(TqError::Timeout);
             }
             tokio::select! {
@@ -989,12 +965,11 @@ impl InsAPI {
             .await?;
 
         let mut target_ex: Option<String> = None;
-        if let Some(ex) = exchange_id {
-            if matches!(ins_class, Some("INDEX") | Some("CONT"))
-                && matches!(ex, "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX")
-            {
-                target_ex = Some(ex.to_string());
-            }
+        if let Some(ex) = exchange_id
+            && matches!(ins_class, Some("INDEX") | Some("CONT"))
+            && matches!(ex, "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX")
+        {
+            target_ex = Some(ex.to_string());
         }
         Ok(parse_query_quotes_result(&res, target_ex.as_deref()))
     }
@@ -1132,6 +1107,10 @@ impl InsAPI {
         ))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "对外 API 保持与 Python SDK 查询参数一致"
+    )]
     pub async fn query_atm_options(
         &self,
         underlying_symbol: &str,
@@ -1996,10 +1975,10 @@ impl InsAPI {
             .ok_or_else(|| TqError::ParseError("节假日数据格式错误".to_string()))?;
         let mut holiday_set: HashSet<NaiveDate> = HashSet::new();
         for item in holidays.iter() {
-            if let Some(date_str) = item.as_str() {
-                if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
-                    holiday_set.insert(date);
-                }
+            if let Some(date_str) = item.as_str()
+                && let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
+            {
+                holiday_set.insert(date);
             }
         }
 
@@ -2040,43 +2019,34 @@ impl InsAPI {
         let mut subscribe_symbol = symbol.to_string();
         let mut option_mapping: HashMap<String, String> = HashMap::new();
         let mut need_query = true;
-        if let Some(quote) = self.dm.get_by_path(&["quotes", symbol]) {
-            if let Some(obj) = quote.as_object() {
-                if let Some(class_str) = obj.get("class").and_then(|v| v.as_str()) {
-                    need_query = false;
-                    if class_str == "OPTION" {
-                        if let Some(underlying) =
-                            obj.get("underlying_symbol").and_then(|v| v.as_str())
-                        {
-                            if !underlying.is_empty() {
-                                subscribe_symbol = underlying.to_string();
-                                option_mapping.insert(symbol.to_string(), subscribe_symbol.clone());
-                            } else {
-                                need_query = true;
-                            }
-                        } else {
-                            need_query = true;
-                        }
+        if let Some(quote) = self.dm.get_by_path(&["quotes", symbol])
+            && let Some(obj) = quote.as_object()
+            && let Some(class_str) = obj.get("class").and_then(|v| v.as_str())
+        {
+            need_query = false;
+            if class_str == "OPTION" {
+                if let Some(underlying) = obj.get("underlying_symbol").and_then(|v| v.as_str()) {
+                    if !underlying.is_empty() {
+                        subscribe_symbol = underlying.to_string();
+                        option_mapping.insert(symbol.to_string(), subscribe_symbol.clone());
+                    } else {
+                        need_query = true;
                     }
+                } else {
+                    need_query = true;
                 }
             }
         }
-        if need_query {
-            if let Ok(info_list) = self.query_symbol_info(&[symbol]).await {
-                if let Some(Value::Object(info)) = info_list.first() {
-                    if let Some(Value::String(class_str)) = info.get("ins_class") {
-                        if class_str == "OPTION" {
-                            if let Some(Value::String(underlying)) = info.get("underlying_symbol") {
-                                if !underlying.is_empty() {
-                                    subscribe_symbol = underlying.clone();
-                                    option_mapping
-                                        .insert(symbol.to_string(), subscribe_symbol.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        if need_query
+            && let Ok(info_list) = self.query_symbol_info(&[symbol]).await
+            && let Some(Value::Object(info)) = info_list.first()
+            && let Some(Value::String(class_str)) = info.get("ins_class")
+            && class_str == "OPTION"
+            && let Some(Value::String(underlying)) = info.get("underlying_symbol")
+            && !underlying.is_empty()
+        {
+            subscribe_symbol = underlying.clone();
+            option_mapping.insert(symbol.to_string(), subscribe_symbol.clone());
         }
         if !option_mapping.is_empty() {
             ws.update_option_underlyings(option_mapping);
@@ -2096,23 +2066,28 @@ impl InsAPI {
         let (tx, rx) = unbounded();
         let dm = Arc::clone(&self.dm);
         let symbol_string = symbol.to_string();
-        let watch = dm.watch(vec!["trading_status".to_string(), symbol_string.clone()]);
+        let watch_path = vec!["trading_status".to_string(), symbol_string.clone()];
+        let (watch_id, watch) = dm.watch_register(watch_path.clone());
         tokio::spawn(async move {
-            if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string]) {
-                if let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val) {
-                    let _ = tx.send(status).await;
-                }
+            if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
+                && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
+                && tx.send(status).await.is_err()
+            {
+                let _ = dm.unwatch_by_id(&watch_path, watch_id);
+                return;
             }
             loop {
                 if watch.recv().await.is_err() {
                     break;
                 }
-                if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string]) {
-                    if let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val) {
-                        let _ = tx.send(status).await;
-                    }
+                if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
+                    && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
+                    && tx.send(status).await.is_err()
+                {
+                    break;
                 }
             }
+            let _ = dm.unwatch_by_id(&watch_path, watch_id);
         });
 
         Ok(rx)
@@ -2396,7 +2371,7 @@ mod tests {
 
         let list = parse_query_symbol_info_result(
             &res,
-            &vec![
+            &[
                 "SHFE.cu2405C3000".to_string(),
                 "SHFE.cu2405&cu2406".to_string(),
             ],
@@ -2454,7 +2429,7 @@ mod tests {
             }
         };
         let underlying = quotes
-            .get(0)
+            .first()
             .cloned()
             .unwrap_or_else(|| "SHFE.cu2405".to_string());
 
@@ -2571,6 +2546,32 @@ mod tests {
         InsAPI::new(dm, ws, None, auth, true)
     }
 
+    fn build_ins_api_with_trading_status(features: &[&str]) -> (Arc<DataManager>, InsAPI) {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let ws = Arc::new(TqQuoteWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+        let ts_ws = Arc::new(TqTradingStatusWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+        let mut feature_set = HashSet::new();
+        for item in features {
+            feature_set.insert(item.to_string());
+        }
+        let auth = Arc::new(RwLock::new(DummyAuth {
+            features: feature_set,
+        }));
+        let api = InsAPI::new(dm.clone(), ws, Some(ts_ws), auth, true);
+        (dm, api)
+    }
+
     #[tokio::test]
     async fn settlement_rejects_invalid_args() {
         let api = build_ins_api(&[]);
@@ -2641,6 +2642,62 @@ mod tests {
         assert!(matches!(err, TqError::PermissionDenied(_)));
         let err = api.get_trading_status("").await.unwrap_err();
         assert!(matches!(err, TqError::InvalidParameter(_)));
+    }
+
+    #[tokio::test]
+    async fn trading_status_allows_multiple_subscribers_for_same_symbol() {
+        let (dm, api) = build_ins_api_with_trading_status(&["tq_trading_status"]);
+        dm.merge_data(
+            json!({
+                "quotes": {
+                    "SHFE.cu2405": {
+                        "class": "FUTURE"
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let rx1 = tokio::time::timeout(
+            Duration::from_secs(1),
+            api.get_trading_status("SHFE.cu2405"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let rx2 = tokio::time::timeout(
+            Duration::from_secs(1),
+            api.get_trading_status("SHFE.cu2405"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        dm.merge_data(
+            json!({
+                "trading_status": {
+                    "SHFE.cu2405": {
+                        "symbol": "SHFE.cu2405",
+                        "trade_status": "CONTINOUS"
+                    }
+                }
+            }),
+            true,
+            true,
+        );
+
+        let status1 = tokio::time::timeout(Duration::from_millis(100), rx1.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let status2 = tokio::time::timeout(Duration::from_millis(100), rx2.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(status1.symbol, "SHFE.cu2405");
+        assert_eq!(status2.symbol, "SHFE.cu2405");
     }
 
     #[tokio::test]

@@ -7,7 +7,6 @@
 
 use std::env;
 use std::time::Duration;
-use tokio;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
@@ -25,8 +24,10 @@ async fn trade_callback_example() {
     // let sim_password = "zhangyu816".to_string();
 
     // 创建客户端
-    let mut config = ClientConfig::default();
-    config.log_level = "info".to_string();
+    let config = ClientConfig {
+        log_level: "info".to_string(),
+        ..Default::default()
+    };
 
     let client = Client::new(&username, &password, config)
         .await
@@ -128,18 +129,18 @@ async fn trade_callback_example() {
     }
 
     // 查询持仓
-    if let Ok(positions) = trader.get_positions().await {
-        if !positions.is_empty() {
-            info!("\n当前持仓:");
-            for (symbol, pos) in positions {
-                let total_long = pos.volume_long_today + pos.volume_long_his;
-                let total_short = pos.volume_short_today + pos.volume_short_his;
-                if total_long > 0 || total_short > 0 {
-                    info!(
-                        "  {}: 多={} 空={} 浮盈={:.2}",
-                        symbol, total_long, total_short, pos.float_profit
-                    );
-                }
+    if let Ok(positions) = trader.get_positions().await
+        && !positions.is_empty()
+    {
+        info!("\n当前持仓:");
+        for (symbol, pos) in positions {
+            let total_long = pos.volume_long_today + pos.volume_long_his;
+            let total_short = pos.volume_short_today + pos.volume_short_his;
+            if total_long > 0 || total_short > 0 {
+                info!(
+                    "  {}: 多={} 空={} 浮盈={:.2}",
+                    symbol, total_long, total_short, pos.float_profit
+                );
             }
         }
     }

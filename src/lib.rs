@@ -23,6 +23,7 @@
 //!
 //!     // 订阅行情
 //!     let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
+//!     quote_sub.start().await?;
 //!
 //!     Ok(())
 //! }
