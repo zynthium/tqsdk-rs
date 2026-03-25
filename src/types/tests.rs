@@ -1,4 +1,4 @@
-use super::Quote;
+use super::{InsertOrderRequest, Quote};
 
 #[test]
 fn test_quote_deserialize_with_nulls() {
@@ -41,4 +41,38 @@ fn test_quote_deserialize_with_nulls() {
     assert_eq!(quote.ask_volume2, 0, "null 应该被转换为 0");
     assert!(quote.close.is_nan(), "dash 应该被转换为 NaN");
     assert!(quote.settlement.is_nan(), "dash 应该被转换为 NaN");
+}
+
+#[test]
+fn test_insert_order_request_parses_symbol_when_fields_missing() {
+    let req = InsertOrderRequest {
+        symbol: "SHFE.au2602".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: "BUY".to_string(),
+        offset: "OPEN".to_string(),
+        price_type: "LIMIT".to_string(),
+        limit_price: 500.0,
+        volume: 1,
+    };
+
+    assert_eq!(req.get_exchange_id(), "SHFE");
+    assert_eq!(req.get_instrument_id(), "au2602");
+}
+
+#[test]
+fn test_insert_order_request_prefers_explicit_fields_over_symbol_parsing() {
+    let req = InsertOrderRequest {
+        symbol: "SHFE.au2602".to_string(),
+        exchange_id: Some("DCE".to_string()),
+        instrument_id: Some("m2505".to_string()),
+        direction: "BUY".to_string(),
+        offset: "OPEN".to_string(),
+        price_type: "LIMIT".to_string(),
+        limit_price: 500.0,
+        volume: 1,
+    };
+
+    assert_eq!(req.get_exchange_id(), "DCE");
+    assert_eq!(req.get_instrument_id(), "m2505");
 }

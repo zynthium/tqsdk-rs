@@ -82,6 +82,36 @@ impl Authenticator for TestAuth {
     }
 }
 
+fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscription {
+    let dm = Arc::new(DataManager::new(
+        HashMap::new(),
+        DataManagerConfig::default(),
+    ));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig {
+            message_queue_capacity,
+            ..WebSocketConfig::default()
+        },
+    ));
+
+    SeriesSubscription::new(
+        dm,
+        ws,
+        SeriesOptions {
+            symbols: vec!["SHFE.au2602".to_string()],
+            duration: 60_000_000_000,
+            view_width: 32,
+            chart_id: Some("chart_test".to_string()),
+            left_kline_id: None,
+            focus_datetime: None,
+            focus_position: None,
+        },
+    )
+    .unwrap()
+}
+
 #[tokio::test]
 async fn kline_returns_unstarted_subscription() {
     let dm = Arc::new(DataManager::new(
@@ -140,29 +170,7 @@ async fn start_failure_rolls_back_series_callback_registration() {
 
 #[tokio::test]
 async fn data_stream_does_not_override_on_update() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
-    let ws = Arc::new(TqQuoteWebsocket::new(
-        "wss://example.com".to_string(),
-        Arc::clone(&dm),
-        WebSocketConfig::default(),
-    ));
-    let sub = SeriesSubscription::new(
-        dm,
-        ws,
-        SeriesOptions {
-            symbols: vec!["SHFE.au2602".to_string()],
-            duration: 60_000_000_000,
-            view_width: 32,
-            chart_id: Some("chart_test".to_string()),
-            left_kline_id: None,
-            focus_datetime: None,
-            focus_position: None,
-        },
-    )
-    .unwrap();
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
 
     let fired = Arc::new(AtomicUsize::new(0));
     {
@@ -198,4 +206,71 @@ async fn data_stream_does_not_override_on_update() {
         .expect("stream should receive update")
         .expect("stream item should exist");
     assert_eq!(streamed.symbols, data.symbols);
+}
+
+#[tokio::test]
+async fn data_stream_is_bounded_and_drops_overflow_updates() {
+    let sub = build_series_subscription(1);
+    let stream = sub.data_stream().await;
+    pin_mut!(stream);
+
+    let first = Arc::new(SeriesData {
+        is_multi: false,
+        is_tick: false,
+        symbols: vec!["FIRST".to_string()],
+        single: None,
+        multi: None,
+        tick_data: None,
+    });
+    let second = Arc::new(SeriesData {
+        is_multi: false,
+        is_tick: false,
+        symbols: vec!["SECOND".to_string()],
+        single: None,
+        multi: None,
+        tick_data: None,
+    });
+    let info = Arc::new(UpdateInfo::default());
+
+    sub.emit_update(Arc::clone(&first), Arc::clone(&info)).await;
+    sub.emit_update(Arc::clone(&second), Arc::clone(&info)).await;
+
+    let streamed = timeout(Duration::from_millis(100), stream.next())
+        .await
+        .expect("stream should receive first update")
+        .expect("stream item should exist");
+    assert_eq!(streamed.symbols, first.symbols);
+
+    assert!(
+        timeout(Duration::from_millis(50), stream.next())
+            .await
+            .is_err(),
+        "second update should be dropped when stream queue is full"
+    );
+}
+
+#[tokio::test]
+async fn closed_data_stream_subscriber_is_pruned_on_dispatch() {
+    let sub = build_series_subscription(1);
+
+    let stream = sub.data_stream().await;
+    assert_eq!(sub.stream_subscribers.read().await.len(), 1);
+    drop(stream);
+
+    let data = Arc::new(SeriesData {
+        is_multi: false,
+        is_tick: false,
+        symbols: vec!["SHFE.au2602".to_string()],
+        single: None,
+        multi: None,
+        tick_data: None,
+    });
+    let info = Arc::new(UpdateInfo::default());
+
+    sub.emit_update(data, info).await;
+
+    assert!(
+        sub.stream_subscribers.read().await.is_empty(),
+        "closed stream subscribers should be pruned after dispatch"
+    );
 }

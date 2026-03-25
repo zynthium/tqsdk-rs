@@ -484,6 +484,63 @@ fn test_watch_allows_multiple_receivers_for_same_path() {
     assert!(rx2.try_recv().is_ok());
 }
 
+#[test]
+fn test_unwatch_by_id_removes_only_target_watcher() {
+    let mut initial_data = HashMap::new();
+    initial_data.insert("quotes".to_string(), json!({}));
+    let dm = DataManager::new(initial_data, DataManagerConfig::default());
+
+    let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
+    let (watcher_id, rx1) = dm.watch_register(path.clone());
+    let (_other_id, rx2) = dm.watch_register(path.clone());
+
+    assert!(dm.unwatch_by_id(&path, watcher_id));
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    assert!(rx1.try_recv().is_err());
+    assert!(rx2.try_recv().is_ok());
+}
+
+#[test]
+fn test_notify_watchers_prunes_closed_receivers() {
+    let mut initial_data = HashMap::new();
+    initial_data.insert("quotes".to_string(), json!({}));
+    let dm = DataManager::new(initial_data, DataManagerConfig::default());
+
+    let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
+    let path_key = path.join(".");
+    let (_watcher_id, rx) = dm.watch_register(path);
+    drop(rx);
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    assert!(
+        !dm.watchers.read().unwrap().contains_key(&path_key),
+        "closed receivers should be pruned after notify_watchers"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_on_data_spawn_layer_overhead_profile() {
     let rounds = 10000usize;
