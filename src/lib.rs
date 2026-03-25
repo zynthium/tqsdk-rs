@@ -50,6 +50,7 @@ pub mod datamanager;
 pub mod auth;
 
 // WebSocket 连接
+#[path = "websocket/mod.rs"]
 pub mod websocket;
 
 // Quote 订阅

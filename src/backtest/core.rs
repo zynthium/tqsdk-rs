@@ -1,66 +1,20 @@
-//! 回测控制与时间推进接口
-
-use crate::datamanager::DataManager;
+use super::parsing::parse_backtest_time;
+use super::{BacktestConfig, BacktestEvent, BacktestHandle};
 use crate::errors::{Result, TqError};
 use crate::utils::{datetime_to_nanos, nanos_to_datetime};
-use crate::websocket::TqQuoteWebsocket;
-use async_channel::Receiver;
 use chrono::{DateTime, Utc};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tracing::warn;
-
-#[derive(Debug, Clone)]
-/// 回测起止时间配置
-pub struct BacktestConfig {
-    /// 回测开始时间（UTC）
-    pub start_dt: DateTime<Utc>,
-    /// 回测结束时间（UTC）
-    pub end_dt: DateTime<Utc>,
-}
-
-impl BacktestConfig {
-    /// 创建回测配置
-    pub fn new(start_dt: DateTime<Utc>, end_dt: DateTime<Utc>) -> Self {
-        BacktestConfig { start_dt, end_dt }
-    }
-}
-
-#[derive(Debug, Clone)]
-/// 回测时间状态（纳秒时间戳）
-pub struct BacktestTime {
-    /// 回测开始时间戳（纳秒）
-    pub start_dt: i64,
-    /// 回测结束时间戳（纳秒）
-    pub end_dt: i64,
-    /// 当前回测时间戳（纳秒）
-    pub current_dt: i64,
-}
-
-#[derive(Debug, Clone)]
-/// 回测推进事件
-pub enum BacktestEvent {
-    /// 回测推进到下一个时间点
-    Tick { current_dt: DateTime<Utc> },
-    /// 回测已完成
-    Finished { current_dt: DateTime<Utc> },
-}
-
-/// 回测控制句柄
-pub struct BacktestHandle {
-    dm: Arc<DataManager>,
-    ws: Arc<TqQuoteWebsocket>,
-    rx: Receiver<()>,
-    start_dt: i64,
-    end_dt: i64,
-    current_dt: Arc<RwLock<i64>>,
-}
 
 impl BacktestHandle {
     /// 初始化回测并注册数据推进监听
-    pub fn new(dm: Arc<DataManager>, ws: Arc<TqQuoteWebsocket>, config: BacktestConfig) -> Self {
+    pub fn new(
+        dm: Arc<crate::datamanager::DataManager>,
+        ws: Arc<crate::websocket::TqQuoteWebsocket>,
+        config: BacktestConfig,
+    ) -> Self {
         let start_dt = datetime_to_nanos(&config.start_dt);
         let end_dt = datetime_to_nanos(&config.end_dt);
         dm.merge_data(
@@ -87,7 +41,7 @@ impl BacktestHandle {
             rx,
             start_dt,
             end_dt,
-            current_dt: Arc::new(RwLock::new(start_dt)),
+            current_dt: Arc::new(tokio::sync::RwLock::new(start_dt)),
         }
     }
 
@@ -112,8 +66,6 @@ impl BacktestHandle {
                 }
             }
         }
-
-        // info!("Received backtest update");
 
         let value = self
             .dm
@@ -159,32 +111,7 @@ impl BacktestHandle {
     }
 
     /// 获取内部数据管理器
-    pub fn dm(&self) -> Arc<DataManager> {
+    pub fn dm(&self) -> Arc<crate::datamanager::DataManager> {
         Arc::clone(&self.dm)
-    }
-}
-
-fn parse_backtest_time(value: &Value) -> Option<BacktestTime> {
-    if let Value::Object(map) = value {
-        let start_dt = value_to_i64(map.get("start_dt")?)?;
-        let end_dt = value_to_i64(map.get("end_dt")?)?;
-        let current_dt = value_to_i64(map.get("current_dt")?)?;
-        return Some(BacktestTime {
-            start_dt,
-            end_dt,
-            current_dt,
-        });
-    }
-    None
-}
-
-fn value_to_i64(value: &Value) -> Option<i64> {
-    match value {
-        Value::Number(num) => num
-            .as_i64()
-            .or_else(|| num.as_u64().map(|v| v as i64))
-            .or_else(|| num.as_f64().map(|v| v as i64)),
-        Value::String(s) => s.parse::<i64>().ok(),
-        _ => None,
     }
 }
