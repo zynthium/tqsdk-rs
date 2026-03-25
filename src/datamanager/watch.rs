@@ -1,6 +1,6 @@
 use super::{DataManager, PathWatcher};
 use crate::errors::{Result, TqError};
-use async_channel::{Receiver, TrySendError, unbounded};
+use async_channel::{Receiver, TrySendError, bounded};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -15,7 +15,7 @@ impl DataManager {
 
     pub(crate) fn watch_register(&self, path: Vec<String>) -> (i64, Receiver<Value>) {
         let path_key = path.join(".");
-        let (tx, rx) = unbounded();
+        let (tx, rx) = bounded(self.config.watch_channel_capacity.max(1));
         let watcher_id = self.next_watcher_id.fetch_add(1, Ordering::SeqCst);
 
         let watcher = PathWatcher {

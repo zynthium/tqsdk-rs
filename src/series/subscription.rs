@@ -1,4 +1,4 @@
-use super::SeriesSubscription;
+use super::{SeriesStreamSubscribers, SeriesSubscription};
 use super::processing::process_series_update;
 use crate::errors::Result;
 use crate::types::{ChartInfo, SeriesData, UpdateInfo};
@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use futures::Stream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, info, warn};
 
 impl SeriesSubscription {
@@ -34,6 +35,7 @@ impl SeriesSubscription {
             on_new_bar: Arc::new(tokio::sync::RwLock::new(None)),
             on_bar_update: Arc::new(tokio::sync::RwLock::new(None)),
             on_error: Arc::new(tokio::sync::RwLock::new(None)),
+            stream_subscribers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             running: Arc::new(tokio::sync::RwLock::new(false)),
             unsubscribe_sent: Arc::new(AtomicBool::new(false)),
             data_cb_id: Arc::new(std::sync::Mutex::new(None)),
@@ -174,6 +176,7 @@ impl SeriesSubscription {
         let on_new_bar = Arc::clone(&self.on_new_bar);
         let on_bar_update = Arc::clone(&self.on_bar_update);
         let on_error = Arc::clone(&self.on_error);
+        let stream_subscribers = Arc::clone(&self.stream_subscribers);
         let running = Arc::clone(&self.running);
         let worker_running = Arc::new(AtomicBool::new(false));
         let worker_dirty = Arc::new(AtomicBool::new(false));
@@ -223,6 +226,7 @@ impl SeriesSubscription {
             let on_new_bar = Arc::clone(&on_new_bar);
             let on_bar_update = Arc::clone(&on_bar_update);
             let on_error = Arc::clone(&on_error);
+            let stream_subscribers = Arc::clone(&stream_subscribers);
             let running = Arc::clone(&running);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
@@ -281,13 +285,13 @@ impl SeriesSubscription {
                                             let series_data = Arc::new(series_data);
                                             let update_info = Arc::new(update_info);
 
-                                            if let Some(callback) = on_update.read().await.as_ref()
-                                            {
-                                                callback(
-                                                    Arc::clone(&series_data),
-                                                    Arc::clone(&update_info),
-                                                );
-                                            }
+                                            dispatch_update(
+                                                &on_update,
+                                                &stream_subscribers,
+                                                &series_data,
+                                                &update_info,
+                                            )
+                                            .await;
 
                                             if update_info.has_new_bar
                                                 && let Some(callback) =
@@ -385,14 +389,30 @@ impl SeriesSubscription {
         *guard = Some(Arc::new(handler));
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(super) async fn emit_update(
+        &self,
+        series_data: Arc<SeriesData>,
+        update_info: Arc<UpdateInfo>,
+    ) {
+        dispatch_update(
+            &self.on_update,
+            &self.stream_subscribers,
+            &series_data,
+            &update_info,
+        )
+        .await;
+    }
+
     /// 获取异步数据流。
     pub async fn data_stream(&self) -> impl Stream<Item = Arc<SeriesData>> {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
-        self.on_update(move |data, _info| {
-            let _ = tx.send(data);
-        })
-        .await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(self.ws.message_queue_capacity());
+        {
+            let mut subscribers = self.stream_subscribers.write().await;
+            subscribers.retain(|sender| !sender.is_closed());
+            subscribers.push(tx);
+        }
 
         stream! {
             while let Some(data) = rx.recv().await {
@@ -456,6 +476,43 @@ impl Drop for SeriesSubscription {
             });
         }
     }
+}
+
+async fn dispatch_stream_subscribers(
+    stream_subscribers: &SeriesStreamSubscribers,
+    series_data: &Arc<SeriesData>,
+) {
+    let subscribers = stream_subscribers.read().await.clone();
+    let mut has_closed = false;
+
+    for sender in subscribers {
+        match sender.try_send(Arc::clone(series_data)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                warn!("Series 数据流通道已满，丢弃一次更新");
+            }
+            Err(TrySendError::Closed(_)) => {
+                has_closed = true;
+            }
+        }
+    }
+
+    if has_closed {
+        let mut subscribers = stream_subscribers.write().await;
+        subscribers.retain(|sender| !sender.is_closed());
+    }
+}
+
+async fn dispatch_update(
+    on_update: &super::UpdateCallback,
+    stream_subscribers: &SeriesStreamSubscribers,
+    series_data: &Arc<SeriesData>,
+    update_info: &Arc<UpdateInfo>,
+) {
+    if let Some(callback) = on_update.read().await.as_ref() {
+        callback(Arc::clone(series_data), Arc::clone(update_info));
+    }
+    dispatch_stream_subscribers(stream_subscribers, series_data).await;
 }
 
 fn build_set_chart_request(

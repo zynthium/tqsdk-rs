@@ -29,6 +29,7 @@ type UpdateCallback =
     Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync>>>>;
 type SeriesCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Sync>>>>;
 type SeriesErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
+type SeriesStreamSubscribers = Arc<RwLock<Vec<tokio::sync::mpsc::Sender<Arc<SeriesData>>>>>;
 
 #[derive(Debug, Clone)]
 pub struct KlineSymbols(Vec<String>);
@@ -74,6 +75,7 @@ pub struct SeriesSubscription {
     on_new_bar: SeriesCallback,
     on_bar_update: SeriesCallback,
     on_error: SeriesErrorCallback,
+    stream_subscribers: SeriesStreamSubscribers,
 
     running: Arc<RwLock<bool>>,
     unsubscribe_sent: Arc<AtomicBool>,

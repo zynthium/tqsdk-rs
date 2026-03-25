@@ -188,6 +188,10 @@ impl TqTradingStatusWebsocket {
         self.base.is_ready()
     }
 
+    pub(crate) fn message_queue_capacity(&self) -> usize {
+        self.base.message_queue_capacity()
+    }
+
     pub async fn close(&self) -> Result<()> {
         self.base.close().await
     }

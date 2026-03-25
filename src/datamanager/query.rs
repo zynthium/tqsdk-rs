@@ -76,27 +76,41 @@ impl DataManager {
 
     /// 设置默认值
     pub fn set_default(&self, path: &[&str], default_value: Value) -> Option<Value> {
-        let mut data = self.data.write().unwrap();
-        let current = &mut *data;
-
-        for (i, &key) in path.iter().enumerate() {
-            if i == path.len() - 1 {
-                if !current.contains_key(key) {
-                    current.insert(key.to_string(), default_value.clone());
-                }
-                return current.get(key).cloned();
-            }
-
-            let entry = current
-                .entry(key.to_string())
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-
-            if !entry.is_object() {
-                return None;
-            }
+        if path.is_empty() {
+            return None;
         }
 
-        None
+        let mut data = self.data.write().unwrap();
+        if path.len() == 1 {
+            let leaf = path[0];
+            if !data.contains_key(leaf) {
+                data.insert(leaf.to_string(), default_value.clone());
+            }
+            return data.get(leaf).cloned();
+        }
+
+        let mut current = data
+            .entry(path[0].to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+
+        for &key in &path[1..path.len() - 1] {
+            current = match current {
+                Value::Object(map) => map
+                    .entry(key.to_string())
+                    .or_insert_with(|| Value::Object(Map::new())),
+                _ => return None,
+            };
+        }
+
+        let leaf = path[path.len() - 1];
+        let map = match current {
+            Value::Object(map) => map,
+            _ => return None,
+        };
+        if !map.contains_key(leaf) {
+            map.insert(leaf.to_string(), default_value.clone());
+        }
+        map.get(leaf).cloned()
     }
 
     /// 转换为结构体

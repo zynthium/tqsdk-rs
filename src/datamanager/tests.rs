@@ -32,6 +32,67 @@ fn test_merge_data() {
 }
 
 #[test]
+fn test_set_default_creates_nested_path() {
+    let dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
+
+    let inserted = dm.set_default(
+        &["trade", "u", "orders"],
+        json!({
+            "count": 1
+        }),
+    );
+
+    assert_eq!(
+        inserted,
+        Some(json!({
+            "count": 1
+        }))
+    );
+    assert_eq!(
+        dm.get_by_path(&["trade", "u", "orders"]),
+        Some(json!({
+            "count": 1
+        }))
+    );
+}
+
+#[test]
+fn test_watch_channel_is_bounded() {
+    let config = DataManagerConfig {
+        watch_channel_capacity: 1,
+        ..DataManagerConfig::default()
+    };
+    let dm = DataManager::new(HashMap::new(), config);
+    let rx = dm.watch(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 501.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    assert!(rx.try_recv().is_ok());
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
 fn test_is_changing() {
     let initial_data = HashMap::new();
     let config = DataManagerConfig::default();

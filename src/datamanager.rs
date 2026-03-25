@@ -41,6 +41,8 @@ pub struct DataManagerConfig {
     pub default_view_width: usize,
     /// 启用自动清理
     pub enable_auto_cleanup: bool,
+    /// 路径监听通道容量
+    pub watch_channel_capacity: usize,
     pub merge_semantics: MergeSemanticsConfig,
 }
 
@@ -49,6 +51,7 @@ impl Default for DataManagerConfig {
         Self {
             default_view_width: 10000,
             enable_auto_cleanup: true,
+            watch_channel_capacity: 1024,
             merge_semantics: MergeSemanticsConfig::default(),
         }
     }

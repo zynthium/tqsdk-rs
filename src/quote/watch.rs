@@ -1,4 +1,5 @@
 use super::QuoteSubscription;
+use async_channel::TrySendError;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
@@ -56,7 +57,13 @@ impl QuoteSubscription {
                                             symbol, quote.last_price
                                         );
                                         let quote_arc = Arc::new(quote);
-                                        let _ = quote_tx.send((*quote_arc).clone()).await;
+                                        match quote_tx.try_send((*quote_arc).clone()) {
+                                            Ok(()) => {}
+                                            Err(TrySendError::Full(_)) => {
+                                                warn!("Quote 通道已满，丢弃一次更新");
+                                            }
+                                            Err(TrySendError::Closed(_)) => {}
+                                        }
                                         if let Some(callback) = on_quote.read().await.as_ref() {
                                             callback(Arc::clone(&quote_arc));
                                         }

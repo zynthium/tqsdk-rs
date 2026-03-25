@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering, Ordering as AtomicOrdering};
 use tokio::sync::RwLock;
+use tokio::time::{Duration, sleep};
 
 #[tokio::test]
 async fn trade_session_callback_executes_outside_lock() {
@@ -121,4 +122,40 @@ async fn trade_session_failed_connect_clears_stale_logged_in_state() {
 
     assert!(session.connect().await.is_err());
     assert!(!session.logged_in.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background() {
+    let dm = Arc::new(DataManager::new(
+        HashMap::new(),
+        DataManagerConfig::default(),
+    ));
+    let session = TradeSession::new(
+        "simnow".to_string(),
+        "u".to_string(),
+        "p".to_string(),
+        dm,
+        "ws://127.0.0.1:1".to_string(),
+        WebSocketConfig {
+            reconnect_interval: Duration::from_millis(10),
+            ..WebSocketConfig::default()
+        },
+    );
+
+    let errors = Arc::new(AtomicUsize::new(0));
+    {
+        let errors = Arc::clone(&errors);
+        session
+            .on_error(move |_msg| {
+                errors.fetch_add(1, AtomicOrdering::SeqCst);
+            })
+            .await;
+    }
+
+    session.ws.force_send_failure_for_test();
+    assert!(session.connect().await.is_err());
+
+    sleep(Duration::from_millis(120)).await;
+
+    assert_eq!(errors.load(AtomicOrdering::SeqCst), 0);
 }

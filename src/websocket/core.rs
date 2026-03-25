@@ -1,5 +1,6 @@
 use super::{
     CloseCallback, ErrorCallback, MessageCallback, OpenCallback, build_connection_notify,
+    derive_message_backlog_max,
     is_ops_maintenance_window_cst, next_shared_reconnect_delay, sanitize_log_pack_value,
 };
 use crate::errors::{Result, TqError};
@@ -7,6 +8,7 @@ use futures::{SinkExt, StreamExt};
 use reqwest::header::HeaderMap;
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -208,7 +210,8 @@ pub struct TqWebsocket {
     conn_id: String,
     config: WebSocketConfig,
     status: Arc<RwLock<WebSocketStatus>>,
-    queue: Arc<Mutex<Vec<String>>>,
+    queue: Arc<Mutex<VecDeque<String>>>,
+    pending_queue_max: usize,
     reconnect_times: Arc<RwLock<usize>>,
     should_reconnect: Arc<RwLock<bool>>,
     connecting: Arc<AtomicBool>,
@@ -285,12 +288,17 @@ impl TqWebsocket {
 
     /// 创建新的 WebSocket 连接
     pub fn new(url: String, config: WebSocketConfig) -> Self {
+        let pending_queue_max = derive_message_backlog_max(
+            config.message_queue_capacity,
+            config.message_backlog_warn_step,
+        );
         Self {
             url,
             conn_id: uuid::Uuid::new_v4().to_string(),
             config,
             status: Arc::new(RwLock::new(WebSocketStatus::Closed)),
-            queue: Arc::new(Mutex::new(Vec::new())),
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            pending_queue_max,
             reconnect_times: Arc::new(RwLock::new(0)),
             should_reconnect: Arc::new(RwLock::new(true)),
             connecting: Arc::new(AtomicBool::new(false)),
@@ -319,8 +327,21 @@ impl TqWebsocket {
         self.last_disconnect_reason.write().unwrap().take()
     }
 
+    async fn enqueue_pending_message(&self, json_str: String) {
+        let mut queue = self.queue.lock().await;
+        if queue.len() >= self.pending_queue_max {
+            queue.pop_front();
+            warn!(
+                "WebSocket 待发送队列达到上限，丢弃最旧消息: queue_max={}",
+                self.pending_queue_max
+            );
+        }
+        queue.push_back(json_str);
+    }
+
     /// 初始化连接
     pub async fn init(&self, is_reconnection: bool) -> Result<()> {
+        *self.should_reconnect.write().unwrap() = true;
         let status = *self.status.read().unwrap();
         if status == WebSocketStatus::Open || status == WebSocketStatus::Connecting {
             return Ok(());
@@ -481,12 +502,12 @@ impl TqWebsocket {
                 }
             } else {
                 debug!("WebSocket I/O actor 不存在，消息加入队列");
-                self.queue.lock().await.push(json_str);
+                self.enqueue_pending_message(json_str).await;
                 Ok(())
             }
         } else {
             debug!("WebSocket 未就绪，消息加入队列: {}", log_pack);
-            self.queue.lock().await.push(json_str);
+            self.enqueue_pending_message(json_str).await;
             Ok(())
         }
     }
@@ -498,6 +519,10 @@ impl TqWebsocket {
 
     pub fn auto_peek_enabled(&self) -> bool {
         self.config.auto_peek
+    }
+
+    pub(crate) fn message_queue_capacity(&self) -> usize {
+        self.config.message_queue_capacity.max(1)
     }
 
     pub async fn send_peek_message(&self) -> Result<()> {
@@ -563,7 +588,7 @@ impl TqWebsocket {
                 error!("队列消息发送失败: {}", error);
                 self.set_disconnect_reason(format!("flush_queue_send_failed: {}", error));
                 let mut queue = self.queue.lock().await;
-                queue.extend(pending[idx..].iter().cloned());
+                queue.extend(pending.iter().skip(idx).cloned());
                 break;
             }
         }
@@ -676,8 +701,17 @@ impl TqWebsocket {
         }
 
         loop {
+            if !*self.should_reconnect.read().unwrap() {
+                info!("自动重连已禁用，停止重连流程");
+                break;
+            }
             if !self.handle_reconnect().await {
                 error!("已达到最大重连次数，放弃重连");
+                break;
+            }
+
+            if !*self.should_reconnect.read().unwrap() {
+                info!("自动重连已禁用，停止重连流程");
                 break;
             }
 
@@ -941,6 +975,10 @@ impl TqWebsocket {
             close_notify: Arc::new(Notify::new()),
         });
     }
+
+    pub(crate) async fn pending_queue_len_for_test(&self) -> usize {
+        self.queue.lock().await.len()
+    }
 }
 
 #[cfg(test)]
@@ -989,5 +1027,23 @@ mod tests {
         let res = tokio::time::timeout(Duration::from_millis(200), handle).await;
         assert!(res.is_ok());
         res.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_send_queue_is_bounded_while_socket_not_ready() {
+        let ws = TqWebsocket::new(
+            "ws://127.0.0.1/".to_string(),
+            WebSocketConfig {
+                message_queue_capacity: 1,
+                message_backlog_warn_step: 1,
+                ..WebSocketConfig::default()
+            },
+        );
+
+        for seq in 0..80 {
+            ws.send(&json!({"aid":"x","seq":seq})).await.unwrap();
+        }
+
+        assert_eq!(ws.pending_queue_len_for_test().await, 64);
     }
 }

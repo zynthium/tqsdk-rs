@@ -1,6 +1,6 @@
 # TQSDK-RS
 
-天勤量化交易平台的 Rust SDK - 高性能、类型安全的期货交易接口
+天勤量化交易平台的 Rust SDK，提供行情订阅、K 线与 Tick 序列、合约查询、回测和实盘交易接口。
 
 [![Crates.io](https://img.shields.io/crates/v/tqsdk-rs.svg)](https://crates.io/crates/tqsdk-rs)
 [![Documentation](https://docs.rs/tqsdk-rs/badge.svg)](https://docs.rs/tqsdk-rs)
@@ -8,63 +8,65 @@
 
 ## 核心特性
 
-- **类型安全** - 使用 Rust 强类型系统，90+ 字段完整定义，编译时消除运行时错误
-- **并发安全** - 基于 Arc + RwLock 设计，确保多线程环境下的数据安全，无数据竞争
-- **异步优化** - 基于 tokio 异步运行时，高效处理 I/O 操作，零成本抽象
-- **DIFF 协议** - 完整实现天勤 DIFF 协议，支持增量数据更新和递归合并
-- **灵活接口** - 支持 Channel、Callback、Stream 三种数据订阅方式，满足不同场景需求
-- **零竞态条件** - 支持延迟启动模式，确保回调注册完成后再启动监听，避免数据丢失
-- **零拷贝回调** - 使用 Arc 参数优化，多回调场景下性能提升 50-100x
-- **Polars 集成** - 高性能列式数据分析，支持 K线/Tick 数据转换为 DataFrame（可选功能）
-- **灵活日志系统** - 支持 Layer 组合，本地时区显示，可与业务层日志集成
-- **回测支持** - 支持历史数据回放与回测场景
+- 类型安全：核心行情、K 线、Tick、账户、委托、成交等结构均为强类型定义。
+- 异步优先：基于 `tokio`，统一行情、序列、交易与回测的异步接口。
+- DIFF 协议：支持天勤增量数据合并、路径监听与 epoch 变化追踪。
+- 多种消费方式：Quote/Series 同时支持回调、通道和流式消费。
+- 延迟启动：先注册回调、再 `start()`/`connect()`，减少初始化阶段数据丢失。
+- 背压可控：关键通道与离线队列已改为有界缓冲，避免慢消费者无限堆积内存。
+- 零拷贝回调：大量更新路径通过 `Arc<T>` 分发，降低多消费者场景开销。
+- Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
+- 回测支持：支持历史回放、回测推进和 DataManager 直接读取。
 
 ## 功能模块
 
 ### 行情数据
-- 实时行情订阅（Quote）- 支持多合约同时订阅
-- K线数据订阅（单合约/多合约对齐）- 支持任意周期
-- Tick 数据订阅 - 逐笔成交数据
-- 历史数据获取（支持 left_kline_id 和 focus_datetime 两种方式）
-- ViewWidth 限制和二分查找优化 - 高效处理大数据集
-- 合约与期权查询（GraphQL）
-- **Polars DataFrame 集成** - 高性能数据分析（可选功能）
+
+- Quote 实时行情订阅，支持多合约动态增删。
+- 单合约和多合约对齐 K 线订阅。
+- Tick 订阅与历史 K 线拉取。
+- 合约、主连、期权、交易日历、交易状态查询。
 
 ### 交易功能
-- 实盘交易（TradeSession）- 支持期货公司实盘和 SimNow 模拟
-- 账户信息查询 - 实时资金、权益、保证金等
-- 持仓/委托单/成交查询 - 完整的交易数据
-- 下单/撤单操作 - 支持限价单、市价单等
-- 自动重连机制 - 网络断开自动恢复
+
+- `TradeSession` 实盘/模拟交易会话。
+- 账户、持仓、委托、成交实时更新与主动查询。
+- 下单、撤单、登录就绪检测与自动重连。
 
 ### 数据管理
-- DIFF 协议数据合并 - 递归合并嵌套对象
-- 路径监听（Watch/UnWatch）- 精确监听指定路径的数据变化
-- 版本追踪（Epoch）- 追踪每次数据更新
-- 数据类型转换 - JSON 到强类型结构体的自动转换
 
-### 性能优化
-- **零拷贝回调设计** - Arc 参数优化，避免数据深拷贝
-- **高性能缓冲区** - KlineBuffer/TickBuffer 支持 O(1) 更新
-- **列式数据分析** - Polars DataFrame 集成（可选）
+- DIFF 数据合并与默认值补全。
+- `watch` / `unwatch` 路径监听。
+- 数据变化 epoch 追踪与按路径读取。
+
+### 分析与回测
+
+- 历史回放与回测推进。
+- 可选 Polars DataFrame 转换。
+- DataManager 直接读取底层数据。
 
 ### 开发体验
-- **灵活日志系统** - 支持 Layer 组合和本地时区
-- **完整示例** - 8+ 示例程序覆盖所有功能
-- **详细文档** - 完整的 API 文档和使用指南
+
+- `ClientBuilder` 配置式构建。
+- `tracing` 日志集成和自定义 Layer。
+- 7 个示例程序覆盖主要使用路径。
 
 ## 近期修复与更新
-- 修复：行情 WebSocket 在断线重连后自动重发未完成的 ins_query，并在收到非空响应后清理缓存，避免查询丢失与重复
-  - 影响接口：GraphQL 查询、主连/期权查询等基于 ins_query 的功能
-  - 验证：`cargo run --example history` 中的 `query_cont_quotes` 返回正常
-- 更新：主连查询 query_cont_quotes 在未提供 has_night 时不再携带该变量，避免服务端变量校验导致超时
-  - 兼容：与 tqsdk-python 的接口行为对齐
+
+- 修复行情 WebSocket 断线重连后未完成 `ins_query` 可能丢失或重复的问题。
+- 修复 `query_cont_quotes` 在未提供 `has_night` 时仍发送该变量导致的超时问题。
+- 修复 `TradeSession::connect()` 失败后后台任务仍可能继续重连或保活的问题。
+- 修复 `SeriesSubscription::data_stream()` 覆盖 `on_update()` 的接口行为：
+  `data_stream()` 现在与 `on_update()` 可并存，不再互相覆盖。
+- 将 Quote、TradingStatus、Series stream、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
 
 ## 验证与排查
-- 示例验证：运行 `cargo run --example history` 覆盖行情、GraphQL、交易状态等核心接口
-- 静态检查：`cargo clippy`（当前存在若干复杂度与默认赋值告警，不影响功能）
-- 类型检查：`cargo check`
-- 账户权限：`query_edb_data` 需要已购买非价量数据权限，否则将返回权限提示（不影响其他功能）
+
+- 单元测试：`cargo test`
+- 静态检查：`cargo clippy --all-targets --all-features -- -D warnings`
+- 示例联调：`cargo run --example history`
+- 账户权限：`query_edb_data` 需要账号具备非价量数据权限，否则会返回权限提示，不影响其他接口。
+- 交易示例：`cargo run --example trade` 会连接交易环境，运行前请确认使用的是模拟账户并已正确配置环境变量。
 
 ## 快速开始
 
@@ -74,12 +76,28 @@
 
 ```toml
 [dependencies]
-tqsdk-rs = "0.1.1"
 tokio = { version = "1", features = ["full"] }
+tqsdk-rs = "0.1.1"
 
-# 可选：启用 Polars DataFrame 支持
-tqsdk-rs = { version = "0.1.1", features = ["polars"] }
+# 如需 Polars DataFrame 支持：
+# tqsdk-rs = { version = "0.1.1", features = ["polars"] }
 ```
+
+### 环境变量
+
+最少需要配置天勤账户；其他变量按示例或部署场景按需开启。
+
+| 变量 | 必需 | 说明 |
+|------|------|------|
+| `TQ_AUTH_USER` | 是 | 天勤账号 |
+| `TQ_AUTH_PASS` | 是 | 天勤密码 |
+| `TQ_LOG_LEVEL` | 否 | 常见示例使用的日志级别，如 `info`、`debug` |
+| `SIMNOW_USER_0` | 否 | `trade` 示例使用的 SimNow 账号 |
+| `SIMNOW_PASS_0` | 否 | `trade` 示例使用的 SimNow 密码 |
+| `TQ_START_DT` | 否 | `backtest` 示例起始日期，格式 `YYYY-MM-DD` |
+| `TQ_END_DT` | 否 | `backtest` 示例结束日期，格式 `YYYY-MM-DD` |
+| `TQ_TEST_SYMBOL` | 否 | `history` 示例联调用的测试合约 |
+| `TQ_UNDERLYING` | 否 | `option_levels` 示例的标的合约 |
 
 ### 基础示例 - 行情订阅
 
@@ -89,35 +107,27 @@ use tqsdk_rs::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 创建客户端（自动完成认证）
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
+
     let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
-    
-    // 2. 初始化行情连接
     client.init_market().await?;
-    
-    // 3. 订阅行情（支持多个合约）
+
     let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-    
-    // 4. 注册回调函数
-    quote_sub.on_quote(|quote| {
-        println!("行情更新: {} = {}", quote.instrument_id, quote.last_price);
-    }).await;
-    
-    // 5. 启动订阅
+
+    quote_sub
+        .on_quote(|quote| {
+            println!("{} 最新价 = {}", quote.instrument_id, quote.last_price);
+        })
+        .await;
+
     quote_sub.start().await?;
-    
-    // 6. 保持运行
     tokio::signal::ctrl_c().await?;
-    
     Ok(())
 }
 ```
 
 ### 使用 ClientBuilder（推荐）
-
-ClientBuilder 提供了更灵活的配置方式：
 
 ```rust
 use std::env;
@@ -125,19 +135,18 @@ use tqsdk_rs::Client;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 使用构建器模式创建客户端
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
+
     let mut client = Client::builder(username, password)
-        .log_level("debug")          // 设置日志级别
-        .view_width(5000)            // 设置默认视图宽度
-        .development(true)           // 开启开发模式
+        .log_level(env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()))
+        .view_width(5000)
+        .development(true)
+        .message_queue_capacity(4096)
         .build()
         .await?;
-    
-    // 初始化行情
+
     client.init_market().await?;
-    
     Ok(())
 }
 ```
@@ -148,318 +157,272 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #### Quote 订阅 - 实时行情
 
-Quote 订阅支持多合约同时订阅，提供三种数据接收方式：
-
 ```rust
-// 订阅多个合约的实时行情
-let quote_sub = client.subscribe_quote(&["SHFE.au2602", "SHFE.ag2512"]).await?;
+let quote_sub = client
+    .subscribe_quote(&["SHFE.au2602", "SHFE.ag2512"])
+    .await?;
 
-// 方式 1: 使用回调函数（推荐）
-quote_sub.on_quote(|quote| {
-    println!("合约: {}", quote.instrument_id);
-    println!("最新价: {}", quote.last_price);
-    println!("成交量: {}", quote.volume);
-}).await;
+quote_sub
+    .on_quote(|quote| {
+        println!("{} 最新价: {}", quote.instrument_id, quote.last_price);
+    })
+    .await;
 
-// 方式 2: 使用 Channel（支持多个消费者）
-let rx = quote_sub.quote_channel();
+let quote_rx = quote_sub.quote_channel();
 tokio::spawn(async move {
-    while let Ok(quote) = rx.recv().await {
-        println!("收到行情: {:?}", quote);
+    while let Ok(quote) = quote_rx.recv().await {
+        println!("[channel] {} {}", quote.instrument_id, quote.last_price);
     }
 });
 
-// 启动订阅（延迟启动模式）
 quote_sub.start().await?;
-
-// 动态添加合约
 quote_sub.add_symbols(&["DCE.m2505"]).await?;
-
-// 动态移除合约
 quote_sub.remove_symbols(&["SHFE.ag2512"]).await?;
 ```
 
-#### K线订阅 - 单合约
+说明：
 
-K线订阅支持任意周期，使用延迟启动模式避免数据丢失：
+- 先注册回调，再 `start()`。
+- `quote_channel()` 现在是有界通道；消费者长期跟不上时，旧更新可能被丢弃。
+- 默认容量由 `ClientBuilder::message_queue_capacity()` 控制。
+
+#### K 线订阅 - 单合约
 
 ```rust
 use std::time::Duration;
 
-// 获取 Series API
 let series_api = client.series()?;
+let sub = series_api
+    .kline("SHFE.au2602", Duration::from_secs(60), 300)
+    .await?;
 
-// 订阅 1 分钟 K线，获取最近 100 根
-let sub = series_api.kline(
-    "SHFE.au2602",           // 合约代码
-    Duration::from_secs(60), // K线周期（60秒 = 1分钟）
-    100                      // 数据条数
-).await?;
-
-// 先注册回调（重要：避免丢失初始数据）
-// 注意：data 和 info 都是 Arc 包装的，零拷贝共享
 sub.on_update(|data, info| {
-    if let Some(kline_data) = &data.single {
-        println!("K线数量: {}", kline_data.data.len());
-        
-        // 检查是否有新 K线生成
-        if info.has_new_bar {
-            println!("新 K线生成！");
-            if let Some(last_kline) = kline_data.data.last() {
-                println!("开: {}, 高: {}, 低: {}, 收: {}", 
-                    last_kline.open, last_kline.high, 
-                    last_kline.low, last_kline.close);
-            }
+    if let Some(klines) = data.get_symbol_klines("SHFE.au2602") {
+        if info.has_new_bar && let Some(last) = klines.data.last() {
+            println!("新 K 线: id={} close={}", last.id, last.close);
         }
-        
-        // 检查是否有 K线更新
+
         if info.has_bar_update {
-            println!("K线数据更新");
+            println!("最新 bar 已更新，当前总数={}", klines.data.len());
         }
     }
-}).await;
+})
+.await;
 
-// 最后启动订阅
 sub.start().await?;
-
-// 常用周期示例
-// Duration::from_secs(60)      // 1 分钟
-// Duration::from_secs(300)     // 5 分钟
-// Duration::from_secs(900)     // 15 分钟
-// Duration::from_secs(3600)    // 1 小时
-// Duration::from_secs(86400)   // 1 天
 ```
 
-#### 多合约对齐 K线
+补充：
 
-多合约订阅会自动进行时间对齐，适用于跨品种分析：
+- `SeriesSubscription::on_update()` 仍然是单回调语义，后注册会覆盖先注册。
+- `SeriesSubscription::data_stream()` 现在是独立流接口，可与 `on_update()` 同时使用。
+- `data_stream()` 也是有界缓冲；如果处理速度跟不上，会丢弃部分更新并输出告警。
+
+#### 多合约对齐 K 线
 
 ```rust
-// 订阅多个合约的 K线（自动时间对齐）
-let symbols = vec![
-    "SHFE.au2602".to_string(),  // 黄金
-    "SHFE.ag2512".to_string(),  // 白银
-];
+use std::time::Duration;
 
-let sub = series_api.kline(
-    &symbols,                    // 合约列表
-    Duration::from_secs(60),     // K线周期
-    100                          // 数据条数
-).await?;
+let symbols = vec!["SHFE.au2602".to_string(), "SHFE.ag2512".to_string()];
+let sub = series_api.kline(&symbols, Duration::from_secs(60), 120).await?;
 
-sub.on_update(|data, _info| {
-    if let Some(multi_data) = &data.multi {
-        println!("主合约: {}", multi_data.main_symbol);
-        
-        // 遍历对齐后的 K线集合
-        for aligned_set in &multi_data.data {
-            println!("时间: {}", aligned_set.timestamp);
-            
-            // 每个时间点包含所有合约的 K线
-            for (symbol, kline) in &aligned_set.klines {
-                println!("  {} - 开: {}, 收: {}", 
-                    symbol, kline.open, kline.close);
+sub.on_update(|data, info| {
+    if info.has_new_bar && let Some(multi) = &data.multi {
+        println!("主合约: {}", multi.main_symbol);
+        if let Some(row) = multi.data.last() {
+            for (symbol, kline) in &row.klines {
+                println!("{} close={}", symbol, kline.close);
             }
         }
     }
-}).await;
+})
+.await;
 
 sub.start().await?;
 ```
 
 #### Tick 订阅 - 逐笔成交
 
-Tick 数据提供最细粒度的市场数据：
-
 ```rust
-// 订阅 Tick 数据
-let sub = series_api.tick(
-    "SHFE.au2602",  // 合约代码
-    100             // 数据条数
-).await?;
+let sub = series_api.tick("SHFE.au2602", 200).await?;
 
 sub.on_update(|data, _info| {
-    if let Some(tick_data) = &data.tick_data {
-        println!("Tick 数量: {}", tick_data.data.len());
-        
-        // 获取最新 Tick
-        if let Some(last_tick) = tick_data.data.last() {
-            println!("最新成交价: {}", last_tick.last_price);
-            println!("成交量: {}", last_tick.volume);
-            println!("持仓量: {}", last_tick.open_interest);
-        }
+    if let Some(tick_data) = &data.tick_data
+        && let Some(last_tick) = tick_data.data.last()
+    {
+        println!(
+            "tick id={} last_price={} volume={}",
+            last_tick.id, last_tick.last_price, last_tick.volume
+        );
     }
-}).await;
+})
+.await;
 
 sub.start().await?;
 ```
 
 #### 历史数据获取
 
-支持两种方式获取历史数据：
-
 ```rust
 use chrono::Utc;
+use std::time::Duration;
 
-// 方式 1: 使用 left_kline_id（精确定位）
-// 从指定 K线 ID 开始获取
-let sub = series_api.kline_history(
-    "SHFE.au2602",              // 合约代码
-    Duration::from_secs(60),    // K线周期
-    100,                        // 数据条数
-    1234567890                  // 起始 K线 ID
-).await?;
+let sub = series_api
+    .kline_history("SHFE.au2602", Duration::from_secs(60), 8000, 105761)
+    .await?;
 
-// 方式 2: 使用 focus_datetime（时间定位）
-// 从指定时间点开始获取
-let focus_time = Utc::now() - chrono::Duration::days(7);  // 7天前
-let sub = series_api.kline_history_with_focus(
-    "SHFE.au2602",              // 合约代码
-    Duration::from_secs(60),    // K线周期
-    100,                        // 数据条数
-    focus_time,                 // 焦点时间
-    50                          // 焦点位置（0-100，50表示居中）
-).await?;
-
-// 注册回调处理历史数据
 sub.on_update(|data, info| {
-    if let Some(kline_data) = &data.single {
-        println!("获取到 {} 根历史 K线", kline_data.data.len());
-        
-        if info.chart_ready {
-            println!("历史数据加载完成");
-        }
+    if info.chart_ready && let Some(klines) = data.get_symbol_klines("SHFE.au2602") {
+        println!("历史数据加载完成，共 {} 根", klines.data.len());
     }
-}).await;
+})
+.await;
 
 sub.start().await?;
+
+let focus_time = Utc::now() - chrono::Duration::days(7);
+let sub_with_focus = series_api
+    .kline_history_with_focus(
+        "SHFE.au2602",
+        Duration::from_secs(60),
+        1000,
+        focus_time,
+        50,
+    )
+    .await?;
+
+sub_with_focus.start().await?;
 ```
+
+常用场景：
+
+- `kline_history(..., left_kline_id)`：按已知 K 线 ID 精确回溯。
+- `kline_history_with_focus(..., focus_datetime, focus_position)`：按时间定位，便于围绕某个时间点取窗口。
 
 ### 2. 交易功能
 
 #### 创建交易会话
 
-TradeSession 使用延迟连接模式，避免消息丢失：
-
 ```rust
-// 创建交易会话（不自动连接）
-let session = client.create_trade_session(
-    "simnow",      // 期货公司代码（simnow 为模拟账户）
-    "user_id",     // 账号
-    "password"     // 密码
-).await?;
+let session = client
+    .create_trade_session("simnow", &sim_user_id, &sim_password)
+    .await?;
 
-// 步骤 1: 先注册所有回调（重要：避免丢失初始数据）
+session
+    .on_account(|account| {
+        println!("权益={} 可用={}", account.balance, account.available);
+    })
+    .await;
 
-// 监听账户变化
-session.on_account(|account| {
-    println!("账户余额: {}", account.balance);
-    println!("可用资金: {}", account.available);
-    println!("持仓盈亏: {}", account.position_profit);
-}).await;
+session
+    .on_position(|symbol, position| {
+        println!(
+            "{} 多={} 空={}",
+            symbol,
+            position.volume_long_today + position.volume_long_his,
+            position.volume_short_today + position.volume_short_his
+        );
+    })
+    .await;
 
-// 监听持仓变化
-session.on_position(|position| {
-    println!("合约: {}", position.instrument_id);
-    println!("多头持仓: {}", position.volume_long);
-    println!("空头持仓: {}", position.volume_short);
-}).await;
+session
+    .on_order(|order| {
+        println!("订单 {} 状态={}", order.order_id, order.status);
+    })
+    .await;
 
-// 监听委托单变化
-session.on_order(|order| {
-    println!("委托单: {} - 状态: {}", order.order_id, order.status);
-}).await;
-
-// 监听成交记录
-session.on_trade(|trade| {
-    println!("成交: {} - 价格: {}", trade.trade_id, trade.price);
-}).await;
-
-// 步骤 2: 最后连接服务器
 session.connect().await?;
+
+while !session.is_ready() {
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
 ```
+
+说明：
+
+- 交易会话同样推荐先注册所有回调，再 `connect()`。
+- `connect()` 失败时会清理本次连接产生的后台状态，不会继续残留重连任务。
 
 #### 下单操作
 
-支持限价单、市价单等多种下单方式：
+当前接口使用 `InsertOrderRequest`，不再是旧版的扁平参数列表：
 
 ```rust
-// 限价开多仓
-let order_id = session.insert_order(
-    "SHFE.au2602",    // 合约代码
-    "BUY",            // 买卖方向：BUY/SELL
-    "OPEN",           // 开平标志：OPEN/CLOSE/CLOSETODAY
-    1,                // 手数
-    Some(500.0)       // 限价（None 表示市价单）
-).await?;
+use tqsdk_rs::InsertOrderRequest;
 
-println!("下单成功，委托单号: {}", order_id);
+let order_id = session
+    .insert_order(&InsertOrderRequest {
+        symbol: "SHFE.au2602".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: "BUY".to_string(),
+        offset: "OPEN".to_string(),
+        price_type: "LIMIT".to_string(),
+        limit_price: 500.0,
+        volume: 1,
+    })
+    .await?;
 
-// 市价平仓
-let order_id = session.insert_order(
-    "SHFE.au2602",
-    "SELL",
-    "CLOSE",
-    1,
-    None              // 市价单
-).await?;
-
-// 撤单
+println!("下单成功: {}", order_id);
 session.cancel_order(&order_id).await?;
-println!("撤单成功");
+```
+
+市价单示例：
+
+```rust
+let order_id = session
+    .insert_order(&InsertOrderRequest {
+        symbol: "SHFE.au2602".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: "SELL".to_string(),
+        offset: "CLOSE".to_string(),
+        price_type: "ANY".to_string(),
+        limit_price: 0.0,
+        volume: 1,
+    })
+    .await?;
 ```
 
 #### 查询交易数据
 
-提供完整的交易数据查询接口：
-
 ```rust
-// 查询账户信息
 let account = session.get_account().await?;
-println!("账户余额: {}", account.balance);
-println!("可用资金: {}", account.available);
-println!("冻结保证金: {}", account.frozen_margin);
-println!("持仓盈亏: {}", account.position_profit);
+println!("权益={} 可用={}", account.balance, account.available);
 
-// 查询单品种持仓
-let pos = session.get_position("SHFE.au2602").await?;
-println!("多头持仓: {}", pos.volume_long_today + pos.volume_long_his);
-println!("空头持仓: {}", pos.volume_short_today + pos.volume_short_his);
+let position = session.get_position("SHFE.au2602").await?;
+println!(
+    "多={} 空={}",
+    position.volume_long_today + position.volume_long_his,
+    position.volume_short_today + position.volume_short_his
+);
 
-// 查询所有委托单
 let orders = session.get_orders().await?;
-println!("委托单数量: {}", orders.len());
-
-// 查询所有成交记录
 let trades = session.get_trades().await?;
-println!("成交记录数量: {}", trades.len());
+println!("orders={}, trades={}", orders.len(), trades.len());
 ```
 
 ### 3. 数据管理器（DataManager）
 
-DataManager 是底层数据存储与 DIFF 合并核心，普通使用不需要直接访问。回测场景可以通过 BacktestHandle 获取：
+DataManager 是底层 DIFF 合并与数据读取核心。大多数场景不需要直接操作，但回测或高级扩展时可以直接使用：
 
 ```rust
 use chrono::Utc;
-use std::env;
 use tqsdk_rs::{BacktestConfig, Client};
 
-#[tokio::main]
-async fn main() -> tqsdk_rs::Result<()> {
-    let username = env::var("TQ_AUTH_USER")?;
-    let password = env::var("TQ_AUTH_PASS")?;
-    let mut client = Client::builder(username, password).build().await?;
+let username = std::env::var("TQ_AUTH_USER")?;
+let password = std::env::var("TQ_AUTH_PASS")?;
 
-    let start = Utc::now() - chrono::Duration::days(7);
-    let end = Utc::now();
-    let backtest = client.init_market_backtest(BacktestConfig::new(start, end)).await?;
-    let dm = backtest.dm();
+let mut client = Client::builder(username, password).build().await?;
+let start = Utc::now() - chrono::Duration::days(7);
+let end = Utc::now();
+let backtest = client
+    .init_market_backtest(BacktestConfig::new(start, end))
+    .await?;
 
-    if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
-        println!("原始数据: {:?}", data);
-    }
-
-    Ok(())
+let dm = backtest.dm();
+if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
+    println!("raw quote = {:?}", data);
 }
 ```
 
@@ -467,370 +430,203 @@ async fn main() -> tqsdk_rs::Result<()> {
 
 ```rust
 use chrono::Utc;
-use std::env;
-use tqsdk_rs::{BacktestConfig, BacktestEvent, Client};
+use tqsdk_rs::{BacktestConfig, BacktestEvent};
 
-#[tokio::main]
-async fn main() -> tqsdk_rs::Result<()> {
-    let username = env::var("TQ_AUTH_USER")?;
-    let password = env::var("TQ_AUTH_PASS")?;
-    let mut client = Client::builder(username, password).build().await?;
+let username = std::env::var("TQ_AUTH_USER")?;
+let password = std::env::var("TQ_AUTH_PASS")?;
 
-    let start = Utc::now() - chrono::Duration::days(7);
-    let end = Utc::now();
-    let backtest = client.init_market_backtest(BacktestConfig::new(start, end)).await?;
+let mut client = Client::builder(username, password).build().await?;
+let start = Utc::now() - chrono::Duration::days(7);
+let end = Utc::now();
 
-    let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-    quote_sub.start().await?;
+let backtest = client
+    .init_market_backtest(BacktestConfig::new(start, end))
+    .await?;
 
-    loop {
-        match backtest.next().await? {
-            BacktestEvent::Tick { current_dt } => {
-                println!("回测推进到: {}", current_dt);
-            }
-            BacktestEvent::Finished { current_dt } => {
-                println!("回测结束: {}", current_dt);
-                break;
-            }
+let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
+quote_sub.start().await?;
+
+loop {
+    match backtest.next().await? {
+        BacktestEvent::Tick { current_dt } => {
+            println!("推进到 {}", current_dt);
+        }
+        BacktestEvent::Finished { current_dt } => {
+            println!("回测结束 {}", current_dt);
+            break;
         }
     }
-
-    Ok(())
 }
 ```
 
 ### 5. 合约查询
 
-使用 GraphQL 查询合约、主连和期权列表：
-
 ```rust
 use serde_json::json;
-use std::env;
-use tqsdk_rs::{Client, ClientConfig};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let username = env::var("TQ_AUTH_USER")?;
-    let password = env::var("TQ_AUTH_PASS")?;
-    let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
-    client.init_market().await?;
+let quotes = client
+    .query_quotes(Some("FUTURE"), Some("SHFE"), None, Some(false), None)
+    .await?;
+let cont = client.query_cont_quotes(Some("SHFE"), Some("cu"), None).await?;
+let options = client
+    .query_options("SHFE.cu2405", Some("CALL"), Some(2024), Some(12), None, Some(false), None)
+    .await?;
 
-    let quotes = client.query_quotes(Some("FUTURE"), Some("SHFE"), None, Some(false), None).await?;
-    let cont = client.query_cont_quotes(Some("SHFE"), Some("cu"), None).await?;
-    let options = client
-        .query_options("SHFE.cu2405", Some("CALL"), Some(2024), Some(12), None, Some(false), None)
-        .await?;
-
-    let query = r#"query($class_:[Class]) {
+let raw = client
+    .query_graphql(
+        r#"query($class_:[Class]) {
   multi_symbol_info(class: $class_) {
     ... on basic { instrument_id }
   }
-}"#;
-    let variables = json!({ "class_": ["FUTURE"] });
-    let raw = client.query_graphql(query, Some(variables)).await?;
+}"#,
+        Some(json!({ "class_": ["FUTURE"] })),
+    )
+    .await?;
 
-    println!("quotes={:?} cont={:?} options={:?} raw={:?}", quotes, cont, options, raw);
-    Ok(())
-}
+println!("quotes={:?} cont={:?} options={:?} raw={:?}", quotes, cont, options, raw);
 ```
 
 ### 6. Polars DataFrame 集成（可选功能）
 
-启用 `polars` 功能后，可以将 K线和 Tick 数据转换为 Polars DataFrame 进行高性能分析。
-
-#### 使用 KlineBuffer 进行实时数据分析
+启用 `polars` feature 后，可以直接将序列数据转换为 DataFrame：
 
 ```rust
-use std::{env, time::Duration};
-use tqsdk_rs::{Client, ClientConfig, KlineBuffer};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let username = env::var("TQ_AUTH_USER")?;
-    let password = env::var("TQ_AUTH_PASS")?;
-    let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
-    client.init_market().await?;
-
-    let series_api = client.series()?;
-    let subscription = series_api
-        .kline("SHFE.au2506", Duration::from_secs(60), 100)
-        .await?;
-
-    // 创建 K线缓冲区
-    let mut buffer = KlineBuffer::new();
-
-    subscription.on_update(move |series_data, update_info| {
-        if let Some(kline_data) = &series_data.single {
-            if let Some(last_kline) = kline_data.data.last() {
-                if update_info.has_new_bar {
-                    // 新 K线，追加
-                    buffer.push(last_kline);
-                } else if update_info.has_bar_update {
-                    // 更新最后一根
-                    buffer.update_last(last_kline);
-                }
-            }
-
-            // 转换为 DataFrame 进行分析
-            if let Ok(df) = buffer.to_dataframe() {
-                println!("DataFrame shape: {:?}", df.shape());
-                
-                // 计算统计指标
-                if let Ok(close) = df.column("close")?.f64() {
-                    let mean = close.mean().unwrap_or(0.0);
-                    let std = close.std(1).unwrap_or(0.0);
-                    println!("收盘价均值: {:.2}, 标准差: {:.2}", mean, std);
-                }
-
-                // 获取最后 10 根 K线
-                if let Ok(tail_df) = buffer.tail(10) {
-                    println!("最后 10 根K线:\n{}", tail_df);
-                }
-            }
+subscription
+    .on_update(|series_data, _| {
+        if let Ok(df) = series_data.to_dataframe() {
+            println!("shape={:?}", df.shape());
         }
-    }).await;
-
-    subscription.start().await?;
-    
-    // 等待数据...
-    tokio::time::sleep(Duration::from_secs(60)).await;
-    
-    Ok(())
-}
+    })
+    .await;
 ```
 
-#### 直接转换 SeriesData
-
-```rust
-// 单合约 K线
-subscription.on_update(|series_data, _| {
-    // 转换为 DataFrame
-    if let Ok(df) = series_data.to_dataframe() {
-        println!("K线数据:\n{}", df);
-    }
-}).await;
-
-// 多合约 K线（长表格式）
-multi_subscription.on_update(|series_data, _| {
-    if let Ok(long_df) = series_data.to_dataframe() {
-        println!("长表格式:\n{}", long_df);
-    }
-}).await;
-
-// 多合约 K线（宽表格式）
-multi_subscription.on_update(|series_data, _| {
-    if let Ok(wide_df) = series_data.to_wide_dataframe() {
-        println!("宽表格式:\n{}", wide_df);
-    }
-}).await;
-```
-
-#### 技术指标计算
-
-```rust
-use polars::prelude::*;
-
-// 计算移动平均线
-fn calculate_ma(df: &DataFrame, window: usize) -> Result<Series, PolarsError> {
-    let close = df.column("close")?.f64()?;
-    let ma = close.rolling_mean(RollingOptionsFixedWindow {
-        window_size: window,
-        min_periods: window,
-        ..Default::default()
-    })?;
-    Ok(ma.into_series())
-}
-
-// 在回调中使用
-subscription.on_update(move |series_data, _| {
-    if let Ok(df) = buffer.to_dataframe() {
-        // 计算 MA5 和 MA10
-        if let Ok(ma5) = calculate_ma(&df, 5) {
-            if let Ok(ma10) = calculate_ma(&df, 10) {
-                println!("MA5: {:.2}, MA10: {:.2}", 
-                    ma5.tail(Some(1)), 
-                    ma10.tail(Some(1)));
-            }
-        }
-    }
-}).await;
-```
-
-**详细文档**: 查看 docs.rs 上的 API 文档（`polars_ext` 模块）。
+如果需要增量维护窗口，可以结合 `KlineBuffer` / `TickBuffer` 使用。
 
 ### 7. 认证管理
 
 #### 切换账号（运行时）
 
-支持在运行时动态切换账号：
-
 ```rust
 use tqsdk_rs::auth::TqAuth;
 
-// 创建新的认证器
-let mut new_auth = TqAuth::new("user2".to_string(), "pass2".to_string());
-new_auth.login().await?;
-
-// 切换认证器
-client.set_auth(new_auth).await;
-
-// 重新初始化行情（使用新账号）
+let mut auth = TqAuth::new("user2".to_string(), "pass2".to_string());
+auth.login().await?;
+client.set_auth(auth).await;
 client.init_market().await?;
 ```
 
 #### 权限检查
 
-在订阅前自动检查权限，也可以手动检查：
-
 ```rust
-// 获取认证器
 let auth = client.get_auth().await;
 
-// 检查功能权限
 if auth.has_feature("futr") {
     println!("有期货权限");
 }
 
-if auth.has_feature("sec") {
-    println!("有股票权限");
-}
-
-// 检查行情权限（多个合约）
 match auth.has_md_grants(&["SHFE.au2602", "SHFE.ag2512"]) {
-    Ok(_) => println!("有行情权限"),
-    Err(e) => println!("权限不足: {}", e),
+    Ok(()) => println!("有行情权限"),
+    Err(err) => println!("权限不足: {}", err),
 }
-
-// 检查交易权限（单个合约）
-match auth.has_td_grants("SHFE.au2602") {
-    Ok(_) => println!("有交易权限"),
-    Err(e) => println!("权限不足: {}", e),
-}
-
-// 获取认证信息
-println!("Auth ID: {}", auth.get_auth_id());
-println!("Access Token: {}", auth.get_access_token());
 ```
 
 ## 示例程序
 
-项目提供了完整的示例程序，涵盖所有核心功能：
-
 ### 运行示例
 
 ```bash
-# 行情订阅示例（Quote、K线、Tick）
+# 行情订阅
 cargo run --example quote
 
-# 历史数据获取示例
+# 历史数据与接口联调
 cargo run --example history
 
-# 交易操作示例（下单、撤单、查询）
+# 实盘/模拟交易
 cargo run --example trade
 
-# 回测示例
+# 回测
 cargo run --example backtest
 
-# DataManager 高级功能示例
+# DataManager 高级用法
 cargo run --example datamanager
 
-# 自定义日志 Layer 组合示例
+# 自定义 tracing Layer
 cargo run --example custom_logger
-```
 
-### 环境变量配置
-
-运行示例前需要设置环境变量：
-
-```bash
-# 天勤账号（必需）
-export TQ_AUTH_USER="your_username"
-export TQ_AUTH_PASS="your_password"
-
-# 认证与网络（可选）
-# 认证服务器与名称服务（默认使用官方地址）
-export TQ_AUTH_URL="https://auth.shinnytech.com"
-export TQ_NS_URL="https://api.shinnytech.com/ns"
-#
-# OAuth 客户端信息（默认使用内置值；如需自定义可覆盖）
-export TQ_CLIENT_ID="shinny_tq"
-export TQ_CLIENT_SECRET="..."
-#
-# 认证请求代理（默认使用 reqwest/system proxy 规则；如需强制代理可设置）
-export TQ_AUTH_PROXY="http://127.0.0.1:7890"
-#
-# 禁用代理（仅对认证请求生效）
-export TQ_AUTH_NO_PROXY="1"
-#
-# 禁用 JWT 签名验证（默认开启验证；关闭后不会信任 token 内 grants）
-export TQ_AUTH_SKIP_JWT_VERIFY="1"
-#
-# HTTP 超时（秒）
-export TQ_HTTP_TIMEOUT_SECS="30"
-
-# 回测起止日期（可选，仅 backtest 示例需要）
-export TQ_START_DT="2026-01-02"
-export TQ_END_DT="2026-01-31"
-
-# SimNow 模拟账号（仅交易示例需要）
-export SIMNOW_USER_0="your_simnow_user"
-export SIMNOW_PASS_0="your_simnow_pass"
+# 期权平值/实值/虚值查询
+cargo run --example option_levels
 ```
 
 ### 示例说明
 
-| 示例文件 | 功能说明 | 适用场景 |
-|---------|---------|---------|
-| quote.rs | Quote、K线、Tick 订阅 | 学习行情订阅 |
-| history.rs | 历史数据获取 | 回测、数据分析 |
-| trade.rs | 下单、撤单、查询 | 实盘交易 |
-| backtest.rs | 回测回放 | 回测流程参考 |
-| datamanager.rs | 数据管理器高级用法 | 自定义数据处理 |
-| custom_logger.rs | 自定义日志 Layer | 日志系统集成 |
+| 示例文件 | 主要内容 | 额外环境变量 |
+|------|------|------|
+| `quote.rs` | Quote、单合约 K 线、多合约对齐 K 线、Tick | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
+| `history.rs` | 历史 K 线、接口联调、交易状态查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL` |
+| `trade.rs` | 交易回调、账户/持仓/委托/成交监听 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0` |
+| `backtest.rs` | 回测推进、区间参数、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_MAX_UPDATES`、`TQ_POSITION_SIZE` |
+| `datamanager.rs` | `watch` / `unwatch`、路径读取、epoch | 无 |
+| `custom_logger.rs` | `create_logger_layer()` 与业务日志组合 | 无 |
+| `option_levels.rs` | 平值/实值/虚值期权查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_UNDERLYING`、`TQ_LOG_LEVEL` |
+
+### 扩展环境变量配置
+
+以下变量主要用于认证、网络或特殊示例：
+
+| 变量 | 说明 |
+|------|------|
+| `TQ_AUTH_URL` | 认证服务地址，默认 `https://auth.shinnytech.com` |
+| `TQ_NS_URL` | 名称服务地址，默认 `https://api.shinnytech.com/ns` |
+| `TQ_MD_URL` | 覆盖行情服务地址 |
+| `TQ_INS_URL` | 覆盖合约信息地址 |
+| `TQ_CLIENT_ID` | OAuth 客户端 ID，默认内置 `shinny_tq` |
+| `TQ_CLIENT_SECRET` | OAuth 客户端密钥 |
+| `TQ_AUTH_PROXY` | 认证请求代理地址 |
+| `TQ_AUTH_NO_PROXY` | 设为 `1`/`true` 时禁用认证请求代理 |
+| `TQ_AUTH_VERIFY_JWT` | 设为 `1`/`true` 时启用 JWT 签名校验 |
+| `TQ_HTTP_TIMEOUT_SECS` | HTTP 超时秒数 |
+| `TQ_CHINESE_HOLIDAY_URL` | 覆盖交易日历假期数据源 |
 
 ## 技术栈
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| tokio | 1.48 | 异步运行时 |
-| yawc | 0.2.7 | WebSocket 客户端（支持 deflate 压缩） |
-| reqwest | 0.12 | HTTP 客户端 |
-| serde | 1.0 | 序列化/反序列化 |
-| serde_json | 1.0 | JSON 处理 |
-| jsonwebtoken | 10.2 | JWT 认证 |
-| thiserror | 2.0 | 错误处理 |
-| tracing | 0.1 | 结构化日志 |
-| chrono | 0.4 | 时间处理 |
-| async-channel | 2.3 | 异步通道 |
-| polars | 0.44 | 数据分析（可选） |
+| `tokio` | 1.48 | 异步运行时 |
+| `yawc` | 0.2.7 | WebSocket 客户端 |
+| `reqwest` | 0.12 | HTTP / GraphQL 请求 |
+| `serde` / `serde_json` | 1.0 | 序列化与 JSON |
+| `jsonwebtoken` | 10.2 | JWT 认证 |
+| `tracing` / `tracing-subscriber` | 0.1 / 0.3 | 日志与可观测性 |
+| `async-channel` | 2.3 | 异步通道 |
+| `chrono` | 0.4 | 时间处理 |
+| `polars` | 0.44 | 可选列式分析能力 |
 
 ## 项目结构
 
-```
+```text
 tqsdk-rs/
 ├── src/
-│   ├── lib.rs              # 库入口和模块导出
-│   ├── client.rs           # 客户端和 ClientBuilder
-│   ├── auth.rs             # 认证模块（TqAuth）
-│   ├── websocket.rs        # WebSocket 封装
-│   ├── datamanager.rs      # 数据管理器（DIFF 协议）
-│   ├── types.rs            # 数据结构定义（90+ 字段）
-│   ├── quote.rs            # Quote 订阅
-│   ├── series.rs           # Series API（K线/Tick）
-│   ├── ins.rs              # 合约查询
-│   ├── backtest.rs         # 回测支持
-│   ├── polars_ext.rs       # Polars 扩展（可选）
-│   ├── trade_session.rs    # 交易会话
-│   ├── utils.rs            # 工具函数
-│   ├── logger.rs           # 日志系统
-│   └── errors.rs           # 错误类型
+│   ├── auth/              # 认证与权限
+│   ├── backtest/          # 回测实现
+│   ├── client/            # ClientBuilder / facade / market
+│   ├── datamanager/       # DIFF 合并与 watch
+│   ├── ins/               # 合约、期权、交易状态等查询
+│   ├── quote/             # Quote 订阅
+│   ├── series/            # K 线 / Tick / 历史序列
+│   ├── trade_session/     # 交易会话
+│   ├── types/             # 公共数据结构
+│   ├── websocket/         # WebSocket 核心与背压
+│   ├── lib.rs
+│   └── prelude.rs
 ├── examples/
-│   ├── quote.rs            # 行情订阅示例
-│   ├── history.rs          # 历史数据示例
-│   ├── trade.rs            # 交易示例
-│   ├── backtest.rs         # 回测示例
-│   ├── datamanager.rs      # DataManager 示例
-│   └── custom_logger.rs    # 自定义日志示例
+│   ├── quote.rs
+│   ├── history.rs
+│   ├── trade.rs
+│   ├── backtest.rs
+│   ├── datamanager.rs
+│   ├── custom_logger.rs
+│   └── option_levels.rs
+├── docs/
 └── README.md
 ```
 
@@ -838,301 +634,174 @@ tqsdk-rs/
 
 ### DIFF 协议实现
 
-完整实现天勤 DIFF 协议，这是本项目的核心技术亮点：
-
-- **递归合并** - 支持嵌套对象的增量更新，高效处理复杂数据结构
-- **ViewWidth 限制** - 使用二分查找优化大数据集，避免内存溢出
-- **Binding 对齐** - 多合约 K线时间对齐，支持跨品种分析
-- **版本追踪** - Epoch 机制追踪每次数据变化，精确判断更新
-- **路径监听** - Watch/UnWatch 精确监听指定路径的数据变化
-- **NaN 处理** - 正确处理 NaN 和特殊值
+- 递归合并嵌套对象，减少全量重建。
+- 保留按路径读取和按路径变化判断能力。
+- 通过 epoch 追踪每轮更新，便于上层做增量处理。
 
 ### 类型安全
 
-Rust 的类型系统带来的优势：
+- Quote、Kline、Tick、Account、Order、Trade 等结构完整定义。
+- 查询与交易接口统一返回 `Result<T, TqError>`。
+- `InsertOrderRequest` 等结构体接口比旧版字符串参数更稳定。
 
-- **90+ 字段的强类型定义** - Quote、Kline、Tick、Account 等完整定义
-- **编译时类型检查** - 消除大量运行时错误
-- **泛型和 trait 抽象** - Authenticator trait 支持自定义认证
-- **Result 类型统一错误处理** - 强制错误处理，避免遗漏
+### 并发与背压
 
-### 并发安全
-
-多线程环境下的安全保证：
-
-- **Arc + RwLock** - 保证线程安全的共享数据访问
-- **async-channel** - 异步通信，支持多生产者多消费者
-- **AtomicI64** - 原子操作优化性能（Epoch 版本号）
-- **无数据竞争** - 编译时保证，无需运行时检查
+- 共享状态主要通过 `Arc` 与锁保护。
+- Quote、TradingStatus、Series stream、WebSocket 离线发送使用有界队列。
+- 背压策略优先限制内存占用；当消费者过慢时，部分更新会被丢弃并记录日志。
 
 ### 灵活接口
 
-支持三种数据订阅方式，满足不同场景需求：
-
-1. **Channel** - 使用 async-channel，支持多个订阅者，适合多任务处理
-2. **Callback** - 注册回调函数，异步触发，适合事件驱动（**零拷贝优化**）
-3. **Stream** - 使用 async-stream，支持流式处理，适合函数式编程
+- Quote：回调 + Channel。
+- Series：回调 + `data_stream()`。
+- TradeSession：回调 + 主动查询。
 
 ### 零拷贝回调设计
 
-所有回调函数使用 `Arc<T>` 参数，避免数据深拷贝：
-
 ```rust
-// Quote 回调：Arc<Quote>
 quote_sub.on_quote(|quote| {
-    // quote 是 Arc<Quote>，多个回调共享同一份数据
-    println!("最新价: {}", quote.last_price);
+    println!("{}", quote.last_price);
 }).await;
 
-// Series 回调：Arc<SeriesData>, Arc<UpdateInfo>
 series_sub.on_update(|data, info| {
-    // data 和 info 都是 Arc 包装的，零拷贝！
     if info.has_new_bar {
-        println!("新K线");
+        println!("新 K 线");
     }
 }).await;
 ```
 
-**性能优势**:
-- 多回调场景下内存节省 50-90%
-- 克隆性能提升 500-1000x（只克隆 8 字节指针）
-- 线程安全的数据共享
-
-**详细文档**: 查看 docs.rs 上的 API 文档（`quote` / `series` 模块）。
-
-### 零成本抽象
-
-Rust 的零成本抽象理念：
-
-- **编译时优化** - 泛型和 trait 在编译时展开，无运行时开销
-- **无 GC 压力** - 所有权系统管理内存，无垃圾回收停顿
-- **内联优化** - 小函数自动内联，减少函数调用开销
+回调参数大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。
 
 ## 最佳实践
 
-### 1. 延迟启动模式（强烈推荐）
-
-避免竞态条件，确保不丢失初始数据：
+### 1. 延迟启动模式
 
 ```rust
-// 推荐：先注册回调，再启动
-let sub = series_api.kline("SHFE.au2602", Duration::from_secs(60), 100).await?;
+let sub = series_api
+    .kline("SHFE.au2602", std::time::Duration::from_secs(60), 100)
+    .await?;
 
-// 先注册所有回调
 sub.on_update(|data, info| {
-    // 处理数据更新
+    println!("收到更新: has_new_bar={}", info.has_new_bar);
 }).await;
 
-sub.on_new_bar(|data| {
-    // 处理新 K线
-}).await;
-
-// 最后启动订阅
 sub.start().await?;
-
-// 不推荐：启动后再注册回调（可能丢失初始数据）
-// sub.start().await?;
-// sub.on_update(...).await;  // 可能错过初始数据
 ```
 
-### 2. 错误处理
+不推荐先 `start()` 再注册回调，否则初始化阶段可能错过首批数据。
 
-使用 Result 类型和模式匹配处理错误：
+### 2. 背压与慢消费者
+
+- 如果只是做实时展示，允许通道丢弃旧更新通常比无限堆积更安全。
+- 如果你需要尽量保留更多更新，可以提高 `message_queue_capacity()`。
+- 如果你需要严格串行处理，优先使用单一消费路径，不要同时堆叠太多慢回调。
+
+### 3. 错误处理
 
 ```rust
-use tqsdk_rs::{Result, TqError};
-
-async fn my_function() -> Result<()> {
-    // 创建客户端
-    let mut client = Client::new("user", "pass", ClientConfig::default()).await?;
-    
-    // 订阅行情（带错误处理）
-    match client.subscribe_quote(&["SHFE.au2602"]).await {
-        Ok(sub) => {
-            println!("订阅成功");
-            sub.start().await?;
-        }
-        Err(TqError::PermissionDenied(msg)) => {
-            eprintln!("权限不足: {}", msg);
-            return Err(TqError::PermissionDenied(msg));
-        }
-        Err(TqError::NetworkError(msg)) => {
-            eprintln!("网络错误: {}", msg);
-            return Err(TqError::NetworkError(msg));
-        }
-        Err(e) => {
-            eprintln!("其他错误: {}", e);
-            return Err(e);
-        }
+match client.subscribe_quote(&["SHFE.au2602"]).await {
+    Ok(sub) => {
+        sub.start().await?;
     }
-    
-    Ok(())
+    Err(err) => {
+        eprintln!("订阅失败: {}", err);
+    }
 }
 ```
 
-### 3. 资源清理
-
-及时释放资源，避免内存泄漏：
-
-```rust
-// 使用完毕后关闭资源
-quote_sub.close().await?;
-series_sub.close().await?;
-session.close().await?;
-client.close().await?;
-
-// 或使用 RAII 模式（推荐）
-{
-    let mut client = Client::new("user", "pass", ClientConfig::default()).await?;
-    // 使用 client
-    // 离开作用域时自动清理
-}
-```
+对权限、网络、超时和数据缺失类错误建议显式处理，不要统一吞掉。
 
 ### 4. 日志配置
 
-合理配置日志级别，便于调试。支持本地时区显示和 Layer 组合：
-
 ```rust
-use tqsdk_rs::{init_logger, create_logger_layer};
+use tqsdk_rs::{create_logger_layer, init_logger};
 
-// 方式 1: 快速初始化（简单场景）
-init_logger("debug", false);  // 级别: trace, debug, info, warn, error
+init_logger("debug", false);
 
-// 方式 2: 使用 ClientBuilder（推荐）
-let client = Client::builder("user", "pass")
-    .log_level("debug")      // 开发时使用 debug
-    .build()
-    .await?;
-
-// 方式 3: Layer 组合（高级场景）
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-let tqsdk_layer = create_logger_layer("debug", false);
-// 可以与业务层的其他 Layer 组合
-tracing_subscriber::registry()
-    .with(tqsdk_layer)
-    // .with(your_custom_layer)
-    .init();
-
-// 生产环境建议使用 info 或 warn
-let client = Client::builder("user", "pass")
-    .log_level("info")
-    .build()
-    .await?;
+let layer = create_logger_layer("info", false);
 ```
 
-**日志特性**:
-- 自动使用本地时区（如 `2024-11-26T10:30:45.123+08:00`）
-- 支持 Layer 组合，可与业务日志集成
-- 详细的源文件和行号信息
-
-**详细文档**: 查看 docs.rs 上的 API 文档（`logger` 模块）。
+- 开发阶段建议 `debug`。
+- 线上长期运行建议 `info` 或 `warn`。
+- 如果要与业务日志系统合并，优先使用 `create_logger_layer()`。
 
 ### 5. 合约代码格式
 
-使用完整的合约代码格式：
+始终使用完整合约代码：
 
 ```rust
-// 正确：使用完整格式
-"SHFE.au2602"   // 上期所黄金
-"DCE.m2505"     // 大商所豆粕
-"CZCE.SR505"    // 郑商所白糖
-
-// 错误：不完整的格式
-"au2602"        // 缺少交易所
-"SHFE.au"       // 缺少月份
+"SHFE.au2602"
+"DCE.m2505"
+"CZCE.SR505"
 ```
 
-### 6. ViewWidth 设置
+避免省略交易所前缀或交割合约月份。
 
-合理设置 ViewWidth，避免内存浪费：
+### 6. ViewWidth 与队列容量
 
-```rust
-// 实时监控：较小的 ViewWidth
-let sub = series_api.kline("SHFE.au2602", Duration::from_secs(60), 100).await?;
-
-// 数据分析：较大的 ViewWidth
-let sub = series_api.kline("SHFE.au2602", Duration::from_secs(60), 5000).await?;
-
-// 注意：最大 10000，超过会自动调整
-let sub = series_api.kline("SHFE.au2602", Duration::from_secs(60), 15000).await?;
-// 实际会被调整为 10000
-```
+- `view_width` 决定本地维护的序列窗口大小。
+- `message_queue_capacity` 决定 Quote / Series stream / 离线发送等缓冲上限。
+- 实时策略通常不需要盲目拉大这两个值，先按默认值运行，再按吞吐瓶颈调优。
 
 ## 与 Go 版本对比
 
-| 维度 | Go 版本 | Rust 版本 | 说明 |
-|------|---------|-----------|------|
-| 代码行数 | ~8,000 | ~4,900 | Rust 更简洁 |
-| 类型安全 | 弱类型 | 强类型 | Rust 优势 |
-| 内存安全 | GC | 所有权 | Rust 优势 |
-| 并发安全 | 运行时检查 | 编译时检查 | Rust 优势 |
-| 性能 | 高 | 更高 | Rust 优势 |
-| 零拷贝 | 部分支持 | **Arc 优化** | **Rust 优势** |
-| 错误处理 | error | Result<T> | Rust 优势 |
-| 数据分析 | 需第三方库 | **Polars 集成** | **Rust 优势** |
-| 学习曲线 | 低 | 中高 | Go 优势 |
-| 开发速度 | 快 | 中 | Go 略优 |
+| 维度 | Go 版本 | Rust 版本 |
+|------|---------|-----------|
+| 类型安全 | 较弱 | 更强 |
+| 内存安全 | GC | 所有权系统 |
+| 并发正确性 | 依赖运行时约束 | 更多在编译期发现 |
+| 背压控制 | 需自行约束 | 当前版本已内建更多有界队列 |
+| 数据分析扩展 | 借助第三方库 | 可选 `polars` feature |
 
 ## 注意事项
 
 ### 重要提示
 
-1. **合约代码格式** - 必须使用完整的合约代码格式，如 `SHFE.au2602`（交易所.合约代码）
-2. **延迟启动模式** - 强烈推荐使用延迟启动模式，先注册回调再调用 `start()`，避免竞态条件
-3. **资源释放** - 使用完毕后记得调用 `close()` 释放资源，避免连接泄漏
-4. **权限检查** - 订阅前会自动检查权限，确保账号有相应的行情或交易权限
-5. **ViewWidth 限制** - 最大值为 10000，超过会自动调整为 10000
+1. 合约代码必须使用完整格式，如 `SHFE.au2602`。
+2. 先注册回调，再 `start()` 或 `connect()`。
+3. `on_update()` 只有一个槽位；如需额外消费，请使用 `data_stream()` 或自行转发。
+4. 通道和流式接口已采用有界缓冲；如果你观察到丢更新日志，优先检查消费者速度和队列容量。
+5. 交易示例会访问真实交易接口，请优先使用模拟环境验证。
 
 ### 常见问题
 
 **Q: 为什么收不到数据？**
-- 检查是否调用了 `start()` 方法
-- 确认回调是在 `start()` 之前注册
-- 检查合约代码格式是否正确
-- 确认账号有相应权限
 
-**Q: 如何处理网络断开？**
-- WebSocket 会自动重连
-- TradeSession 支持自动重连
-- 重连后会自动恢复订阅
+- 检查是否已调用 `start()`。
+- 检查回调是否在 `start()` 之前注册。
+- 检查合约代码格式和账户权限。
 
-**Q: 多合约订阅如何优化？**
-- 使用单个 `subscribe_quote()` 订阅多个合约
-- 避免为每个合约创建单独的订阅
-- 合理设置 ViewWidth，避免内存浪费
+**Q: 为什么看到“通道已满，丢弃一次更新”？**
 
-**Q: 如何调试？**
-- 设置日志级别为 `debug` 或 `trace`
-- 使用 `RUST_LOG` 环境变量：`RUST_LOG=tqsdk_rs=debug cargo run`
-- 检查 WebSocket 连接状态
-- 日志自动显示本地时区，便于调试
+- 说明当前消费者处理速度跟不上生产速度。
+- 提高 `message_queue_capacity()`，或减少回调/通道里的阻塞操作。
 
-**Q: 如何集成业务层日志？**
-- 使用 `create_logger_layer()` 获取 tqsdk-rs 的 Layer
-- 与业务层的其他 Layer 组合
-- 详见 [LOGGER_GUIDE.md](./tqsdk-rs/LOGGER_GUIDE.md)
+**Q: `data_stream()` 会覆盖 `on_update()` 吗？**
 
+- 不会。当前版本两者可以同时工作。
+- 但 `on_update()` 仍然只有一个回调槽位，后注册会覆盖先注册。
+
+**Q: 如何调试网络或权限问题？**
+
+- 将日志级别切到 `debug`。
+- 先运行 `cargo run --example history` 验证认证、GraphQL 和交易状态接口。
+- 单独检查账号是否有目标合约和扩展数据权限。
 
 ### 报告问题
 
-如果发现 Bug 或有功能建议，请提交 [GitHub Issue](https://github.com/pseudocodes/tqsdk-rs/issues)。
+如果发现 Bug 或需要补充接口，请提交 [GitHub Issue](https://github.com/pseudocodes/tqsdk-rs/issues)。
 
 ## 许可证
 
-本项目采用 Apache License 2.0 许可证 - 详见 [LICENSE](LICENSE) 文件
-
+本项目采用 Apache License 2.0，详见 [LICENSE](LICENSE)。
 
 ## 相关项目
 
-- [tqsdk-go](https://github.com/pseudocodes/tqsdk-go) - Go 语言版本
-- [tqsdk-python](https://github.com/shinnytech/tqsdk-python) - Python 官方版本
+- [tqsdk-go](https://github.com/pseudocodes/tqsdk-go)
+- [tqsdk-python](https://github.com/shinnytech/tqsdk-python)
 
 ## 免责声明
 
-**重要提示：本项目仅供学习和研究使用。**
+本项目仅供学习和研究使用。
 
-本项目明确拒绝对产品做任何明示或暗示的担保。使用本项目进行交易和投资的一切风险由使用者自行承担。期货交易具有高风险，可能导致本金全部损失，请谨慎投资。
-
-作者和贡献者不对使用本软件造成的任何直接或间接损失承担责任。
+作者和贡献者不对使用本软件进行交易、投资或其他操作造成的任何直接或间接损失承担责任。期货和期权交易具有高风险，使用前请确认你已理解相关规则与风险。

@@ -187,12 +187,14 @@ impl TradeSession {
             self.running.store(false, Ordering::SeqCst);
             self.logged_in.store(false, Ordering::SeqCst);
             self.detach_data_callback();
+            let _ = self.ws.close().await;
             return Err(e);
         }
         if let Err(e) = self.send_confirm_settlement().await {
             self.running.store(false, Ordering::SeqCst);
             self.logged_in.store(false, Ordering::SeqCst);
             self.detach_data_callback();
+            let _ = self.ws.close().await;
             return Err(e);
         }
 

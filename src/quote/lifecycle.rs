@@ -1,6 +1,6 @@
 use super::QuoteSubscription;
 use crate::errors::Result;
-use async_channel::{Receiver, unbounded};
+use async_channel::{Receiver, bounded};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -14,7 +14,7 @@ impl QuoteSubscription {
         initial_symbols: Vec<String>,
     ) -> Self {
         let symbols: HashSet<String> = initial_symbols.into_iter().collect();
-        let (quote_tx, quote_rx) = unbounded();
+        let (quote_tx, quote_rx) = bounded(ws.message_queue_capacity());
 
         QuoteSubscription {
             id: Uuid::new_v4().to_string(),

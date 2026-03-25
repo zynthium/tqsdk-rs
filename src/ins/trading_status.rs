@@ -1,10 +1,11 @@
 use super::InsAPI;
 use crate::errors::{Result, TqError};
 use crate::types::TradingStatus;
-use async_channel::{Receiver, unbounded};
+use async_channel::{Receiver, TrySendError, bounded};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::warn;
 
 impl InsAPI {
     /// 订阅合约交易状态
@@ -73,7 +74,7 @@ impl InsAPI {
             ws.send(&req).await?;
         }
 
-        let (tx, rx) = unbounded();
+        let (tx, rx) = bounded(ws.message_queue_capacity());
         let dm = Arc::clone(&self.dm);
         let symbol_string = symbol.to_string();
         let watch_path = vec!["trading_status".to_string(), symbol_string.clone()];
@@ -81,10 +82,17 @@ impl InsAPI {
         tokio::spawn(async move {
             if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
                 && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
-                && tx.send(status).await.is_err()
             {
-                let _ = dm.unwatch_by_id(&watch_path, watch_id);
-                return;
+                match tx.try_send(status) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(_)) => {
+                        warn!("交易状态通道已满，丢弃一次更新");
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        let _ = dm.unwatch_by_id(&watch_path, watch_id);
+                        return;
+                    }
+                }
             }
             loop {
                 if watch.recv().await.is_err() {
@@ -92,9 +100,14 @@ impl InsAPI {
                 }
                 if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
                     && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
-                    && tx.send(status).await.is_err()
                 {
-                    break;
+                    match tx.try_send(status) {
+                        Ok(()) => {}
+                        Err(TrySendError::Full(_)) => {
+                            warn!("交易状态通道已满，丢弃一次更新");
+                        }
+                        Err(TrySendError::Closed(_)) => break,
+                    }
                 }
             }
             let _ = dm.unwatch_by_id(&watch_path, watch_id);
