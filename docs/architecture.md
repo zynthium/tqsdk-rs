@@ -1,0 +1,91 @@
+# 架构说明
+
+本文档提供 `tqsdk-rs` 的模块视图与职责速查，方便在阅读代码、评估变更影响或设计新能力时快速建立全局认识。
+
+如果你是要在仓库里执行修改，请优先阅读根目录的 [AGENTS.md](../AGENTS.md)；它包含更适合 agent 执行的验证、边界与提交流程要求。
+
+## 总体分层
+
+```text
+Client (facade + builder + market)
+├── auth/          认证 (Authenticator trait → TqAuth)
+│   ├── core       TqAuth 实现 (登录/token 刷新)
+│   ├── token      JWT 解析
+│   └── permissions 权限检查
+├── websocket/     WebSocket 连接层
+│   ├── core       TqWebsocket 基类 (I/O actor 模式)
+│   ├── quote      TqQuoteWebsocket (行情通道)
+│   ├── trade      TqTradeWebsocket (交易通道)
+│   ├── trading_status  TqTradingStatusWebsocket
+│   ├── backpressure    消息背压 + rtn_data 合并
+│   ├── reconnect       重连逻辑 + 数据完整性校验
+│   └── message         通知构建 + 日志脱敏
+├── datamanager/   DIFF 协议数据管理
+│   ├── core       创建 + 回调注册
+│   ├── merge      递归合并 (prototype 语义)
+│   ├── query      路径查询 + 数据转换
+│   └── watch      路径监听
+├── quote/         Quote 订阅 (回调 + channel 双模式)
+│   ├── lifecycle  订阅生命周期 (start/stop)
+│   └── watch      数据变更监听
+├── series/        K线/Tick 订阅 (单合约 + 多合约对齐)
+│   ├── api        SeriesAPI (K线/Tick 请求)
+│   ├── subscription 订阅管理
+│   └── processing   数据处理
+├── ins/           合约查询与基础数据
+│   ├── query      GraphQL 查询 + 合约列表/期权筛选
+│   ├── services   结算价/持仓排名/EDB/交易日历 (HTTP)
+│   ├── trading_status 交易状态订阅
+│   ├── parse      查询结果解析
+│   └── validation 参数校验 + 缓存匹配
+├── trade_session/ 交易会话
+│   ├── core       创建 + 登录 + 回调注册
+│   ├── ops        下单/撤单/查询持仓/账户/成交
+│   └── watch      数据变更监听 (DM → channel/callback)
+├── backtest/      回测控制
+│   ├── core       初始化 + 时间推进 + 事件分发
+│   └── parsing    回测时间状态解析
+├── polars_ext/    Polars DataFrame 转换 (可选 feature)
+│   ├── kline      KlineBuffer (K线 → DataFrame)
+│   ├── tick       TickBuffer (Tick → DataFrame)
+│   ├── tabular    EdbBuffer / RankingBuffer / SettlementBuffer
+│   └── series     SeriesData → DataFrame 转换
+├── types/         数据结构 (market/trading/series/query/helpers)
+├── prelude        便捷 re-export (常用类型一次导入)
+├── errors         TqError 枚举
+├── logger         tracing 日志初始化
+└── utils          HTTP 下载 / 时间转换 / 合约解析
+```
+
+## 模块职责速查
+
+| 模块 | 入口类型 | 职责 |
+|------|---------|------|
+| `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期 |
+| `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析、权限检查 |
+| `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
+| `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
+| `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
+| `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
+| `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
+| `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
+| `backtest` | `BacktestHandle`, `BacktestConfig`, `BacktestEvent`, `BacktestTime` | 回测时间推进与事件 |
+| `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
+| `prelude` | — | 便捷 re-export |
+
+## 关键设计模式
+
+- I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
+- DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询。
+- 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
+- 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
+- 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
+
+## 阅读建议
+
+- 想理解外部 API：先看 `src/lib.rs`、`src/client.rs`、`src/client/`
+- 想理解状态模型：看 `src/datamanager/`
+- 想理解实时链路：看 `src/websocket/`、`src/quote/`、`src/series/`
+- 想理解查询接口：看 `src/ins/`
+- 想理解交易链路：看 `src/trade_session/`
+- 想理解可选分析能力：看 `src/polars_ext/`

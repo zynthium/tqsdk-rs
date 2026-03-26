@@ -2,102 +2,185 @@
 
 ## 项目概述
 
-天勤 DIFF 协议的 Rust SDK，连接 Shinnytech 量化交易平台。支持实时行情订阅（Quote/K线/Tick）、历史数据获取、实盘/模拟交易、回测。
+`tqsdk-rs` 是天勤 DIFF 协议的 Rust SDK，连接 Shinnytech 量化交易平台，提供以下能力：
+
+- 实时行情订阅：Quote、K 线、Tick、交易状态
+- 历史与基础数据：合约查询、结算价、持仓排名、EDB、交易日历
+- 交易与回测：实盘/模拟交易、回测时间推进
+- 可选数据分析：`polars` DataFrame 转换
+
+这是一个单 crate Rust 项目，不是 workspace。主入口在 `src/lib.rs`。
 
 ## 技术栈
 
 - Rust 2024 edition
-- 异步运行时: tokio (full features)
-- WebSocket: yawc (zlib deflate)
-- HTTP: reqwest (gzip/brotli/stream)
-- JSON: serde + serde_json
-- JWT: jsonwebtoken (insecure decode)
-- 日志: tracing + tracing-subscriber
-- 错误处理: thiserror
-- 可选: polars (数据分析)
+- `tokio` 异步运行时
+- `yawc` WebSocket
+- `reqwest` HTTP
+- `serde` / `serde_json`
+- `jsonwebtoken`
+- `tracing` / `tracing-subscriber`
+- `thiserror`
+- 可选 feature：`polars`
 
-## 架构
+## 目录与职责
 
-```
-Client (facade + builder + market)
-├── auth/          认证 (Authenticator trait → TqAuth)
-│   ├── core       TqAuth 实现 (登录/token 刷新)
-│   ├── token      JWT 解析 (insecure decode)
-│   └── permissions 权限检查
-├── websocket/     WebSocket 连接层
-│   ├── core       TqWebsocket 基类 (I/O actor 模式)
-│   ├── quote      TqQuoteWebsocket (行情通道)
-│   ├── trade      TqTradeWebsocket (交易通道)
-│   ├── trading_status  TqTradingStatusWebsocket
-│   ├── backpressure    消息背压 + rtn_data 合并
-│   ├── reconnect       重连逻辑 + 数据完整性校验
-│   └── message         通知构建 + 日志脱敏
-├── datamanager/   DIFF 协议数据管理
-│   ├── core       创建 + 回调注册
-│   ├── merge      递归合并 (prototype 语义)
-│   ├── query      路径查询 + 数据转换
-│   └── watch      路径监听 (async_channel)
-├── quote/         Quote 订阅 (回调 + channel 双模式)
-│   ├── lifecycle  订阅生命周期 (start/stop)
-│   └── watch      数据变更监听
-├── series/        K线/Tick 订阅 (单合约 + 多合约对齐)
-│   ├── api        SeriesAPI (K线/Tick 请求)
-│   ├── subscription 订阅管理
-│   └── processing   数据处理
-├── ins/           合约查询与基础数据
-│   ├── query      GraphQL 查询 + 合约列表/期权筛选
-│   ├── services   结算价/持仓排名/EDB/交易日历 (HTTP)
-│   ├── trading_status 交易状态订阅
-│   ├── parse      查询结果解析
-│   └── validation 参数校验 + 缓存匹配
-├── trade_session/ 交易会话
-│   ├── core       创建 + 登录 + 回调注册
-│   ├── ops        下单/撤单/查询持仓/账户/成交
-│   └── watch      数据变更监听 (DM → channel/callback)
-├── backtest/      回测控制
-│   ├── core       初始化 + 时间推进 + 事件分发
-│   └── parsing    回测时间状态解析
-├── polars_ext/    Polars DataFrame 转换 (可选 feature)
-│   ├── kline      KlineBuffer (K线 → DataFrame)
-│   ├── tick       TickBuffer (Tick → DataFrame)
-│   ├── tabular    EdbBuffer / RankingBuffer / SettlementBuffer
-│   └── series     SeriesData → DataFrame 转换
-├── types/         数据结构 (market/trading/series/query/helpers)
-├── prelude        便捷 re-export (常用类型一次导入)
-├── errors         TqError 枚举 (thiserror)
-├── logger         tracing 日志初始化
-└── utils          HTTP 下载 / 时间转换 / 合约解析
+```text
+src/
+├── auth/           认证、token、权限检查
+├── websocket/      WebSocket 连接、背压、重连、消息分发
+├── datamanager/    DIFF 合并、查询、监听
+├── quote/          行情订阅
+├── series/         K 线/Tick 订阅与处理
+├── ins/            合约与基础数据查询
+├── trade_session/  交易会话与交易操作
+├── backtest/       回测控制
+├── polars_ext/     DataFrame 转换（feature = "polars"）
+├── types/          各类数据结构
+├── prelude.rs      常用 re-export
+├── logger.rs       日志初始化
+├── errors.rs       错误类型
+└── utils.rs        通用工具
+
+examples/
+├── quote.rs
+├── history.rs
+├── trade.rs
+├── backtest.rs
+├── datamanager.rs
+├── option_levels.rs
+└── custom_logger.rs
 ```
 
-## 关键设计模式
+## 核心架构提示
 
-- **I/O Actor**: WebSocket 读写通过单所有者 actor 隔离，避免跨 await 持锁
-- **背压队列**: 消息处理慢时 backlog 缓冲 + rtn_data 合并 + 有界丢弃
-- **DIFF 合并**: 递归 merge 支持 prototype 语义 (`*`/`@`/`#` 分支)、reduce_diff、persist
-- **延迟启动**: QuoteSubscription/SeriesSubscription 创建后需显式 `start()` 才开始接收
-- **重连完整性**: 重连时用临时 DataManager 缓冲数据，校验完整后一次性合并到主 DM
+- `Client` / `ClientBuilder` 是统一入口，优先从这里开始理解调用路径。
+- WebSocket 层使用 I/O actor 模式，避免跨 `await` 持锁。
+- `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
+- `QuoteSubscription` 和 `SeriesSubscription` 默认是延迟启动的，创建后需要显式 `start()`。
+- 重连逻辑包含完整性校验，不要为了“简化”而破坏临时缓冲再合并的策略。
+- 多个通道已改为有界缓冲，慢消费者下允许丢弃旧更新，这是刻意设计，不是 bug。
 
-## 构建与测试
+## 环境准备
 
-```bash
-cargo build                    # 构建
-cargo test                     # 运行测试 (79 unit + 9 doctests)
-cargo clippy                   # lint (0 warnings)
-cargo build --features polars  # 含 polars 扩展
-```
+### 本地开发
 
-## 模块职责速查
+- 构建：`cargo build`
+- 运行测试：`cargo test`
+- 严格 lint：`cargo clippy --all-targets --all-features -- -D warnings`
+- 检查格式：`cargo fmt --check`
+- 启用 Polars：`cargo build --features polars`
 
-| 模块 | 入口类型 | 职责 |
-|------|---------|------|
-| `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期 |
-| `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析、权限检查 |
-| `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
-| `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
-| `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
-| `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
-| `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
-| `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
-| `backtest` | `BacktestHandle`, `BacktestConfig`, `BacktestEvent`, `BacktestTime` | 回测时间推进与事件 |
-| `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
-| `prelude` | — | 便捷 re-export |
+### 常用环境变量
+
+这些变量只在需要联网、登录或运行示例时才需要：
+
+| 变量 | 用途 |
+|------|------|
+| `TQ_AUTH_USER` | 天勤账号 |
+| `TQ_AUTH_PASS` | 天勤密码 |
+| `TQ_LOG_LEVEL` | 示例中的日志级别 |
+| `TQ_TEST_SYMBOL` | live 查询示例/测试使用的合约 |
+| `TQ_START_DT` | `backtest` 示例起始日期 |
+| `TQ_END_DT` | `backtest` 示例结束日期 |
+| `SIMNOW_USER_0` | `trade` 示例的 SimNow 账号 |
+| `SIMNOW_PASS_0` | `trade` 示例的 SimNow 密码 |
+| `TQ_UNDERLYING` | `option_levels` 示例的标的合约 |
+
+还有少量高级环境变量会覆盖默认服务地址或 HTTP 行为，例如 `TQ_AUTH_URL`、`TQ_NS_URL`、`TQ_INS_URL`、`TQ_HTTP_TIMEOUT_SECS`。只有在排查网络、联调代理、切换服务端点时才应修改。
+
+## 验证策略
+
+按改动范围选择验证，不要机械地只跑一条命令。
+
+### 安全的本地验证
+
+这些命令不应触达真实交易：
+
+- `cargo fmt --check`
+- `cargo test`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo build --features polars`
+
+### 建议的最小验证矩阵
+
+- 只改文档：检查改动内容是否与仓库现状一致
+- 只改纯逻辑模块：`cargo test`
+- 改公开 API、trait、类型定义、模块导出：`cargo test` + `cargo clippy --all-targets --all-features -- -D warnings`
+- 改 `polars_ext/`：额外运行 `cargo build --features polars`
+- 改示例：至少运行 `cargo check --examples`
+- 改 `websocket/`、`datamanager/`、`quote/`、`series/`、`trade_session/` 这类核心链路：优先补/改对应单元测试，再跑完整 `cargo test`
+
+### 联网 / live 验证
+
+以下内容可能联网，甚至接近真实交易环境：
+
+- 被 `#[ignore]` 标记的 live 测试，尤其是 `src/ins/tests.rs` 中依赖 `TQ_AUTH_USER` / `TQ_AUTH_PASS` 的测试
+- `cargo run --example history`
+- `cargo run --example quote`
+- `cargo run --example option_levels`
+- `cargo run --example backtest`
+- `cargo run --example trade`
+
+执行原则：
+
+- 未经明确授权，不要运行 live 测试或任何需要账号的示例。
+- 未经明确授权，不要运行 `trade` 示例。
+- 即使是模拟盘，也视为高风险外部操作。
+- 如果只是验证编译，请优先使用 `cargo check --examples`，不要直接运行示例。
+
+## 修改代码时的工作准则
+
+- 优先保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
+- 修改公开 API 时，同时检查 `README.md`、示例代码、`prelude` re-export 是否需要同步。
+- 修改 `DataManager` merge/query/watch 语义时，要特别关注向后兼容性；这部分会影响多个上层模块。
+- 修改重连、背压、消息队列时，要明确说明是否改变了丢弃策略、顺序语义或完整性保证。
+- 新增错误类型时，优先复用 `TqError`，保持错误边界集中。
+- 示例代码是对外接口的一部分；如果 API 变了，示例必须同步更新。
+
+## 测试与示例约定
+
+- 单元测试主要分布在对应模块目录和 `src/*/tests.rs`。
+- 部分 `ins` 相关测试是 live 测试，默认被 `#[ignore]` 跳过。
+- `examples/history.rs` 会创建 `logs/` 目录；不要把这类产物加入版本控制。
+- 示例默认以“可读、可演示”为目标，不要为局部技巧牺牲 API 清晰度。
+
+## 安全边界
+
+- 不要在代码、测试、示例、文档中硬编码真实账号、密码、token 或服务器地址凭据。
+- 不要提交本地联调凭据或日志产物。
+- 不要擅自修改默认服务端点、认证流程或权限检查逻辑，除非任务明确要求。
+- 不要因为方便调试而绕过权限检查、重连完整性校验或背压边界。
+
+## 提交前检查
+
+除非任务明确仅修改文档，否则提交前至少确认：
+
+- `cargo test`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+
+有以下情况时追加检查：
+
+- 涉及格式化或宏展开相关改动：`cargo fmt --check`
+- 涉及 `polars_ext/`：`cargo build --features polars`
+- 涉及示例或 README 中的命令：至少确认命令与当前代码一致
+
+## 给 Agent 的建议阅读顺序
+
+当任务不明确时，按这个顺序建立上下文：
+
+1. `README.md`
+2. `Cargo.toml`
+3. `src/lib.rs`
+4. 与任务直接相关的模块
+5. 对应模块的测试
+6. 相关示例
+
+如果任务涉及变更 API 或架构，先检查 README、示例和测试是否会一起受影响，再开始修改。
+
+## 附录：架构速查
+
+详细架构说明已抽出到 [docs/architecture.md](docs/architecture.md)。
+
+当你需要快速判断模块边界、调用层级、关键设计模式或某个改动的影响面时，直接阅读这份文档。
+当它与上面的可执行规则冲突时，以上面的操作规范为准。
