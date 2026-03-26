@@ -134,7 +134,7 @@ impl TickBuffer {
             return Err(TqError::Other("Tick缓冲区为空".to_string()));
         }
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(self.ids.len(), vec![
             Column::new("id".into(), &self.ids),
             Column::new("datetime".into(), &self.datetimes),
             Column::new("last_price".into(), &self.last_prices),
@@ -163,7 +163,7 @@ impl TickBuffer {
         let len = self.ids.len();
         let start = len.saturating_sub(n);
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(len - start, vec![
             Column::new("id".into(), &self.ids[start..]),
             Column::new("datetime".into(), &self.datetimes[start..]),
             Column::new("last_price".into(), &self.last_prices[start..]),

@@ -113,7 +113,7 @@ impl KlineBuffer {
             return Err(TqError::Other("K线缓冲区为空".to_string()));
         }
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(self.ids.len(), vec![
             Column::new("id".into(), &self.ids),
             Column::new("datetime".into(), &self.datetimes),
             Column::new("open".into(), &self.opens),
@@ -138,7 +138,7 @@ impl KlineBuffer {
         let len = self.ids.len();
         let start = len.saturating_sub(n);
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(len - start, vec![
             Column::new("id".into(), &self.ids[start..]),
             Column::new("datetime".into(), &self.datetimes[start..]),
             Column::new("open".into(), &self.opens[start..]),
@@ -163,7 +163,7 @@ impl KlineBuffer {
         let len = self.ids.len();
         let end = if n >= len { len } else { n };
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(end, vec![
             Column::new("id".into(), &self.ids[..end]),
             Column::new("datetime".into(), &self.datetimes[..end]),
             Column::new("open".into(), &self.opens[..end]),
@@ -195,7 +195,7 @@ impl KlineBuffer {
 
         let end = std::cmp::min(start + length, len);
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(end - start, vec![
             Column::new("id".into(), &self.ids[start..end]),
             Column::new("datetime".into(), &self.datetimes[start..end]),
             Column::new("open".into(), &self.opens[start..end]),

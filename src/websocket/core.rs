@@ -15,7 +15,8 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify, oneshot};
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
-use yawc::frame::{FrameView, OpCode};
+use yawc::frame::{Frame, OpCode};
+use yawc::TcpWebSocket;
 
 const DEFAULT_MESSAGE_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_MESSAGE_BACKLOG_WARN_STEP: usize = 1024;
@@ -674,7 +675,7 @@ impl TqWebsocket {
         *self.on_error.write().unwrap() = Some(Arc::new(callback));
     }
 
-    fn install_io_actor(&self, ws: yawc::WebSocket, connection_id: u64) {
+    fn install_io_actor(&self, ws: TcpWebSocket, connection_id: u64) {
         let capacity = self.config.message_queue_capacity.max(1);
         let (tx, rx) = tokio::sync::mpsc::channel::<WsIoCommand>(capacity);
         let close_notify = Arc::new(Notify::new());
@@ -811,7 +812,7 @@ impl TqWebsocket {
 }
 
 async fn ws_io_actor_loop(
-    mut ws: yawc::WebSocket,
+    mut ws: TcpWebSocket,
     mut cmd_rx: tokio::sync::mpsc::Receiver<WsIoCommand>,
     close_notify: Arc<Notify>,
     ctx: WsActorContext,
@@ -850,7 +851,7 @@ async fn ws_io_actor_loop(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     Some(WsIoCommand::SendText { payload, resp }) => {
-                        let frame = FrameView::text(payload.into_bytes());
+                        let frame = Frame::text(payload.into_bytes());
                         match ws.send(frame).await {
                             Ok(()) => {
                                 let _ = resp.send(Ok(()));
@@ -925,11 +926,11 @@ async fn ws_io_actor_loop(
                             ctx.clear_pending_peek();
                         }
 
-                        match frame.opcode {
+                        match frame.opcode() {
                             OpCode::Text | OpCode::Binary => {
-                                match serde_json::from_slice::<Value>(&frame.payload) {
+                                match serde_json::from_slice::<Value>(frame.payload()) {
                                     Ok(json_value) => {
-                                        let text = String::from_utf8_lossy(&frame.payload);
+                                        let text = String::from_utf8_lossy(frame.payload());
                                         debug!("WebSocket Recv Text: {}", text);
                                         debug!(pack = %text, "websocket received data");
                                         let callback = ctx.on_message.read().unwrap().clone();
@@ -941,7 +942,7 @@ async fn ws_io_actor_loop(
                                         warn!(
                                             "解析 JSON 失败: {}, payload={}",
                                             error,
-                                            String::from_utf8_lossy(&frame.payload)
+                                            String::from_utf8_lossy(frame.payload())
                                         );
                                     }
                                 }
@@ -1041,8 +1042,8 @@ async fn ws_io_actor_loop(
     );
 }
 
-fn peek_frame() -> FrameView {
-    FrameView::text(r#"{"aid": "peek_message"}"#.as_bytes())
+fn peek_frame() -> Frame {
+    Frame::text(r#"{"aid": "peek_message"}"#.as_bytes())
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ impl SettlementBuffer {
         if self.datetimes.is_empty() {
             return Err(TqError::Other("结算价缓冲区为空".to_string()));
         }
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(self.datetimes.len(), vec![
             Column::new("datetime".into(), &self.datetimes),
             Column::new("symbol".into(), &self.symbols),
             Column::new("settlement".into(), &self.settlements),
@@ -96,7 +96,7 @@ impl RankingBuffer {
         if self.datetimes.is_empty() {
             return Err(TqError::Other("持仓排名缓冲区为空".to_string()));
         }
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(self.datetimes.len(), vec![
             Column::new("datetime".into(), &self.datetimes),
             Column::new("symbol".into(), &self.symbols),
             Column::new("exchange_id".into(), &self.exchange_ids),
@@ -146,7 +146,7 @@ impl EdbBuffer {
         if self.dates.is_empty() {
             return Err(TqError::Other("EDB 缓冲区为空".to_string()));
         }
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(self.dates.len(), vec![
             Column::new("date".into(), &self.dates),
             Column::new("id".into(), &self.ids),
             Column::new("value".into(), &self.values),

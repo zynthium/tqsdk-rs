@@ -19,8 +19,11 @@
 ## 架构
 
 ```
-Client (facade + builder)
+Client (facade + builder + market)
 ├── auth/          认证 (Authenticator trait → TqAuth)
+│   ├── core       TqAuth 实现 (登录/token 刷新)
+│   ├── token      JWT 解析 (insecure decode)
+│   └── permissions 权限检查
 ├── websocket/     WebSocket 连接层
 │   ├── core       TqWebsocket 基类 (I/O actor 模式)
 │   ├── quote      TqQuoteWebsocket (行情通道)
@@ -35,12 +38,32 @@ Client (facade + builder)
 │   ├── query      路径查询 + 数据转换
 │   └── watch      路径监听 (async_channel)
 ├── quote/         Quote 订阅 (回调 + channel 双模式)
+│   ├── lifecycle  订阅生命周期 (start/stop)
+│   └── watch      数据变更监听
 ├── series/        K线/Tick 订阅 (单合约 + 多合约对齐)
-├── ins/           合约查询 (GraphQL + 期权筛选 + EDB)
-├── trade_session/ 交易会话 (下单/撤单/持仓/账户)
-├── backtest/      回测控制 (时间推进)
+│   ├── api        SeriesAPI (K线/Tick 请求)
+│   ├── subscription 订阅管理
+│   └── processing   数据处理
+├── ins/           合约查询与基础数据
+│   ├── query      GraphQL 查询 + 合约列表/期权筛选
+│   ├── services   结算价/持仓排名/EDB/交易日历 (HTTP)
+│   ├── trading_status 交易状态订阅
+│   ├── parse      查询结果解析
+│   └── validation 参数校验 + 缓存匹配
+├── trade_session/ 交易会话
+│   ├── core       创建 + 登录 + 回调注册
+│   ├── ops        下单/撤单/查询持仓/账户/成交
+│   └── watch      数据变更监听 (DM → channel/callback)
+├── backtest/      回测控制
+│   ├── core       初始化 + 时间推进 + 事件分发
+│   └── parsing    回测时间状态解析
 ├── polars_ext/    Polars DataFrame 转换 (可选 feature)
-├── types/         数据结构 (market/trading/series/query)
+│   ├── kline      KlineBuffer (K线 → DataFrame)
+│   ├── tick       TickBuffer (Tick → DataFrame)
+│   ├── tabular    EdbBuffer / RankingBuffer / SettlementBuffer
+│   └── series     SeriesData → DataFrame 转换
+├── types/         数据结构 (market/trading/series/query/helpers)
+├── prelude        便捷 re-export (常用类型一次导入)
 ├── errors         TqError 枚举 (thiserror)
 ├── logger         tracing 日志初始化
 └── utils          HTTP 下载 / 时间转换 / 合约解析
@@ -58,7 +81,7 @@ Client (facade + builder)
 
 ```bash
 cargo build                    # 构建
-cargo test                     # 运行测试 (64 tests)
+cargo test                     # 运行测试 (79 unit + 9 doctests)
 cargo clippy                   # lint (0 warnings)
 cargo build --features polars  # 含 polars 扩展
 ```

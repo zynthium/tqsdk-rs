@@ -120,7 +120,7 @@ impl MultiKlineSeriesData {
             }
         }
 
-        let df = DataFrame::new(vec![
+        let df = DataFrame::new(main_ids.len(), vec![
             Column::new("main_id".into(), main_ids),
             Column::new("timestamp".into(), timestamps),
             Column::new("symbol".into(), symbols),
@@ -185,7 +185,7 @@ impl MultiKlineSeriesData {
             columns.push(Column::new(format!("{}_volume", symbol).into(), volumes));
         }
 
-        let df = DataFrame::new(columns)
+        let df = DataFrame::new(self.data.len(), columns)
             .map_err(|e| TqError::Other(format!("创建宽表 DataFrame 失败: {}", e)))?;
 
         Ok(df)
