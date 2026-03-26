@@ -58,6 +58,12 @@ impl TqTradeWebsocket {
             config.message_batch_max,
             "交易",
         );
+        {
+            let base_for_overflow = Arc::clone(&base);
+            backpressure.set_overflow_handler(move || {
+                base_for_overflow.force_reconnect_due_to_backpressure("交易");
+            });
+        }
 
         {
             let runtime_clone = runtime.clone();
@@ -117,11 +123,15 @@ impl TqTradeWebsocket {
                                                 .clone();
                                             tokio::spawn(async move {
                                                 if let Some(login) = req_login {
-                                                    debug!(pack = ?login, "resend request");
+                                                    let log_pack =
+                                                        super::sanitize_log_pack_value(&login);
+                                                    debug!(pack = %log_pack, "resend request");
                                                     let _ = base_for_send.send(&login).await;
                                                 }
                                                 if let Some(confirm) = confirm_settlement {
-                                                    debug!(pack = ?confirm, "resend request");
+                                                    let log_pack =
+                                                        super::sanitize_log_pack_value(&confirm);
+                                                    debug!(pack = %log_pack, "resend request");
                                                     let _ = base_for_send.send(&confirm).await;
                                                 }
                                                 let _ = base_for_send.send_peek_message().await;
@@ -389,7 +399,8 @@ impl TqTradeWebsocket {
 
         if let Some(aid) = value.get("aid").and_then(|aid| aid.as_str()) {
             if aid == "req_login" {
-                debug!("记录登录请求 {:?}", value);
+                let log_pack = super::sanitize_log_pack_value(&value);
+                debug!(pack = %log_pack, "记录登录请求");
                 *self.runtime.req_login.write().unwrap() = Some(value.clone());
             } else if aid == "confirm_settlement" {
                 *self.runtime.confirm_settlement.write().unwrap() = Some(value.clone());
@@ -397,6 +408,14 @@ impl TqTradeWebsocket {
         }
 
         self.base.send(&value).await
+    }
+
+    pub async fn send_critical<T: Serialize>(&self, obj: &T) -> Result<()> {
+        let value = serde_json::to_value(obj).map_err(|source| TqError::Json {
+            context: "序列化 websocket 消息失败".to_string(),
+            source,
+        })?;
+        self.base.send_or_fail(&value).await
     }
 
     /// 检查是否就绪
@@ -415,5 +434,86 @@ impl TqTradeWebsocket {
     #[allow(dead_code)]
     pub(crate) fn force_send_failure_for_test(&self) {
         self.base.force_send_failure_for_test();
+    }
+
+    pub(crate) fn force_missing_io_actor_for_test(&self) {
+        self.base.force_missing_io_actor_for_test();
+    }
+
+    pub(crate) async fn pending_queue_len_for_test(&self) -> usize {
+        self.base.pending_queue_len_for_test().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing::Level;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    struct SharedWriterGuard(Arc<Mutex<Vec<u8>>>);
+
+    impl<'a> MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriterGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            SharedWriterGuard(Arc::clone(&self.0))
+        }
+    }
+
+    impl Write for SharedWriterGuard {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn req_login_logs_are_redacted() {
+        let dm = Arc::new(DataManager::new(
+            HashMap::new(),
+            DataManagerConfig::default(),
+        ));
+        let ws = TqTradeWebsocket::new(
+            "wss://example.com".to_string(),
+            dm,
+            WebSocketConfig::default(),
+        );
+        let writer = SharedWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        ws.send(&json!({
+            "aid": "req_login",
+            "bid": "simnow",
+            "user_name": "demo",
+            "password": "super-secret"
+        }))
+        .await
+        .unwrap();
+
+        let logs = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            !logs.contains("super-secret"),
+            "日志不应包含明文密码: {logs}"
+        );
+        assert!(
+            !logs.contains("\"password\""),
+            "日志不应包含 password 字段: {logs}"
+        );
     }
 }

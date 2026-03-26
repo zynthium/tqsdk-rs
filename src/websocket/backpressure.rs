@@ -1,9 +1,11 @@
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::mpsc::{Sender, error::TrySendError};
 use tracing::warn;
+
+type OverflowHandler = Arc<dyn Fn() + Send + Sync>;
 
 pub(crate) fn derive_message_backlog_max(
     message_queue_capacity: usize,
@@ -49,6 +51,8 @@ pub(crate) struct BackpressureState {
     backlog: Arc<Mutex<VecDeque<Value>>>,
     draining: Arc<AtomicBool>,
     dropped_counter: Arc<AtomicUsize>,
+    overflow_notified: Arc<AtomicBool>,
+    overflow_handler: Arc<RwLock<Option<OverflowHandler>>>,
     backlog_max: usize,
     backlog_warn_step: usize,
     batch_max: usize,
@@ -68,10 +72,29 @@ impl BackpressureState {
             backlog: Arc::new(Mutex::new(VecDeque::new())),
             draining: Arc::new(AtomicBool::new(false)),
             dropped_counter: Arc::new(AtomicUsize::new(0)),
+            overflow_notified: Arc::new(AtomicBool::new(false)),
+            overflow_handler: Arc::new(RwLock::new(None)),
             backlog_max: backlog_max.max(1),
             backlog_warn_step: backlog_warn_step.max(1),
             batch_max: batch_max.max(1),
             channel_name,
+        }
+    }
+
+    pub(crate) fn set_overflow_handler<F>(&self, handler: F)
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        *self.overflow_handler.write().unwrap() = Some(Arc::new(handler));
+    }
+
+    fn notify_overflow_once(&self) {
+        if self.overflow_notified.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let handler = self.overflow_handler.read().unwrap().clone();
+        if let Some(handler) = handler {
+            handler();
         }
     }
 
@@ -115,6 +138,7 @@ impl BackpressureState {
                                 self.channel_name, overflow, dropped_total, self.backlog_max
                             );
                         }
+                        self.notify_overflow_once();
                     }
 
                     queue.push_back(payload);
@@ -192,6 +216,7 @@ impl BackpressureState {
                 }
                 None => {
                     self.draining.store(false, Ordering::SeqCst);
+                    self.overflow_notified.store(false, Ordering::SeqCst);
                     let has_more = !self.backlog.lock().unwrap().is_empty();
                     if has_more && !self.draining.swap(true, Ordering::SeqCst) {
                         continue;
@@ -208,6 +233,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::atomic::Ordering;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn enqueue_backlog_is_bounded_and_drops_oldest() {
@@ -250,5 +276,24 @@ mod tests {
         drop(queue);
 
         assert_eq!(state.dropped_counter.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn overflow_triggers_resync_callback_once() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Value>(1);
+        tx.try_send(json!({"aid":"x","seq":0})).unwrap();
+
+        let state = BackpressureState::new(tx, 2, 16, 1, "test");
+        let overflowed = Arc::new(AtomicUsize::new(0));
+        let overflowed_for_cb = Arc::clone(&overflowed);
+        state.set_overflow_handler(move || {
+            overflowed_for_cb.fetch_add(1, Ordering::Relaxed);
+        });
+
+        for seq in 1..=5 {
+            state.enqueue(json!({"aid":"x","seq":seq}));
+        }
+
+        assert_eq!(overflowed.load(Ordering::Relaxed), 1);
     }
 }

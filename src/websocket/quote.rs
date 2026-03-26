@@ -61,6 +61,12 @@ impl TqQuoteWebsocket {
             config.message_batch_max,
             "行情",
         );
+        {
+            let base_for_overflow = Arc::clone(&base);
+            backpressure.set_overflow_handler(move || {
+                base_for_overflow.force_reconnect_due_to_backpressure("行情");
+            });
+        }
 
         spawn_message_handler(Arc::clone(&base), runtime.clone(), msg_rx);
         register_backpressure_callback(&base, backpressure);

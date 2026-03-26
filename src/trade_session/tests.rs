@@ -1,5 +1,8 @@
 use super::*;
 use crate::datamanager::{DataManager, DataManagerConfig};
+use crate::types::{
+    DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT,
+};
 use crate::websocket::WebSocketConfig;
 use async_channel::bounded;
 use serde_json::json;
@@ -158,4 +161,42 @@ async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background()
     sleep(Duration::from_millis(120)).await;
 
     assert_eq!(errors.load(AtomicOrdering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn trade_commands_do_not_queue_when_transport_actor_is_missing() {
+    let dm = Arc::new(DataManager::new(
+        HashMap::new(),
+        DataManagerConfig::default(),
+    ));
+    let session = TradeSession::new(
+        "simnow".to_string(),
+        "u".to_string(),
+        "p".to_string(),
+        dm,
+        "wss://example.com".to_string(),
+        WebSocketConfig::default(),
+    );
+
+    session.logged_in.store(true, Ordering::SeqCst);
+    session.ws.force_missing_io_actor_for_test();
+
+    let req = InsertOrderRequest {
+        symbol: "SHFE.au2602".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_LIMIT.to_string(),
+        limit_price: 520.0,
+        volume: 1,
+    };
+
+    let insert_res = session.insert_order(&req).await;
+    assert!(insert_res.is_err(), "下单指令不应在断线竞态下排队补发");
+    assert_eq!(session.ws.pending_queue_len_for_test().await, 0);
+
+    let cancel_res = session.cancel_order("TQRS_TEST").await;
+    assert!(cancel_res.is_err(), "撤单指令不应在断线竞态下排队补发");
+    assert_eq!(session.ws.pending_queue_len_for_test().await, 0);
 }

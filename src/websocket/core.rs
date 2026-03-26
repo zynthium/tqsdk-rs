@@ -594,6 +594,54 @@ impl TqWebsocket {
         }
     }
 
+    /// 发送关键消息。
+    ///
+    /// 与普通发送不同，此方法在连接未就绪或 I/O actor 缺失时直接返回错误，
+    /// 禁止将状态变更类消息排队到重连后补发。
+    pub async fn send_or_fail<T: Serialize>(&self, obj: &T) -> Result<()> {
+        let value = serde_json::to_value(obj).map_err(|source| TqError::Json {
+            context: "序列化 websocket 消息失败".to_string(),
+            source,
+        })?;
+        self.emit_send_guard_warnings(&value);
+        let json_str = value.to_string();
+        let log_pack = sanitize_log_pack_value(&value);
+        debug!(pack = %log_pack, "websocket critical send data");
+
+        if !self.is_ready() {
+            return Err(TqError::WebSocketError(
+                "websocket 未就绪，拒绝发送关键消息".to_string(),
+            ));
+        }
+
+        let io = self.io.lock().unwrap().clone();
+        let Some(io) = io else {
+            return Err(TqError::WebSocketError(
+                "websocket io actor 不存在，拒绝发送关键消息".to_string(),
+            ));
+        };
+
+        match io.send_text(json_str).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if *self.status.read().unwrap() == WebSocketStatus::Open {
+                    self.set_disconnect_reason(format!("send_frame_failed: {}", error));
+                    *self.status.write().unwrap() = WebSocketStatus::Closed;
+                    self.emit_connection_notify(
+                        2019112911,
+                        "WARNING",
+                        format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
+                    );
+                    let callback = self.on_close.read().unwrap().clone();
+                    if let Some(callback) = callback {
+                        callback();
+                    }
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// 注册消息回调
     pub fn on_message<F>(&self, callback: F)
     where
@@ -724,6 +772,39 @@ impl TqWebsocket {
                 Err(error) => {
                     error!("重连失败: {}, 继续尝试...", error);
                 }
+            }
+        }
+    }
+
+    pub(crate) fn force_reconnect_due_to_backpressure(&self, channel_name: &'static str) {
+        if !*self.should_reconnect.read().unwrap() {
+            return;
+        }
+
+        let transitioned = {
+            let mut status = self.status.write().unwrap();
+            match *status {
+                WebSocketStatus::Closed | WebSocketStatus::Closing => false,
+                _ => {
+                    *status = WebSocketStatus::Closed;
+                    true
+                }
+            }
+        };
+
+        self.pending_peek.store(false, Ordering::SeqCst);
+        self.set_disconnect_reason(format!("{}_message_backlog_overflow", channel_name));
+        warn!(
+            "{} 消息 backlog 已发生丢弃，主动断开连接以触发全量重同步",
+            channel_name
+        );
+
+        if let Some(io) = self.io.lock().unwrap().take() {
+            io.request_close();
+        } else if transitioned {
+            let callback = self.on_close.read().unwrap().clone();
+            if let Some(callback) = callback {
+                callback();
             }
         }
     }
@@ -974,6 +1055,11 @@ impl TqWebsocket {
             tx,
             close_notify: Arc::new(Notify::new()),
         });
+    }
+
+    pub(crate) fn force_missing_io_actor_for_test(&self) {
+        *self.status.write().unwrap() = WebSocketStatus::Open;
+        *self.io.lock().unwrap() = None;
     }
 
     pub(crate) async fn pending_queue_len_for_test(&self) -> usize {

@@ -43,7 +43,7 @@ impl TradeSession {
         });
 
         info!("发送下单请求: order_id={}, symbol={}", order_id, req.symbol);
-        self.ws.send(&order_req).await?;
+        self.ws.send_critical(&order_req).await?;
         Ok(order_id)
     }
 
@@ -60,7 +60,7 @@ impl TradeSession {
         });
 
         info!("发送撤单请求: order_id={}", order_id);
-        self.ws.send(&cancel_req).await?;
+        self.ws.send_critical(&cancel_req).await?;
         Ok(())
     }
 
