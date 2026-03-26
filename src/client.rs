@@ -70,8 +70,9 @@ pub struct ClientBuilder {
 
 /// 客户端
 pub struct Client {
-    _username: String,
-    _config: ClientConfig,
+    #[allow(dead_code)]
+    username: String,
+    config: ClientConfig,
     auth: Arc<RwLock<dyn Authenticator>>,
     dm: Arc<DataManager>,
     quotes_ws: Option<Arc<TqQuoteWebsocket>>,

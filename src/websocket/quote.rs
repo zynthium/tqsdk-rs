@@ -52,7 +52,7 @@ impl TqQuoteWebsocket {
             reconnect_dm: Arc::new(std::sync::RwLock::new(None)),
         };
 
-        let (msg_tx, mut msg_rx) =
+        let (msg_tx, msg_rx) =
             tokio::sync::mpsc::channel::<Value>(config.message_queue_capacity);
         let backpressure = BackpressureState::new(
             msg_tx,
@@ -62,240 +62,10 @@ impl TqQuoteWebsocket {
             "行情",
         );
 
-        {
-            let base_clone = Arc::clone(&base);
-            let runtime_clone = runtime.clone();
-            tokio::spawn(async move {
-                while let Some(data) = msg_rx.recv().await {
-                    if let Some(aid) = data.get("aid").and_then(|aid| aid.as_str()) {
-                        match aid {
-                            "rtn_data" => {
-                                if let Some(payload) = data.get("data") {
-                                    if let Some(array) = payload.as_array() {
-                                        for item in array {
-                                            if let Some(symbols) = item.get("symbols")
-                                                && let Some(obj) = symbols.as_object()
-                                            {
-                                                let mut pending_guard = runtime_clone
-                                                    .pending_ins_query
-                                                    .write()
-                                                    .unwrap();
-                                                for (query_id, value) in obj {
-                                                    if !value.is_null() {
-                                                        pending_guard.remove(query_id);
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        let reconnect_index =
-                                            array.iter().position(has_reconnect_notify);
-                                        if let Some(index) = reconnect_index {
-                                            runtime_clone
-                                                .reconnect_pending
-                                                .store(true, Ordering::SeqCst);
-                                            let mut diffs =
-                                                runtime_clone.reconnect_diffs.write().unwrap();
-                                            diffs.clear();
-                                            diffs.extend(array[index..].iter().cloned());
-                                            let dm_temp = Arc::new(DataManager::new(
-                                                HashMap::new(),
-                                                DataManagerConfig::default(),
-                                            ));
-                                            dm_temp.merge_data(
-                                                Value::Array(diffs.clone()),
-                                                true,
-                                                true,
-                                            );
-                                            *runtime_clone.reconnect_dm.write().unwrap() =
-                                                Some(Arc::clone(&dm_temp));
-                                            let sub = runtime_clone
-                                                .subscribe_quote
-                                                .read()
-                                                .unwrap()
-                                                .clone();
-                                            let charts =
-                                                runtime_clone.charts.read().unwrap().clone();
-                                            let base_for_send = Arc::clone(&base_clone);
-                                            tokio::spawn(async move {
-                                                if let Some(sub) = sub {
-                                                    debug!(pack = ?sub, "resend request");
-                                                    let _ = base_for_send.send(&sub).await;
-                                                }
-                                                for chart in charts.values() {
-                                                    if let Some(view_width) = chart
-                                                        .get("view_width")
-                                                        .and_then(|view_width| view_width.as_f64())
-                                                        && view_width > 0.0
-                                                    {
-                                                        debug!(pack = ?chart, "resend request");
-                                                        let _ = base_for_send.send(chart).await;
-                                                    }
-                                                }
-                                                let _ = base_for_send.send_peek_message().await;
-                                            });
-                                        } else if runtime_clone
-                                            .reconnect_pending
-                                            .load(Ordering::SeqCst)
-                                        {
-                                            let mut diffs =
-                                                runtime_clone.reconnect_diffs.write().unwrap();
-                                            diffs.extend(array.iter().cloned());
-                                            if let Some(dm_temp) = runtime_clone
-                                                .reconnect_dm
-                                                .read()
-                                                .unwrap()
-                                                .as_ref()
-                                                .cloned()
-                                            {
-                                                dm_temp.merge_data(
-                                                    Value::Array(array.clone()),
-                                                    true,
-                                                    true,
-                                                );
-                                            }
-                                        }
-
-                                        if runtime_clone.reconnect_pending.load(Ordering::SeqCst) {
-                                            let dm_temp = runtime_clone
-                                                .reconnect_dm
-                                                .read()
-                                                .unwrap()
-                                                .as_ref()
-                                                .cloned();
-                                            let charts_snapshot =
-                                                runtime_clone.charts.read().unwrap().clone();
-                                            let subscribe_snapshot = runtime_clone
-                                                .subscribe_quote
-                                                .read()
-                                                .unwrap()
-                                                .clone();
-                                            if let Some(dm_temp) = dm_temp {
-                                                if is_md_reconnect_complete(
-                                                    &dm_temp,
-                                                    &charts_snapshot,
-                                                    &subscribe_snapshot,
-                                                ) {
-                                                    let mut diffs = runtime_clone
-                                                        .reconnect_diffs
-                                                        .write()
-                                                        .unwrap();
-                                                    let pending = diffs.clone();
-                                                    diffs.clear();
-                                                    runtime_clone
-                                                        .reconnect_pending
-                                                        .store(false, Ordering::SeqCst);
-                                                    *runtime_clone.reconnect_dm.write().unwrap() =
-                                                        None;
-                                                    runtime_clone.dm.merge_data(
-                                                        Value::Array(pending),
-                                                        true,
-                                                        true,
-                                                    );
-                                                    debug!("data completed");
-                                                } else {
-                                                    debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
-                                                    let base_for_peek = Arc::clone(&base_clone);
-                                                    tokio::spawn(async move {
-                                                        let _ =
-                                                            base_for_peek.send_peek_message().await;
-                                                    });
-                                                }
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                    runtime_clone.dm.merge_data(payload.clone(), true, true);
-                                }
-                            }
-                            "rsp_login" => {
-                                runtime_clone.login_ready.store(true, Ordering::SeqCst);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            });
-        }
-
-        {
-            let backpressure = backpressure.clone();
-            base.on_message(move |data: Value| {
-                backpressure.enqueue(data);
-            });
-        }
-
-        {
-            let base_clone = Arc::clone(&base);
-            let runtime_clone = runtime.clone();
-            base.on_close(move || {
-                runtime_clone
-                    .reconnect_pending
-                    .store(false, Ordering::SeqCst);
-                runtime_clone.reconnect_diffs.write().unwrap().clear();
-                *runtime_clone.reconnect_dm.write().unwrap() = None;
-                let has_quote_interest = runtime_clone
-                    .subscribe_quote
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .and_then(|value| value.get("ins_list").and_then(|ins_list| ins_list.as_str()))
-                    .map(|ins_list| !ins_list.trim().is_empty())
-                    .unwrap_or(false);
-                let has_chart_interest =
-                    runtime_clone.charts.read().unwrap().values().any(|chart| {
-                        let width_ok = chart
-                            .get("view_width")
-                            .and_then(|view_width| view_width.as_f64())
-                            .map(|view_width| view_width > 0.0)
-                            .unwrap_or(false);
-                        let symbols_ok = chart
-                            .get("ins_list")
-                            .and_then(|ins_list| ins_list.as_str())
-                            .map(|ins_list| !ins_list.trim().is_empty())
-                            .unwrap_or(false);
-                        width_ok && symbols_ok
-                    });
-                let has_pending_query = !runtime_clone.pending_ins_query.read().unwrap().is_empty();
-                let should_reconnect =
-                    has_quote_interest || has_chart_interest || has_pending_query;
-                if !should_reconnect {
-                    info!("无活跃订阅意图，跳过自动重连");
-                    return;
-                }
-                let base_for_reconnect = Arc::clone(&base_clone);
-                tokio::spawn(async move {
-                    base_for_reconnect.reconnect().await;
-                });
-            });
-        }
-
-        {
-            let base_clone = Arc::clone(&base);
-            let runtime_clone = runtime.clone();
-            base.on_open(move || {
-                debug!("WebSocket 连接建立，重新发送订阅和图表请求");
-                let base = Arc::clone(&base_clone);
-                let sub = runtime_clone.subscribe_quote.read().unwrap().clone();
-                let charts = runtime_clone.charts.read().unwrap().clone();
-                let pending_queries = runtime_clone.pending_ins_query.read().unwrap().clone();
-                tokio::spawn(async move {
-                    if let Some(sub) = sub {
-                        debug!("重新发送订阅: {:?}", sub);
-                        let _ = base.send(&sub).await;
-                    }
-                    for (id, chart) in charts {
-                        debug!("重新发送图表: {} -> {:?}", id, chart);
-                        let _ = base.send(&chart).await;
-                    }
-                    for (id, query) in pending_queries {
-                        debug!("重新发送合约查询: {} -> {:?}", id, query);
-                        let _ = base.send(&query).await;
-                    }
-                    let _ = base.send_peek_message().await;
-                });
-            });
-        }
+        spawn_message_handler(Arc::clone(&base), runtime.clone(), msg_rx);
+        register_backpressure_callback(&base, backpressure);
+        register_close_handler(Arc::clone(&base), runtime.clone());
+        register_open_handler(Arc::clone(&base), runtime.clone());
 
         Self {
             base,
@@ -490,6 +260,226 @@ impl TqQuoteWebsocket {
     pub async fn close(&self) -> Result<()> {
         self.base.close().await
     }
+}
+
+// ---------------------------------------------------------------------------
+// 从构造函数中提取的独立 handler 函数
+// ---------------------------------------------------------------------------
+
+/// 启动消息处理 actor，处理 rtn_data 和 rsp_login
+fn spawn_message_handler(
+    base: Arc<TqWebsocket>,
+    runtime: QuoteRuntime,
+    mut msg_rx: tokio::sync::mpsc::Receiver<Value>,
+) {
+    tokio::spawn(async move {
+        while let Some(data) = msg_rx.recv().await {
+            let Some(aid) = data.get("aid").and_then(|aid| aid.as_str()) else {
+                continue;
+            };
+            match aid {
+                "rtn_data" => {
+                    handle_rtn_data(&base, &runtime, &data);
+                }
+                "rsp_login" => {
+                    runtime.login_ready.store(true, Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+/// 处理 rtn_data 消息：合约查询清理、重连缓冲、数据合并
+fn handle_rtn_data(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime, data: &Value) {
+    let Some(payload) = data.get("data") else {
+        return;
+    };
+    let Some(array) = payload.as_array() else {
+        return;
+    };
+
+    // 清理已完成的合约查询
+    for item in array {
+        if let Some(symbols) = item.get("symbols")
+            && let Some(obj) = symbols.as_object()
+        {
+            let mut pending_guard = runtime.pending_ins_query.write().unwrap();
+            for (query_id, value) in obj {
+                if !value.is_null() {
+                    pending_guard.remove(query_id);
+                }
+            }
+        }
+    }
+
+    let reconnect_index = array.iter().position(has_reconnect_notify);
+    if let Some(index) = reconnect_index {
+        start_reconnect_buffering(base, runtime, array, index);
+    } else if runtime.reconnect_pending.load(Ordering::SeqCst) {
+        append_reconnect_diffs(runtime, array);
+    }
+
+    if runtime.reconnect_pending.load(Ordering::SeqCst) {
+        check_reconnect_completion(base, runtime);
+        return;
+    }
+
+    runtime.dm.merge_data(payload.clone(), true, true);
+}
+
+/// 检测到重连通知后，开始缓冲数据到临时 DM
+fn start_reconnect_buffering(
+    base: &Arc<TqWebsocket>,
+    runtime: &QuoteRuntime,
+    array: &[Value],
+    index: usize,
+) {
+    runtime.reconnect_pending.store(true, Ordering::SeqCst);
+    let mut diffs = runtime.reconnect_diffs.write().unwrap();
+    diffs.clear();
+    diffs.extend(array[index..].iter().cloned());
+    let dm_temp = Arc::new(DataManager::new(
+        HashMap::new(),
+        DataManagerConfig::default(),
+    ));
+    dm_temp.merge_data(Value::Array(diffs.clone()), true, true);
+    *runtime.reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
+
+    let sub = runtime.subscribe_quote.read().unwrap().clone();
+    let charts = runtime.charts.read().unwrap().clone();
+    let base_for_send = Arc::clone(base);
+    tokio::spawn(async move {
+        if let Some(sub) = sub {
+            debug!(pack = ?sub, "resend request");
+            let _ = base_for_send.send(&sub).await;
+        }
+        for chart in charts.values() {
+            if let Some(view_width) = chart
+                .get("view_width")
+                .and_then(|view_width| view_width.as_f64())
+                && view_width > 0.0
+            {
+                debug!(pack = ?chart, "resend request");
+                let _ = base_for_send.send(chart).await;
+            }
+        }
+        let _ = base_for_send.send_peek_message().await;
+    });
+}
+
+/// 重连进行中，追加 diff 到缓冲区
+fn append_reconnect_diffs(runtime: &QuoteRuntime, array: &[Value]) {
+    let mut diffs = runtime.reconnect_diffs.write().unwrap();
+    diffs.extend(array.iter().cloned());
+    if let Some(dm_temp) = runtime.reconnect_dm.read().unwrap().as_ref().cloned() {
+        dm_temp.merge_data(Value::Array(array.to_vec()), true, true);
+    }
+}
+
+/// 检查重连数据是否完整，完整则一次性合并到主 DM
+fn check_reconnect_completion(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime) {
+    let dm_temp = runtime.reconnect_dm.read().unwrap().as_ref().cloned();
+    let charts_snapshot = runtime.charts.read().unwrap().clone();
+    let subscribe_snapshot = runtime.subscribe_quote.read().unwrap().clone();
+
+    let Some(dm_temp) = dm_temp else {
+        return;
+    };
+
+    if is_md_reconnect_complete(&dm_temp, &charts_snapshot, &subscribe_snapshot) {
+        let mut diffs = runtime.reconnect_diffs.write().unwrap();
+        let pending = diffs.clone();
+        diffs.clear();
+        runtime.reconnect_pending.store(false, Ordering::SeqCst);
+        *runtime.reconnect_dm.write().unwrap() = None;
+        runtime.dm.merge_data(Value::Array(pending), true, true);
+        debug!("data completed");
+    } else {
+        debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
+        let base_for_peek = Arc::clone(base);
+        tokio::spawn(async move {
+            let _ = base_for_peek.send_peek_message().await;
+        });
+    }
+}
+
+/// 注册背压回调：将 WebSocket 消息入队到 backpressure 缓冲
+fn register_backpressure_callback(base: &Arc<TqWebsocket>, backpressure: BackpressureState) {
+    let backpressure = backpressure.clone();
+    base.on_message(move |data: Value| {
+        backpressure.enqueue(data);
+    });
+}
+
+/// 注册关闭回调：清理重连状态，判断是否需要自动重连
+fn register_close_handler(base: Arc<TqWebsocket>, runtime: QuoteRuntime) {
+    let base_for_close = Arc::clone(&base);
+    base.on_close(move || {
+        runtime.reconnect_pending.store(false, Ordering::SeqCst);
+        runtime.reconnect_diffs.write().unwrap().clear();
+        *runtime.reconnect_dm.write().unwrap() = None;
+
+        let has_quote_interest = runtime
+            .subscribe_quote
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|value| value.get("ins_list").and_then(|ins_list| ins_list.as_str()))
+            .map(|ins_list| !ins_list.trim().is_empty())
+            .unwrap_or(false);
+        let has_chart_interest = runtime.charts.read().unwrap().values().any(|chart| {
+            let width_ok = chart
+                .get("view_width")
+                .and_then(|view_width| view_width.as_f64())
+                .map(|view_width| view_width > 0.0)
+                .unwrap_or(false);
+            let symbols_ok = chart
+                .get("ins_list")
+                .and_then(|ins_list| ins_list.as_str())
+                .map(|ins_list| !ins_list.trim().is_empty())
+                .unwrap_or(false);
+            width_ok && symbols_ok
+        });
+        let has_pending_query = !runtime.pending_ins_query.read().unwrap().is_empty();
+
+        if !(has_quote_interest || has_chart_interest || has_pending_query) {
+            info!("无活跃订阅意图，跳过自动重连");
+            return;
+        }
+
+        let base_for_reconnect = Arc::clone(&base_for_close);
+        tokio::spawn(async move {
+            base_for_reconnect.reconnect().await;
+        });
+    });
+}
+
+/// 注册打开回调：重新发送订阅、图表和合约查询请求
+fn register_open_handler(base: Arc<TqWebsocket>, runtime: QuoteRuntime) {
+    let base_for_open = Arc::clone(&base);
+    base.on_open(move || {
+        debug!("WebSocket 连接建立，重新发送订阅和图表请求");
+        let base = Arc::clone(&base_for_open);
+        let sub = runtime.subscribe_quote.read().unwrap().clone();
+        let charts = runtime.charts.read().unwrap().clone();
+        let pending_queries = runtime.pending_ins_query.read().unwrap().clone();
+        tokio::spawn(async move {
+            if let Some(sub) = sub {
+                debug!("重新发送订阅: {:?}", sub);
+                let _ = base.send(&sub).await;
+            }
+            for (id, chart) in charts {
+                debug!("重新发送图表: {} -> {:?}", id, chart);
+                let _ = base.send(&chart).await;
+            }
+            for (id, query) in pending_queries {
+                debug!("重新发送合约查询: {} -> {:?}", id, query);
+                let _ = base.send(&query).await;
+            }
+            let _ = base.send_peek_message().await;
+        });
+    });
 }
 
 #[cfg(test)]

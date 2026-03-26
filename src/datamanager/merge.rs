@@ -5,6 +5,54 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use tracing::debug;
 
+// ---------------------------------------------------------------------------
+// MergeTarget trait — 统一 HashMap<String, Value> 和 Map<String, Value> 的操作
+// ---------------------------------------------------------------------------
+
+trait MergeTarget {
+    fn mt_get(&self, key: &str) -> Option<&Value>;
+    fn mt_contains_key(&self, key: &str) -> bool;
+    fn mt_insert(&mut self, key: String, value: Value) -> Option<Value>;
+    fn mt_remove(&mut self, key: &str) -> Option<Value>;
+    fn mt_entry_or_insert(&mut self, key: String, default: Value) -> &mut Value;
+}
+
+impl MergeTarget for HashMap<String, Value> {
+    fn mt_get(&self, key: &str) -> Option<&Value> {
+        self.get(key)
+    }
+    fn mt_contains_key(&self, key: &str) -> bool {
+        self.contains_key(key)
+    }
+    fn mt_insert(&mut self, key: String, value: Value) -> Option<Value> {
+        self.insert(key, value)
+    }
+    fn mt_remove(&mut self, key: &str) -> Option<Value> {
+        self.remove(key)
+    }
+    fn mt_entry_or_insert(&mut self, key: String, default: Value) -> &mut Value {
+        self.entry(key).or_insert(default)
+    }
+}
+
+impl MergeTarget for Map<String, Value> {
+    fn mt_get(&self, key: &str) -> Option<&Value> {
+        self.get(key)
+    }
+    fn mt_contains_key(&self, key: &str) -> bool {
+        self.contains_key(key)
+    }
+    fn mt_insert(&mut self, key: String, value: Value) -> Option<Value> {
+        self.insert(key, value)
+    }
+    fn mt_remove(&mut self, key: &str) -> Option<Value> {
+        self.remove(key)
+    }
+    fn mt_entry_or_insert(&mut self, key: String, default: Value) -> &mut Value {
+        self.entry(key).or_insert(default)
+    }
+}
+
 impl DataManager {
     /// 合并数据（DIFF 协议核心）
     ///
@@ -46,8 +94,8 @@ impl DataManager {
                 if let Value::Object(obj) = item
                     && !obj.is_empty()
                 {
-                    self.merge_object(
-                        &mut data,
+                    self.merge_into(
+                        &mut *data,
                         obj,
                         current_epoch,
                         options.delete_null,
@@ -80,8 +128,8 @@ impl DataManager {
                 if let Value::Object(obj) = item
                     && !obj.is_empty()
                 {
-                    self.merge_object(
-                        &mut data,
+                    self.merge_into(
+                        &mut *data,
                         obj,
                         current_epoch,
                         options.delete_null,
@@ -101,113 +149,14 @@ impl DataManager {
         }
     }
 
+    /// 统一的递归合并实现，适用于 HashMap 和 Map
     #[expect(
         clippy::too_many_arguments,
         reason = "递归合并需要显式传递上下文，避免频繁构造中间对象"
     )]
-    fn merge_object(
+    fn merge_into<T: MergeTarget>(
         &self,
-        target: &mut HashMap<String, Value>,
-        source: &serde_json::Map<String, Value>,
-        epoch: i64,
-        delete_null: bool,
-        prototype: Option<&Value>,
-        options: &MergeOptions,
-        persist_ctx: bool,
-    ) -> bool {
-        let mut changed = false;
-        for (property, value) in source {
-            let (property_prototype, proto_branch) = resolve_child_prototype(prototype, property);
-            let transformed_value =
-                transform_value_by_prototype(value, property_prototype, proto_branch);
-            let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
-
-            if value.is_null() {
-                if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
-                    continue;
-                }
-                if delete_null && target.remove(property).is_some() {
-                    changed = true;
-                }
-                continue;
-            }
-
-            match transformed_value {
-                Value::String(ref s) if s == "NaN" || s == "-" => {
-                    if options.reduce_diff && target.get(property).is_some_and(|v| v.is_null()) {
-                        continue;
-                    }
-                    target.insert(property.clone(), Value::Null);
-                    changed = true;
-                }
-                Value::Object(ref obj) => {
-                    if property == "quotes" {
-                        if self.merge_quotes(
-                            target,
-                            obj,
-                            epoch,
-                            delete_null,
-                            property_prototype,
-                            options,
-                            child_persist,
-                        ) {
-                            changed = true;
-                        }
-                    } else {
-                        let existed = target.contains_key(property);
-                        if !existed {
-                            target.insert(
-                                property.clone(),
-                                default_object_by_branch(property_prototype, proto_branch),
-                            );
-                        }
-                        let target_obj = target
-                            .entry(property.clone())
-                            .or_insert_with(|| Value::Object(serde_json::Map::new()));
-                        if !target_obj.is_object() {
-                            *target_obj = Value::Object(serde_json::Map::new());
-                        }
-                        if let Value::Object(target_map) = target_obj {
-                            let child_changed = self.merge_object_map(
-                                target_map,
-                                obj,
-                                epoch,
-                                delete_null,
-                                property_prototype,
-                                options,
-                                child_persist,
-                            );
-                            if child_changed {
-                                changed = true;
-                            } else if !existed && options.reduce_diff {
-                                target.remove(property);
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    if options.reduce_diff && target.get(property) == Some(&transformed_value) {
-                        continue;
-                    }
-                    target.insert(property.clone(), transformed_value);
-                    changed = true;
-                }
-            }
-        }
-
-        if changed || !options.reduce_diff {
-            target.insert("_epoch".to_string(), Value::Number(epoch.into()));
-        }
-        changed
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "递归合并需要显式传递上下文，避免频繁构造中间对象"
-    )]
-    fn merge_object_map(
-        &self,
-        target: &mut Map<String, Value>,
+        target: &mut T,
         source: &Map<String, Value>,
         epoch: i64,
         delete_null: bool,
@@ -226,7 +175,7 @@ impl DataManager {
                 if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
                     continue;
                 }
-                if delete_null && target.remove(property).is_some() {
+                if delete_null && target.mt_remove(property).is_some() {
                     changed = true;
                 }
                 continue;
@@ -234,15 +183,17 @@ impl DataManager {
 
             match transformed_value {
                 Value::String(ref s) if s == "NaN" || s == "-" => {
-                    if options.reduce_diff && target.get(property).is_some_and(|v| v.is_null()) {
+                    if options.reduce_diff
+                        && target.mt_get(property).is_some_and(|v| v.is_null())
+                    {
                         continue;
                     }
-                    target.insert(property.clone(), Value::Null);
+                    target.mt_insert(property.clone(), Value::Null);
                     changed = true;
                 }
                 Value::Object(ref obj) => {
                     if property == "quotes" {
-                        if self.merge_quotes_map(
+                        if self.merge_quotes_into(
                             target,
                             obj,
                             epoch,
@@ -254,21 +205,22 @@ impl DataManager {
                             changed = true;
                         }
                     } else {
-                        let existed = target.contains_key(property);
+                        let existed = target.mt_contains_key(property);
                         if !existed {
-                            target.insert(
+                            target.mt_insert(
                                 property.clone(),
                                 default_object_by_branch(property_prototype, proto_branch),
                             );
                         }
-                        let target_obj = target
-                            .entry(property.clone())
-                            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        let target_obj = target.mt_entry_or_insert(
+                            property.clone(),
+                            Value::Object(Map::new()),
+                        );
                         if !target_obj.is_object() {
-                            *target_obj = Value::Object(serde_json::Map::new());
+                            *target_obj = Value::Object(Map::new());
                         }
                         if let Value::Object(target_map) = target_obj {
-                            let child_changed = self.merge_object_map(
+                            let child_changed = self.merge_into(
                                 target_map,
                                 obj,
                                 epoch,
@@ -280,104 +232,37 @@ impl DataManager {
                             if child_changed {
                                 changed = true;
                             } else if !existed && options.reduce_diff {
-                                target.remove(property);
+                                target.mt_remove(property);
                             }
                         }
                     }
                 }
                 _ => {
-                    if options.reduce_diff && target.get(property) == Some(&transformed_value) {
+                    if options.reduce_diff
+                        && target.mt_get(property) == Some(&transformed_value)
+                    {
                         continue;
                     }
-                    target.insert(property.clone(), transformed_value);
+                    target.mt_insert(property.clone(), transformed_value);
                     changed = true;
                 }
             }
         }
 
         if changed || !options.reduce_diff {
-            target.insert("_epoch".to_string(), Value::Number(epoch.into()));
+            target.mt_insert("_epoch".to_string(), Value::Number(epoch.into()));
         }
         changed
     }
 
+    /// 统一的行情合并实现
     #[expect(
         clippy::too_many_arguments,
         reason = "行情合并路径需要携带完整上下文参数"
     )]
-    fn merge_quotes(
+    fn merge_quotes_into<T: MergeTarget>(
         &self,
-        target: &mut HashMap<String, Value>,
-        quotes: &serde_json::Map<String, Value>,
-        epoch: i64,
-        delete_null: bool,
-        prototype: Option<&Value>,
-        options: &MergeOptions,
-        persist_ctx: bool,
-    ) -> bool {
-        let mut changed = false;
-        let quotes_obj = target
-            .entry("quotes".to_string())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
-
-        if let Value::Object(quotes_map) = quotes_obj {
-            for (symbol, quote_data) in quotes {
-                let (symbol_prototype, proto_branch) = resolve_child_prototype(prototype, symbol);
-                let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
-                if quote_data.is_null() {
-                    if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
-                        continue;
-                    }
-                    if delete_null && quotes_map.remove(symbol).is_some() {
-                        changed = true;
-                    }
-                    continue;
-                }
-
-                if let Value::Object(quote_obj) = quote_data {
-                    let existed = quotes_map.contains_key(symbol);
-                    if !existed {
-                        quotes_map.insert(
-                            symbol.clone(),
-                            default_object_by_branch(symbol_prototype, proto_branch),
-                        );
-                    }
-                    let target_quote = quotes_map
-                        .entry(symbol.clone())
-                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-                    if !target_quote.is_object() {
-                        *target_quote = Value::Object(serde_json::Map::new());
-                    }
-
-                    if let Value::Object(target_quote_map) = target_quote {
-                        let child_changed = self.merge_object_map(
-                            target_quote_map,
-                            quote_obj,
-                            epoch,
-                            delete_null,
-                            symbol_prototype,
-                            options,
-                            child_persist,
-                        );
-                        if child_changed {
-                            changed = true;
-                        } else if !existed && options.reduce_diff {
-                            quotes_map.remove(symbol);
-                        }
-                    }
-                }
-            }
-        }
-        changed
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "行情合并路径需要携带完整上下文参数"
-    )]
-    fn merge_quotes_map(
-        &self,
-        target: &mut Map<String, Value>,
+        target: &mut T,
         quotes: &Map<String, Value>,
         epoch: i64,
         delete_null: bool,
@@ -387,13 +272,14 @@ impl DataManager {
     ) -> bool {
         let mut changed = false;
         let quotes_obj = target
-            .entry("quotes".to_string())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            .mt_entry_or_insert("quotes".to_string(), Value::Object(Map::new()));
 
         if let Value::Object(quotes_map) = quotes_obj {
             for (symbol, quote_data) in quotes {
-                let (symbol_prototype, proto_branch) = resolve_child_prototype(prototype, symbol);
-                let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
+                let (symbol_prototype, proto_branch) =
+                    resolve_child_prototype(prototype, symbol);
+                let child_persist =
+                    persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
                 if quote_data.is_null() {
                     if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
                         continue;
@@ -414,13 +300,13 @@ impl DataManager {
                     }
                     let target_quote = quotes_map
                         .entry(symbol.clone())
-                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        .or_insert_with(|| Value::Object(Map::new()));
                     if !target_quote.is_object() {
-                        *target_quote = Value::Object(serde_json::Map::new());
+                        *target_quote = Value::Object(Map::new());
                     }
 
                     if let Value::Object(target_quote_map) = target_quote {
-                        let child_changed = self.merge_object_map(
+                        let child_changed = self.merge_into(
                             target_quote_map,
                             quote_obj,
                             epoch,

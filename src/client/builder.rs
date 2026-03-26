@@ -131,8 +131,8 @@ impl ClientBuilder {
         let dm = Arc::new(DataManager::new(HashMap::new(), dm_config));
 
         Ok(Client {
-            _username: self.username,
-            _config: self.config,
+            username: self.username,
+            config: self.config,
             auth,
             dm,
             quotes_ws: None,

@@ -55,6 +55,7 @@ chrono = { version = "0.4.42", features = ["serde"] }
 # 其他
 uuid = { version = "1.18.1", features = ["v4", "serde"] }
 url = "2.5.7"
+rand = "0.9"
 
 # Polars - 数据分析
 polars = { version = "0.44.2", features = ["lazy", "dtype-datetime"], optional = true }

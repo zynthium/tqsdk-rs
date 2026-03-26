@@ -1,8 +1,9 @@
 use crate::datamanager::DataManager;
+use rand::Rng;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 struct SharedReconnectTimer {
     next_reconnect_at: Instant,
@@ -19,7 +20,7 @@ pub(crate) fn is_ops_maintenance_window_cst() -> bool {
 
 pub(crate) fn next_shared_reconnect_delay(reconnect_count: u32, fallback: Duration) -> Duration {
     let timer = RECONNECT_TIMER.get_or_init(|| {
-        let initial = Duration::from_secs(10 + pseudo_jitter_seconds(11));
+        let initial = Duration::from_secs(rand::rng().random_range(10..21));
         std::sync::Mutex::new(SharedReconnectTimer {
             next_reconnect_at: Instant::now() + initial,
         })
@@ -226,26 +227,6 @@ fn pseudo_duration_between(lower: Duration, upper: Duration) -> Duration {
     if nanos == 0 {
         return lower;
     }
-    let offset = pseudo_jitter_nanos(nanos);
+    let offset = rand::rng().random_range(0..nanos);
     lower + Duration::from_nanos(offset)
-}
-
-fn pseudo_jitter_seconds(max: u64) -> u64 {
-    if max == 0 {
-        return 0;
-    }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO);
-    (now.as_nanos() as u64) % max
-}
-
-fn pseudo_jitter_nanos(max: u64) -> u64 {
-    if max == 0 {
-        return 0;
-    }
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO);
-    (now.as_nanos() as u64) % max
 }

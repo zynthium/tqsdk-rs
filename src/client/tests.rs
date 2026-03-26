@@ -81,8 +81,8 @@ fn build_client_with_market() -> Client {
     ));
 
     Client {
-        _username: "tester".to_string(),
-        _config: ClientConfig::default(),
+        username: "tester".to_string(),
+        config: ClientConfig::default(),
         auth,
         dm,
         quotes_ws: Some(quotes_ws),

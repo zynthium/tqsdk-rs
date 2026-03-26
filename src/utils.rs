@@ -11,7 +11,7 @@ use futures::StreamExt;
 use reqwest::header::HeaderMap;
 use serde_json::Value;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 fn build_json_client(default_headers: Option<HeaderMap>) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
@@ -116,7 +116,10 @@ pub async fn fetch_json_with_headers(url: &str, headers: HeaderMap) -> Result<Va
 pub fn nanos_to_datetime(nanos: i64) -> DateTime<Utc> {
     let secs = nanos / 1_000_000_000;
     let nsecs = (nanos % 1_000_000_000) as u32;
-    DateTime::from_timestamp(secs, nsecs).unwrap_or_else(Utc::now)
+    DateTime::from_timestamp(secs, nsecs).unwrap_or_else(|| {
+        warn!("无效的纳秒时间戳: {}, 回退到 UNIX epoch", nanos);
+        DateTime::UNIX_EPOCH
+    })
 }
 
 /// 将 DateTime 转换为纳秒时间戳

@@ -76,14 +76,10 @@ impl TradeSession {
 
     /// 获取所有持仓
     pub async fn get_positions(&self) -> Result<HashMap<String, Position>> {
-        let data = self.dm.get_by_path(&["trade", &self.user_id, "positions"]);
-        if data.is_none() {
+        let Some(serde_json::Value::Object(positions_map)) =
+            self.dm.get_by_path(&["trade", &self.user_id, "positions"])
+        else {
             return Ok(HashMap::new());
-        }
-
-        let positions_map = match data.unwrap() {
-            serde_json::Value::Object(map) => map,
-            _ => return Ok(HashMap::new()),
         };
 
         let mut positions = HashMap::new();
@@ -104,14 +100,10 @@ impl TradeSession {
 
     /// 获取所有委托单
     pub async fn get_orders(&self) -> Result<HashMap<String, Order>> {
-        let data = self.dm.get_by_path(&["trade", &self.user_id, "orders"]);
-        if data.is_none() {
+        let Some(serde_json::Value::Object(orders_map)) =
+            self.dm.get_by_path(&["trade", &self.user_id, "orders"])
+        else {
             return Ok(HashMap::new());
-        }
-
-        let orders_map = match data.unwrap() {
-            serde_json::Value::Object(map) => map,
-            _ => return Ok(HashMap::new()),
         };
 
         let mut orders = HashMap::new();
@@ -132,14 +124,10 @@ impl TradeSession {
 
     /// 获取所有成交记录
     pub async fn get_trades(&self) -> Result<HashMap<String, Trade>> {
-        let data = self.dm.get_by_path(&["trade", &self.user_id, "trades"]);
-        if data.is_none() {
+        let Some(serde_json::Value::Object(trades_map)) =
+            self.dm.get_by_path(&["trade", &self.user_id, "trades"])
+        else {
             return Ok(HashMap::new());
-        }
-
-        let trades_map = match data.unwrap() {
-            serde_json::Value::Object(map) => map,
-            _ => return Ok(HashMap::new()),
         };
 
         let mut trades = HashMap::new();

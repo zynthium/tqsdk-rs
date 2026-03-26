@@ -60,7 +60,7 @@ impl Client {
     }
 
     pub fn ins_url(&self) -> &str {
-        &self._config.ins_url
+        &self.config.ins_url
     }
 
     /// 设置认证器
@@ -306,9 +306,9 @@ impl Client {
 
         let ws_config = WebSocketConfig {
             headers: auth.base_header(),
-            message_queue_capacity: self._config.message_queue_capacity,
-            message_backlog_warn_step: self._config.message_backlog_warn_step,
-            message_batch_max: self._config.message_batch_max,
+            message_queue_capacity: self.config.message_queue_capacity,
+            message_backlog_warn_step: self.config.message_backlog_warn_step,
+            message_batch_max: self.config.message_batch_max,
             ..Default::default()
         };
         drop(auth);

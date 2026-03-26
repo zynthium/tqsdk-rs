@@ -17,11 +17,11 @@ struct MarketBootstrap {
 
 impl Client {
     async fn preload_symbol_info(&self, headers: HeaderMap) -> Result<()> {
-        if self._config.stock {
+        if self.config.stock {
             return Ok(());
         }
 
-        let url = self._config.ins_url.trim();
+        let url = self.config.ins_url.trim();
         if url.is_empty() {
             return Ok(());
         }
@@ -66,7 +66,7 @@ impl Client {
 
     async fn load_market_bootstrap(&self, backtest: bool) -> Result<MarketBootstrap> {
         let auth = self.auth.read().await;
-        let md_url = auth.get_md_url(self._config.stock, backtest).await?;
+        let md_url = auth.get_md_url(self.config.stock, backtest).await?;
         let headers = auth.base_header();
         let enable_trading_status = auth.has_feature("tq_trading_status");
         drop(auth);
@@ -83,9 +83,9 @@ impl Client {
             headers,
             auto_peek: !backtest,
             quote_subscribe_only_add: backtest,
-            message_queue_capacity: self._config.message_queue_capacity,
-            message_backlog_warn_step: self._config.message_backlog_warn_step,
-            message_batch_max: self._config.message_batch_max,
+            message_queue_capacity: self.config.message_queue_capacity,
+            message_backlog_warn_step: self.config.message_backlog_warn_step,
+            message_batch_max: self.config.message_batch_max,
             ..Default::default()
         }
     }
@@ -142,7 +142,7 @@ impl Client {
             Arc::clone(&quotes_ws),
             trading_status_ws,
             Arc::clone(&self.auth),
-            self._config.stock,
+            self.config.stock,
         )));
         self.market_active.store(true, Ordering::SeqCst);
 
