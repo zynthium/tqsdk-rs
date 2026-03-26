@@ -90,12 +90,14 @@ cargo build --features polars  # 含 polars 扩展
 
 | 模块 | 入口类型 | 职责 |
 |------|---------|------|
-| `client` | `Client`, `ClientBuilder` | 统一入口，管理生命周期 |
+| `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期 |
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析、权限检查 |
 | `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
 | `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
 | `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
-| `ins` | `InsAPI` | 合约查询、期权筛选、交易日历 |
+| `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
 | `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
-| `backtest` | `BacktestHandle` | 回测时间推进 |
+| `backtest` | `BacktestHandle`, `BacktestConfig`, `BacktestEvent`, `BacktestTime` | 回测时间推进与事件 |
+| `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
+| `prelude` | — | 便捷 re-export |
