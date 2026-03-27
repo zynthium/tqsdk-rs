@@ -70,7 +70,7 @@ impl DataManager {
         );
     }
 
-    pub fn merge_data_with_semantics(
+    pub(crate) fn merge_data_with_semantics(
         &self,
         source: Value,
         epoch_increase: bool,

@@ -47,7 +47,7 @@ pub(super) fn match_query_cache(
     }
 }
 
-pub(crate) fn validate_option_class(option_class: &str) -> Result<()> {
+pub(super) fn validate_option_class(option_class: &str) -> Result<()> {
     if option_class != "CALL" && option_class != "PUT" {
         return Err(TqError::InvalidParameter(
             "option_class 参数错误，option_class 必须是 'CALL' 或者 'PUT'".to_string(),
@@ -56,7 +56,7 @@ pub(crate) fn validate_option_class(option_class: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_price_level(price_level: &[i32]) -> Result<()> {
+pub(super) fn validate_price_level(price_level: &[i32]) -> Result<()> {
     if !price_level.iter().all(|pl| (-100..=100).contains(pl)) {
         return Err(TqError::InvalidParameter(
             "price_level 必须为 -100 ~ 100 之间的整数".to_string(),
@@ -65,7 +65,7 @@ pub(crate) fn validate_price_level(price_level: &[i32]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_finance_underlying(underlying_symbol: &str) -> Result<()> {
+pub(super) fn validate_finance_underlying(underlying_symbol: &str) -> Result<()> {
     let allowed = [
         "SSE.000300",
         "SSE.510050",
@@ -83,7 +83,7 @@ pub(crate) fn validate_finance_underlying(underlying_symbol: &str) -> Result<()>
     Ok(())
 }
 
-pub(crate) fn validate_finance_nearbys(underlying_symbol: &str, nearbys: &[i32]) -> Result<()> {
+pub(super) fn validate_finance_nearbys(underlying_symbol: &str, nearbys: &[i32]) -> Result<()> {
     let is_index = matches!(
         underlying_symbol,
         "SSE.000300" | "SSE.000852" | "SSE.000016"

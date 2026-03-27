@@ -16,17 +16,17 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 /// 版本号
-pub const VERSION: &str = "3.8.1";
-pub const TQ_AUTH_URL: &str = "https://auth.shinnytech.com";
-pub const TQ_NS_URL: &str = "https://api.shinnytech.com/ns";
-pub const TQ_MD_URL_ENV: &str = "TQ_MD_URL";
+pub(crate) const VERSION: &str = "3.8.1";
+pub(crate) const TQ_AUTH_URL: &str = "https://auth.shinnytech.com";
+pub(crate) const TQ_NS_URL: &str = "https://api.shinnytech.com/ns";
+pub(crate) const TQ_MD_URL_ENV: &str = "TQ_MD_URL";
 /// 客户端 ID
-pub const CLIENT_ID: &str = "shinny_tq";
+pub(crate) const CLIENT_ID: &str = "shinny_tq";
 /// 客户端密钥
-pub const CLIENT_SECRET: &str = "be30b9f4-6862-488a-99ad-21bde0400081";
+pub(crate) const CLIENT_SECRET: &str = "be30b9f4-6862-488a-99ad-21bde0400081";
 
 #[derive(Debug, Clone)]
-pub struct TqAuthConfig {
+pub(crate) struct TqAuthConfig {
     pub auth_url: String,
     pub ns_url: String,
     pub client_id: String,
@@ -111,11 +111,11 @@ pub trait Authenticator: Send + Sync {
 
 /// 权限信息
 #[derive(Debug, Clone, Default)]
-pub struct Grants {
+pub(crate) struct Grants {
     /// 功能权限
-    pub features: HashSet<String>,
+    pub(crate) features: HashSet<String>,
     /// 账户权限
-    pub accounts: HashSet<String>,
+    pub(crate) accounts: HashSet<String>,
 }
 
 /// 认证响应
@@ -186,7 +186,7 @@ struct MdUrlResponse {
 }
 
 /// 天勤认证实现
-pub struct TqAuth {
+pub(crate) struct TqAuth {
     username: String,
     password: String,
     config: TqAuthConfig,

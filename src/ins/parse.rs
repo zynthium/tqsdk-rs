@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use chrono::{Datelike, FixedOffset, TimeZone, Utc};
 
-pub(crate) fn parse_query_quotes_result(res: &Value, target_ex: Option<&str>) -> Vec<String> {
+pub(super) fn parse_query_quotes_result(res: &Value, target_ex: Option<&str>) -> Vec<String> {
     let mut list = Vec::new();
     if let Some(result_obj) = res.get("result")
         && let Some(arr) = result_obj
@@ -27,7 +27,7 @@ pub(crate) fn parse_query_quotes_result(res: &Value, target_ex: Option<&str>) ->
     list
 }
 
-pub(crate) fn parse_query_cont_quotes_result(
+pub(super) fn parse_query_cont_quotes_result(
     res: &Value,
     exchange_id: Option<&str>,
     product_id: Option<&str>,
@@ -74,7 +74,7 @@ pub(crate) fn parse_query_cont_quotes_result(
     list
 }
 
-pub(crate) fn parse_query_options_result(
+pub(super) fn parse_query_options_result(
     res: &Value,
     option_class: Option<&str>,
     exercise_year: Option<i32>,
@@ -173,7 +173,7 @@ pub(crate) fn parse_query_options_result(
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct OptionNode {
+pub(super) struct OptionNode {
     pub(crate) instrument_id: String,
     pub(crate) english_name: String,
     pub(crate) call_or_put: String,
@@ -184,7 +184,7 @@ pub(crate) struct OptionNode {
     pub(crate) exercise_month: i32,
 }
 
-pub(crate) fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
+pub(super) fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
     let mut options = Vec::new();
     if let Some(result_obj) = res.get("result")
         && let Some(arr) = result_obj
@@ -246,12 +246,12 @@ pub(crate) fn parse_option_nodes(res: &Value) -> Vec<OptionNode> {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum BisectPriority {
+pub(super) enum BisectPriority {
     Left,
     Right,
 }
 
-pub(crate) fn bisect_value_index(a: &[f64], x: f64, priority: BisectPriority) -> usize {
+pub(super) fn bisect_value_index(a: &[f64], x: f64, priority: BisectPriority) -> usize {
     let insert_index = a.partition_point(|v| *v <= x);
     if 0 < insert_index && insert_index < a.len() {
         let left_dis = x - a[insert_index - 1];
@@ -273,7 +273,7 @@ pub(crate) fn bisect_value_index(a: &[f64], x: f64, priority: BisectPriority) ->
     }
 }
 
-pub(crate) fn filter_option_nodes(
+pub(super) fn filter_option_nodes(
     options: Vec<OptionNode>,
     option_class: Option<&str>,
     exercise_year: Option<i32>,
@@ -317,7 +317,7 @@ pub(crate) fn filter_option_nodes(
     filtered
 }
 
-pub(crate) fn sort_options_and_get_atm_index(
+pub(super) fn sort_options_and_get_atm_index(
     options: &mut [OptionNode],
     underlying_price: f64,
     option_class: &str,
@@ -527,7 +527,7 @@ fn normalize_symbol_info(info: &mut Map<String, Value>) {
     }
 }
 
-pub(crate) fn parse_query_symbol_info_result(
+pub(super) fn parse_query_symbol_info_result(
     res: &Value,
     symbol_list: &[String],
     current_ts: i64,

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock;
 
-pub const TQ_INS_URL_DEFAULT: &str = "https://openmd.shinnytech.com/t/md/symbols/latest.json";
+pub(crate) const TQ_INS_URL_DEFAULT: &str = "https://openmd.shinnytech.com/t/md/symbols/latest.json";
 
 fn default_ins_url() -> String {
     std::env::var("TQ_INS_URL").unwrap_or_else(|_| TQ_INS_URL_DEFAULT.to_string())

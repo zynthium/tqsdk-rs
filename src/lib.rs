@@ -77,8 +77,8 @@ pub mod polars_ext;
 // 重新导出常用类型
 pub use auth::Authenticator;
 pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
-pub use client::{Client, ClientConfig, ClientOption};
-pub use datamanager::{DataManager, DataManagerConfig};
+pub use client::{Client, ClientBuilder, ClientConfig, ClientOption};
+pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};

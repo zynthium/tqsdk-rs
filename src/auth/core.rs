@@ -15,11 +15,6 @@ impl TqAuth {
         }
     }
 
-    pub fn with_config(mut self, config: TqAuthConfig) -> Self {
-        self.config = config;
-        self
-    }
-
     pub(super) fn build_http_client(&self) -> Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder().timeout(self.config.http_timeout);
         if self.config.no_proxy {
