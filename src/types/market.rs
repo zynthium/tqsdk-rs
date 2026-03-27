@@ -1,5 +1,5 @@
 use super::helpers::{
-    default_nan, deserialize_f64_or_nan, deserialize_f64_or_nan_or_dash, deserialize_i64_or_zero,
+    default_nan, deserialize_f64_or_nan, deserialize_i64_or_zero,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -89,7 +89,7 @@ pub struct Quote {
     /// 收盘价
     #[serde(
         default = "default_nan",
-        deserialize_with = "deserialize_f64_or_nan_or_dash"
+        deserialize_with = "deserialize_f64_or_nan"
     )]
     pub close: f64,
     /// 均价
@@ -115,7 +115,7 @@ pub struct Quote {
     /// 结算价
     #[serde(
         default = "default_nan",
-        deserialize_with = "deserialize_f64_or_nan_or_dash"
+        deserialize_with = "deserialize_f64_or_nan"
     )]
     pub settlement: f64,
     /// 昨结算价

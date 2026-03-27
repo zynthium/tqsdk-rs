@@ -390,9 +390,20 @@ impl DataManager {
                     let Some(tick_data) = tick_map.get(&id_key) else {
                         continue;
                     };
-                    if let Ok(mut tick) = self.convert_to_struct::<Tick>(tick_data) {
-                        tick.id = id;
-                        ticks.push(tick);
+                    match self.convert_to_struct::<Tick>(tick_data) {
+                        Ok(mut tick) => {
+                            tick.id = id;
+                            ticks.push(tick);
+                        }
+                        Err(e) => {
+                            error!(
+                                "{}",
+                                TqError::ParseError(format!(
+                                    "Tick数据格式错误: id={}, {}",
+                                    id, e
+                                ))
+                            );
+                        }
                     }
                 }
                 tick_series.data = ticks;
