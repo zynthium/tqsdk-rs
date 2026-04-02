@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tqsdk-rs = "0.1.1"
+tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.2" }
 tokio = { version = "1", features = ["full"] }

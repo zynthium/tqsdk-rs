@@ -18,11 +18,11 @@
 
 ```toml
 [dependencies]
-tqsdk-rs = "0.1.1"
+tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.2" }
 tokio = { version = "1", features = ["full"] }
 
 # 可选：启用 Polars 数据分析
-# tqsdk-rs = { version = "0.1.1", features = ["polars"] }
+# tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.2", features = ["polars"] }
 ```
 
 ## 3. 功能模块概览
