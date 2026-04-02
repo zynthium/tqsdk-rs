@@ -1,6 +1,6 @@
 [package]
 name = "tqsdk-rs"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["pseudocodes@gmail.com"]
 description = "天勤 TQSDK Rust 封装提供获取 TQSDK 行情, K 线数据以及实盘交易接口"

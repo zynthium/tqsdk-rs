@@ -77,10 +77,10 @@
 ```toml
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.2" }
+tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3" }
 
 # 如需 Polars DataFrame 支持：
-# tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.2", features = ["polars"] }
+# tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3", features = ["polars"] }
 ```
 
 ### 环境变量
