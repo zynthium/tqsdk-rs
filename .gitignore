@@ -1,0 +1,22 @@
+### Rust build artifacts
+target/
+**/target/
+
+### Rust package manager (library crates usually do NOT commit Cargo.lock)
+Cargo.lock
+
+### Editor & OS noise
+.idea/
+.vscode/
+.DS_Store
+.cargo/
+
+### Logs and local run outputs
+logs/
+**/logs/
+
+### Misc
+*.log
+*.tmp
+*.swp
+*.swo
