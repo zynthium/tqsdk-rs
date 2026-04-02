@@ -22,10 +22,7 @@ impl Authenticator for TqAuth {
     async fn login(&mut self) -> Result<()> {
         self.request_token().await?;
         self.parse_token().await?;
-        info!(
-            "TqAuth 登录成功, User: {},  AuthId: {}",
-            self.username, self.auth_id
-        );
+        info!("TqAuth 登录成功, User: {},  AuthId: {}", self.username, self.auth_id);
         Ok(())
     }
 
@@ -46,21 +43,18 @@ impl Authenticator for TqAuth {
             })?;
 
         if !response.status().is_success() {
-            return Err(TqError::ConfigError(format!(
-                "不支持该期货公司: {}",
-                broker_id
-            )));
+            return Err(TqError::ConfigError(format!("不支持该期货公司: {}", broker_id)));
         }
 
-        let broker_infos: HashMap<String, BrokerInfo> =
-            response.json().await.map_err(|e| TqError::Reqwest {
-                context: format!("解析 broker 配置失败: GET {}", url),
-                source: e,
-            })?;
+        let broker_infos: HashMap<String, BrokerInfo> = response.json().await.map_err(|e| TqError::Reqwest {
+            context: format!("解析 broker 配置失败: GET {}", url),
+            source: e,
+        })?;
 
-        broker_infos.get(broker_id).cloned().ok_or_else(|| {
-            TqError::ConfigError(format!("该期货公司 {} 暂不支持 TqSdk 登录", broker_id))
-        })
+        broker_infos
+            .get(broker_id)
+            .cloned()
+            .ok_or_else(|| TqError::ConfigError(format!("该期货公司 {} 暂不支持 TqSdk 登录", broker_id)))
     }
 
     async fn get_md_url(&self, stock: bool, backtest: bool) -> Result<String> {
@@ -75,10 +69,7 @@ impl Authenticator for TqAuth {
 
         let response = client
             .get(&ns_url)
-            .query(&[
-                ("stock", stock.to_string()),
-                ("backtest", backtest.to_string()),
-            ])
+            .query(&[("stock", stock.to_string()), ("backtest", backtest.to_string())])
             .headers(self.base_header())
             .send()
             .await
@@ -137,10 +128,7 @@ impl Authenticator for TqAuth {
                 continue;
             }
 
-            if matches!(
-                *symbol,
-                "SSE.000016" | "SSE.000300" | "SSE.000905" | "SSE.000852"
-            ) {
+            if matches!(*symbol, "SSE.000016" | "SSE.000300" | "SSE.000905" | "SSE.000852") {
                 if !self.has_feature("lmt_idx") {
                     return Err(TqError::PermissionDenied(format!(
                         "您的账户不支持查看 {} 的行情数据",
@@ -150,10 +138,7 @@ impl Authenticator for TqAuth {
                 continue;
             }
 
-            return Err(TqError::PermissionDenied(format!(
-                "不支持的合约: {}",
-                symbol
-            )));
+            return Err(TqError::PermissionDenied(format!("不支持的合约: {}", symbol)));
         }
 
         Ok(())
@@ -169,26 +154,17 @@ impl Authenticator for TqAuth {
             if self.has_feature("futr") {
                 return Ok(());
             }
-            return Err(TqError::PermissionDenied(format!(
-                "您的账户不支持交易 {}",
-                symbol
-            )));
+            return Err(TqError::PermissionDenied(format!("您的账户不支持交易 {}", symbol)));
         }
 
         if prefix == "CSI" || matches!(prefix, "SSE" | "SZSE") {
             if self.has_feature("sec") {
                 return Ok(());
             }
-            return Err(TqError::PermissionDenied(format!(
-                "您的账户不支持交易 {}",
-                symbol
-            )));
+            return Err(TqError::PermissionDenied(format!("您的账户不支持交易 {}", symbol)));
         }
 
-        Err(TqError::PermissionDenied(format!(
-            "不支持的合约: {}",
-            symbol
-        )))
+        Err(TqError::PermissionDenied(format!("不支持的合约: {}", symbol)))
     }
 
     fn get_auth_id(&self) -> &str {

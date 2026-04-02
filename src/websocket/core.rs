@@ -1,6 +1,5 @@
 use super::{
-    CloseCallback, ErrorCallback, MessageCallback, OpenCallback, build_connection_notify,
-    derive_message_backlog_max,
+    CloseCallback, ErrorCallback, MessageCallback, OpenCallback, build_connection_notify, derive_message_backlog_max,
     is_ops_maintenance_window_cst, next_shared_reconnect_delay, sanitize_log_pack_value,
 };
 use crate::errors::{Result, TqError};
@@ -15,8 +14,8 @@ use std::time::Duration;
 use tokio::sync::{Mutex, Notify, oneshot};
 use tokio::time::sleep;
 use tracing::{debug, error, info, trace, warn};
-use yawc::frame::{Frame, OpCode};
 use yawc::TcpWebSocket;
+use yawc::frame::{Frame, OpCode};
 
 const DEFAULT_MESSAGE_QUEUE_CAPACITY: usize = 2048;
 const DEFAULT_MESSAGE_BACKLOG_WARN_STEP: usize = 1024;
@@ -85,17 +84,12 @@ impl WsIoHandle {
     async fn send_text(&self, payload: String) -> Result<()> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.tx
-            .send(WsIoCommand::SendText {
-                payload,
-                resp: resp_tx,
-            })
+            .send(WsIoCommand::SendText { payload, resp: resp_tx })
             .await
             .map_err(|_| TqError::WebSocketError("websocket io actor is closed".to_string()))?;
-        resp_rx.await.unwrap_or_else(|_| {
-            Err(TqError::WebSocketError(
-                "websocket io actor dropped".to_string(),
-            ))
-        })
+        resp_rx
+            .await
+            .unwrap_or_else(|_| Err(TqError::WebSocketError("websocket io actor dropped".to_string())))
     }
 
     fn request_close(&self) {
@@ -251,20 +245,14 @@ impl TqWebsocket {
             return;
         };
         if aid == "subscribe_quote" {
-            let ins_list = value
-                .get("ins_list")
-                .and_then(|list| list.as_str())
-                .unwrap_or("");
+            let ins_list = value.get("ins_list").and_then(|list| list.as_str()).unwrap_or("");
             if ins_list.len() > self.ins_list_max_length {
                 warn!(
                     "订阅合约字符串总长度大于 {}，可能会引起服务器限制。",
                     self.ins_list_max_length
                 );
             }
-            let ins_list_counts = ins_list
-                .split(',')
-                .filter(|symbol| !symbol.trim().is_empty())
-                .count();
+            let ins_list_counts = ins_list.split(',').filter(|symbol| !symbol.trim().is_empty()).count();
             let subscribed_counts = self.subscribed_counts.fetch_add(1, Ordering::SeqCst) + 1;
             if ins_list_counts > self.subscribed_ins_list_throttle
                 && (ins_list_counts as f64) / (subscribed_counts as f64) < 2.0
@@ -274,10 +262,7 @@ impl TqWebsocket {
             return;
         }
         if aid == "ins_query" {
-            let query = value
-                .get("query")
-                .and_then(|query| query.as_str())
-                .unwrap_or("");
+            let query = value.get("query").and_then(|query| query.as_str()).unwrap_or("");
             if query.len() > self.query_max_length {
                 warn!(
                     "订阅合约信息字段总长度大于 {}，可能会引起服务器限制。",
@@ -289,10 +274,8 @@ impl TqWebsocket {
 
     /// 创建新的 WebSocket 连接
     pub fn new(url: String, config: WebSocketConfig) -> Self {
-        let pending_queue_max = derive_message_backlog_max(
-            config.message_queue_capacity,
-            config.message_backlog_warn_step,
-        );
+        let pending_queue_max =
+            derive_message_backlog_max(config.message_queue_capacity, config.message_backlog_warn_step);
         Self {
             url,
             conn_id: uuid::Uuid::new_v4().to_string(),
@@ -350,17 +333,10 @@ impl TqWebsocket {
         if self.connecting.swap(true, Ordering::SeqCst) {
             return Ok(());
         }
-        info!(
-            "正在连接 WebSocket: {} (重连: {})",
-            self.url, is_reconnection
-        );
+        info!("正在连接 WebSocket: {} (重连: {})", self.url, is_reconnection);
         if is_reconnection {
             debug!("websocket connection connecting");
-            self.emit_connection_notify(
-                2019112910,
-                "WARNING",
-                format!("开始与 {} 重新建立网络连接", self.url),
-            );
+            self.emit_connection_notify(2019112910, "WARNING", format!("开始与 {} 重新建立网络连接", self.url));
         }
         *self.status.write().unwrap() = WebSocketStatus::Connecting;
 
@@ -368,8 +344,8 @@ impl TqWebsocket {
             .client_no_context_takeover()
             .server_no_context_takeover();
 
-        let parsed_url = url::Url::parse(&self.url)
-            .map_err(|error| TqError::WebSocketError(format!("Invalid URL: {}", error)))?;
+        let parsed_url =
+            url::Url::parse(&self.url).map_err(|error| TqError::WebSocketError(format!("Invalid URL: {}", error)))?;
 
         let mut http_builder = yawc::HttpRequestBuilder::new();
         for (key, value) in self.config.headers.iter() {
@@ -388,8 +364,7 @@ impl TqWebsocket {
                 error!(url = %self.url, error = %error, "WebSocket 连接失败");
                 debug!(error = %error, "websocket connection closed");
                 let in_ops_time = is_ops_maintenance_window_cst();
-                let mut content =
-                    format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url);
+                let mut content = format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url);
                 if in_ops_time {
                     content.push_str("，每日 19:00-19:30 为日常运维时间，请稍后再试");
                 }
@@ -412,10 +387,7 @@ impl TqWebsocket {
                 }
 
                 self.connecting.store(false, Ordering::SeqCst);
-                return Err(TqError::WebSocketError(format!(
-                    "Connection failed: {}",
-                    error
-                )));
+                return Err(TqError::WebSocketError(format!("Connection failed: {}", error)));
             }
         };
 
@@ -441,18 +413,10 @@ impl TqWebsocket {
         let first_connected = !self.connected_once.swap(true, Ordering::SeqCst);
         if first_connected && !is_reconnection {
             debug!("websocket connected");
-            self.emit_connection_notify(
-                2019112901,
-                "INFO",
-                format!("与 {} 的网络连接已建立", self.url),
-            );
+            self.emit_connection_notify(2019112901, "INFO", format!("与 {} 的网络连接已建立", self.url));
         } else {
             debug!("websocket reconnected");
-            self.emit_connection_notify(
-                2019112902,
-                "WARNING",
-                format!("与 {} 的网络连接已恢复", self.url),
-            );
+            self.emit_connection_notify(2019112902, "WARNING", format!("与 {} 的网络连接已恢复", self.url));
         }
 
         self.install_io_actor(ws, connection_id);
@@ -488,10 +452,7 @@ impl TqWebsocket {
                             self.emit_connection_notify(
                                 2019112911,
                                 "WARNING",
-                                format!(
-                                    "与 {} 的网络连接断开，请检查客户端及网络是否正常",
-                                    self.url
-                                ),
+                                format!("与 {} 的网络连接断开，请检查客户端及网络是否正常", self.url),
                             );
                             let callback = self.on_close.read().unwrap().clone();
                             if let Some(callback) = callback {
@@ -711,10 +672,7 @@ impl TqWebsocket {
             let mut reconnect_times = self.reconnect_times.write().unwrap();
 
             if *reconnect_times >= self.config.reconnect_max_times {
-                error!(
-                    "已达到最大重连次数 {}，停止重连",
-                    self.config.reconnect_max_times
-                );
+                error!("已达到最大重连次数 {}，停止重连", self.config.reconnect_max_times);
                 return false;
             }
 
@@ -723,13 +681,9 @@ impl TqWebsocket {
         };
 
         if should_reconnect {
-            info!(
-                "第 {} 次尝试重连（最多 {} 次）",
-                times, self.config.reconnect_max_times
-            );
+            info!("第 {} 次尝试重连（最多 {} 次）", times, self.config.reconnect_max_times);
 
-            let wait_duration =
-                next_shared_reconnect_delay(times as u32, self.config.reconnect_interval);
+            let wait_duration = next_shared_reconnect_delay(times as u32, self.config.reconnect_interval);
             if wait_duration > Duration::ZERO {
                 sleep(wait_duration).await;
             }
@@ -795,10 +749,7 @@ impl TqWebsocket {
 
         self.pending_peek.store(false, Ordering::SeqCst);
         self.set_disconnect_reason(format!("{}_message_backlog_overflow", channel_name));
-        warn!(
-            "{} 消息 backlog 已发生丢弃，主动断开连接以触发全量重同步",
-            channel_name
-        );
+        warn!("{} 消息 backlog 已发生丢弃，主动断开连接以触发全量重同步", channel_name);
 
         if let Some(io) = self.io.lock().unwrap().take() {
             io.request_close();
@@ -817,10 +768,7 @@ async fn ws_io_actor_loop(
     close_notify: Arc<Notify>,
     ctx: WsActorContext,
 ) {
-    debug!(
-        connection_id = ctx.connection_id,
-        "启动 WebSocket I/O actor"
-    );
+    debug!(connection_id = ctx.connection_id, "启动 WebSocket I/O actor");
 
     let last_recv_time = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
     let mut consecutive_none = 0u8;
@@ -1022,9 +970,7 @@ async fn ws_io_actor_loop(
 
     if ctx.is_current_connection() && !closed_callback_fired {
         let reason = ctx.disconnect_reason.read().unwrap().clone();
-        if reason.as_deref() != Some("manual_close")
-            && ctx.current_status() == WebSocketStatus::Open
-        {
+        if reason.as_deref() != Some("manual_close") && ctx.current_status() == WebSocketStatus::Open {
             ctx.set_status(WebSocketStatus::Closed);
             ctx.emit_disconnect_notify();
         } else {
@@ -1036,10 +982,7 @@ async fn ws_io_actor_loop(
         }
     }
 
-    debug!(
-        connection_id = ctx.connection_id,
-        "WebSocket I/O actor 结束"
-    );
+    debug!(connection_id = ctx.connection_id, "WebSocket I/O actor 结束");
 }
 
 fn peek_frame() -> Frame {

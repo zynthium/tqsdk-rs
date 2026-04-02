@@ -1,6 +1,4 @@
-use super::helpers::{
-    default_nan, deserialize_f64_or_nan, deserialize_i64_or_zero,
-};
+use super::helpers::{default_nan, deserialize_f64_or_nan, deserialize_i64_or_zero};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -87,10 +85,7 @@ pub struct Quote {
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub open: f64,
     /// 收盘价
-    #[serde(
-        default = "default_nan",
-        deserialize_with = "deserialize_f64_or_nan"
-    )]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub close: f64,
     /// 均价
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
@@ -113,10 +108,7 @@ pub struct Quote {
     pub upper_limit: f64,
 
     /// 结算价
-    #[serde(
-        default = "default_nan",
-        deserialize_with = "deserialize_f64_or_nan"
-    )]
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub settlement: f64,
     /// 昨结算价
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
@@ -282,8 +274,7 @@ impl Default for Quote {
 impl Quote {
     /// 更新涨跌和涨跌幅
     pub fn update_change(&mut self) {
-        if !self.last_price.is_nan() && !self.pre_settlement.is_nan() && self.pre_settlement != 0.0
-        {
+        if !self.last_price.is_nan() && !self.pre_settlement.is_nan() && self.pre_settlement != 0.0 {
             self.change = self.last_price - self.pre_settlement;
             self.change_percent = self.change / self.pre_settlement * 100.0;
         }

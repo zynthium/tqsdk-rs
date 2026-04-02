@@ -62,12 +62,7 @@ impl DataManager {
     /// * `epoch_increase` - 是否增加版本号
     /// * `delete_null` - 是否删除 null 对象
     pub fn merge_data(&self, source: Value, epoch_increase: bool, delete_null: bool) {
-        self.merge_data_with_semantics(
-            source,
-            epoch_increase,
-            delete_null,
-            self.config.merge_semantics.clone(),
-        );
+        self.merge_data_with_semantics(source, epoch_increase, delete_null, self.config.merge_semantics.clone());
     }
 
     pub(crate) fn merge_data_with_semantics(
@@ -167,8 +162,7 @@ impl DataManager {
         let mut changed = false;
         for (property, value) in source {
             let (property_prototype, proto_branch) = resolve_child_prototype(prototype, property);
-            let transformed_value =
-                transform_value_by_prototype(value, property_prototype, proto_branch);
+            let transformed_value = transform_value_by_prototype(value, property_prototype, proto_branch);
             let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
 
             if value.is_null() {
@@ -183,9 +177,7 @@ impl DataManager {
 
             match transformed_value {
                 Value::String(ref s) if s == "NaN" || s == "-" => {
-                    if options.reduce_diff
-                        && target.mt_get(property).is_some_and(|v| v.is_null())
-                    {
+                    if options.reduce_diff && target.mt_get(property).is_some_and(|v| v.is_null()) {
                         continue;
                     }
                     target.mt_insert(property.clone(), Value::Null);
@@ -212,10 +204,7 @@ impl DataManager {
                                 default_object_by_branch(property_prototype, proto_branch),
                             );
                         }
-                        let target_obj = target.mt_entry_or_insert(
-                            property.clone(),
-                            Value::Object(Map::new()),
-                        );
+                        let target_obj = target.mt_entry_or_insert(property.clone(), Value::Object(Map::new()));
                         if !target_obj.is_object() {
                             *target_obj = Value::Object(Map::new());
                         }
@@ -238,9 +227,7 @@ impl DataManager {
                     }
                 }
                 _ => {
-                    if options.reduce_diff
-                        && target.mt_get(property) == Some(&transformed_value)
-                    {
+                    if options.reduce_diff && target.mt_get(property) == Some(&transformed_value) {
                         continue;
                     }
                     target.mt_insert(property.clone(), transformed_value);
@@ -256,10 +243,7 @@ impl DataManager {
     }
 
     /// 统一的行情合并实现
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "行情合并路径需要携带完整上下文参数"
-    )]
+    #[expect(clippy::too_many_arguments, reason = "行情合并路径需要携带完整上下文参数")]
     fn merge_quotes_into<T: MergeTarget>(
         &self,
         target: &mut T,
@@ -271,15 +255,12 @@ impl DataManager {
         persist_ctx: bool,
     ) -> bool {
         let mut changed = false;
-        let quotes_obj = target
-            .mt_entry_or_insert("quotes".to_string(), Value::Object(Map::new()));
+        let quotes_obj = target.mt_entry_or_insert("quotes".to_string(), Value::Object(Map::new()));
 
         if let Value::Object(quotes_map) = quotes_obj {
             for (symbol, quote_data) in quotes {
-                let (symbol_prototype, proto_branch) =
-                    resolve_child_prototype(prototype, symbol);
-                let child_persist =
-                    persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
+                let (symbol_prototype, proto_branch) = resolve_child_prototype(prototype, symbol);
+                let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
                 if quote_data.is_null() {
                     if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
                         continue;
@@ -293,10 +274,7 @@ impl DataManager {
                 if let Value::Object(quote_obj) = quote_data {
                     let existed = quotes_map.contains_key(symbol);
                     if !existed {
-                        quotes_map.insert(
-                            symbol.clone(),
-                            default_object_by_branch(symbol_prototype, proto_branch),
-                        );
+                        quotes_map.insert(symbol.clone(), default_object_by_branch(symbol_prototype, proto_branch));
                     }
                     let target_quote = quotes_map
                         .entry(symbol.clone())
@@ -382,10 +360,7 @@ impl DataManager {
             let pos_short = short_his + short_today;
             pos.insert("pos_long".to_string(), Value::Number(pos_long.into()));
             pos.insert("pos_short".to_string(), Value::Number(pos_short.into()));
-            pos.insert(
-                "pos".to_string(),
-                Value::Number((pos_long - pos_short).into()),
-            );
+            pos.insert("pos".to_string(), Value::Number((pos_long - pos_short).into()));
             pos.insert("_epoch".to_string(), Value::Number(epoch.into()));
         }
     }
@@ -399,10 +374,7 @@ impl DataManager {
                 continue;
             };
             let status = order.get("status").and_then(|v| v.as_str()).unwrap_or("");
-            let exchange_order_id = order
-                .get("exchange_order_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let exchange_order_id = order.get("exchange_order_id").and_then(|v| v.as_str()).unwrap_or("");
             let is_dead = status == "FINISHED";
             let is_online = !exchange_order_id.is_empty() && status == "ALIVE";
             let is_error = exchange_order_id.is_empty() && status == "FINISHED";
@@ -417,8 +389,7 @@ impl DataManager {
         let Some(Value::Object(trades_map)) = user_map.get("trades") else {
             return;
         };
-        let mut order_trade_stats: HashMap<String, (i64, f64)> =
-            HashMap::with_capacity(trades_map.len());
+        let mut order_trade_stats: HashMap<String, (i64, f64)> = HashMap::with_capacity(trades_map.len());
         for trade_val in trades_map.values() {
             let Some(trade) = trade_val.as_object() else {
                 continue;
@@ -432,9 +403,7 @@ impl DataManager {
                 continue;
             }
             let price = trade.get("price").and_then(to_f64_any).unwrap_or(0.0);
-            let entry = order_trade_stats
-                .entry(trade_order_id.to_string())
-                .or_insert((0, 0.0));
+            let entry = order_trade_stats.entry(trade_order_id.to_string()).or_insert((0, 0.0));
             entry.0 += volume;
             entry.1 += price * volume as f64;
         }
@@ -485,10 +454,7 @@ fn normalize_ts_to_secs(ts: i64) -> i64 {
     }
 }
 
-fn resolve_child_prototype<'a>(
-    prototype: Option<&'a Value>,
-    key: &str,
-) -> (Option<&'a Value>, PrototypeBranch) {
+fn resolve_child_prototype<'a>(prototype: Option<&'a Value>, key: &str) -> (Option<&'a Value>, PrototypeBranch) {
     let Some(Value::Object(proto_map)) = prototype else {
         return (None, PrototypeBranch::None);
     };
@@ -511,26 +477,16 @@ fn has_hash_prototype(prototype: Option<&Value>) -> bool {
     matches!(prototype, Some(Value::Object(map)) if map.contains_key("#"))
 }
 
-fn transform_value_by_prototype(
-    value: &Value,
-    prototype: Option<&Value>,
-    branch: PrototypeBranch,
-) -> Value {
+fn transform_value_by_prototype(value: &Value, prototype: Option<&Value>, branch: PrototypeBranch) -> Value {
     match (value, prototype, branch) {
-        (Value::String(_), Some(proto), PrototypeBranch::Direct) if !proto.is_string() => {
-            proto.clone()
-        }
+        (Value::String(_), Some(proto), PrototypeBranch::Direct) if !proto.is_string() => proto.clone(),
         _ => value.clone(),
     }
 }
 
 fn default_object_by_branch(prototype: Option<&Value>, branch: PrototypeBranch) -> Value {
-    if matches!(branch, PrototypeBranch::At | PrototypeBranch::Hash)
-        && prototype.is_some_and(Value::is_object)
-    {
-        return prototype
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
+    if matches!(branch, PrototypeBranch::At | PrototypeBranch::Hash) && prototype.is_some_and(Value::is_object) {
+        return prototype.cloned().unwrap_or_else(|| Value::Object(Map::new()));
     }
     Value::Object(Map::new())
 }

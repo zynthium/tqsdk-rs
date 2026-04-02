@@ -83,9 +83,7 @@ impl BacktestHandle {
             return Ok(BacktestEvent::Tick { current_dt: dt });
         }
 
-        Err(TqError::InternalError(
-            "Failed to parse backtest time".to_string(),
-        ))
+        Err(TqError::InternalError("Failed to parse backtest time".to_string()))
     }
 
     /// 主动触发一次回测推进

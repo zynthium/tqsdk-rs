@@ -173,9 +173,7 @@ fn test_get_multi_klines_data_strict_alignment_skips_incomplete_rows() {
 
     let dm = DataManager::new(initial_data, DataManagerConfig::default());
     let symbols = vec!["A".to_string(), "B".to_string()];
-    let res = dm
-        .get_multi_klines_data(&symbols, dur_id, "C1", 100)
-        .unwrap();
+    let res = dm.get_multi_klines_data(&symbols, dur_id, "C1", 100).unwrap();
 
     assert_eq!(res.data.len(), 1);
     assert_eq!(res.data[0].klines.len(), 2);
@@ -232,9 +230,7 @@ fn test_get_multi_klines_data_strict_alignment_keeps_complete_rows() {
 
     let dm = DataManager::new(initial_data, DataManagerConfig::default());
     let symbols = vec!["A".to_string(), "B".to_string()];
-    let res = dm
-        .get_multi_klines_data(&symbols, dur_id, "C1", 100)
-        .unwrap();
+    let res = dm.get_multi_klines_data(&symbols, dur_id, "C1", 100).unwrap();
 
     assert_eq!(res.data.len(), 2);
     for set in res.data {

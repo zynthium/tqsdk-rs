@@ -91,37 +91,22 @@ impl TradeSession {
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_epoch {
-                            Self::process_position_update(
-                                &dm,
-                                &user_id,
-                                &position_tx,
-                                &on_position,
-                                last_epoch,
-                            )
-                            .await;
+                            Self::process_position_update(&dm, &user_id, &position_tx, &on_position, last_epoch).await;
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_epoch {
-                            Self::process_order_update(
-                                &dm, &user_id, &order_tx, &on_order, last_epoch,
-                            )
-                            .await;
+                            Self::process_order_update(&dm, &user_id, &order_tx, &on_order, last_epoch).await;
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_epoch {
-                            Self::process_trade_update(
-                                &dm, &user_id, &trade_tx, &on_trade, last_epoch,
-                            )
-                            .await;
+                            Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade, last_epoch).await;
                         }
 
                         *last_processed_epoch.lock().unwrap() = current_global_epoch;
                     }
                     if !worker_dirty.load(Ordering::SeqCst) {
                         worker_running.store(false, Ordering::SeqCst);
-                        if worker_dirty.load(Ordering::SeqCst)
-                            && !worker_running.swap(true, Ordering::SeqCst)
-                        {
+                        if worker_dirty.load(Ordering::SeqCst) && !worker_running.swap(true, Ordering::SeqCst) {
                             continue;
                         }
                         break;
@@ -140,9 +125,7 @@ impl TradeSession {
         on_position: &PositionCallback,
         last_epoch: i64,
     ) {
-        if let Some(serde_json::Value::Object(positions_map)) =
-            dm.get_by_path(&["trade", user_id, "positions"])
-        {
+        if let Some(serde_json::Value::Object(positions_map)) = dm.get_by_path(&["trade", user_id, "positions"]) {
             for (symbol, _) in &positions_map {
                 if symbol.starts_with('_') {
                     continue;
@@ -188,9 +171,7 @@ impl TradeSession {
         on_order: &OrderCallback,
         last_epoch: i64,
     ) {
-        if let Some(serde_json::Value::Object(orders_map)) =
-            dm.get_by_path(&["trade", user_id, "orders"])
-        {
+        if let Some(serde_json::Value::Object(orders_map)) = dm.get_by_path(&["trade", user_id, "orders"]) {
             for (order_id, order_data) in &orders_map {
                 if order_id.starts_with('_') {
                     continue;
@@ -228,9 +209,7 @@ impl TradeSession {
         on_trade: &TradeCallback,
         last_epoch: i64,
     ) {
-        if let Some(serde_json::Value::Object(trades_map)) =
-            dm.get_by_path(&["trade", user_id, "trades"])
-        {
+        if let Some(serde_json::Value::Object(trades_map)) = dm.get_by_path(&["trade", user_id, "trades"]) {
             for (trade_id, trade_data) in &trades_map {
                 if trade_id.starts_with('_') {
                     continue;

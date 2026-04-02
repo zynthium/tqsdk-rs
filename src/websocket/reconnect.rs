@@ -120,9 +120,7 @@ pub(crate) fn is_md_reconnect_complete(
     }
 
     if let Some(subscribe) = subscribe_quote.as_ref()
-        && let Some(sub_ins_list) = subscribe
-            .get("ins_list")
-            .and_then(|ins_list| ins_list.as_str())
+        && let Some(sub_ins_list) = subscribe.get("ins_list").and_then(|ins_list| ins_list.as_str())
     {
         match dm.get_by_path(&["ins_list"]) {
             Some(Value::String(data_ins_list)) => {
@@ -167,10 +165,7 @@ pub(crate) fn is_trade_reconnect_complete(
         return Some(Vec::new());
     }
     for user in users.iter() {
-        let more_data = get_bool(
-            dm.get_by_path(&["trade", user, "trade_more_data"]).as_ref(),
-            true,
-        );
+        let more_data = get_bool(dm.get_by_path(&["trade", user, "trade_more_data"]).as_ref(), true);
         if more_data {
             return None;
         }

@@ -51,10 +51,7 @@ impl Client {
                 && let Some(obj) = quote_value.as_object_mut()
                 && obj.get("ins_class").and_then(Value::as_str) == Some("OPTION")
             {
-                obj.insert(
-                    "underlying_symbol".to_string(),
-                    Value::String("SSE.000300".to_string()),
-                );
+                obj.insert("underlying_symbol".to_string(), Value::String("SSE.000300".to_string()));
             }
         }
 
@@ -193,14 +190,8 @@ fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
     let mut quote = Map::new();
 
     quote.insert("ins_class".to_string(), source_string(source, "class"));
-    quote.insert(
-        "instrument_id".to_string(),
-        source_string(source, "instrument_id"),
-    );
-    quote.insert(
-        "exchange_id".to_string(),
-        source_string(source, "exchange_id"),
-    );
+    quote.insert("instrument_id".to_string(), source_string(source, "instrument_id"));
+    quote.insert("exchange_id".to_string(), source_string(source, "exchange_id"));
     quote.insert(
         "margin".to_string(),
         source.get("margin").cloned().unwrap_or(Value::Null),
@@ -219,10 +210,7 @@ fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
     );
     quote.insert(
         "volume_multiple".to_string(),
-        source
-            .get("volume_multiple")
-            .cloned()
-            .unwrap_or(Value::Null),
+        source.get("volume_multiple").cloned().unwrap_or(Value::Null),
     );
     quote.insert(
         "max_limit_order_volume".to_string(),
@@ -270,10 +258,7 @@ fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
     );
     quote.insert(
         "expire_datetime".to_string(),
-        source
-            .get("expire_datetime")
-            .cloned()
-            .unwrap_or(Value::Null),
+        source.get("expire_datetime").cloned().unwrap_or(Value::Null),
     );
     quote.insert(
         "delivery_month".to_string(),
@@ -283,24 +268,12 @@ fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
         "delivery_year".to_string(),
         source.get("delivery_year").cloned().unwrap_or(Value::Null),
     );
-    quote.insert(
-        "option_class".to_string(),
-        source_string(source, "option_class"),
-    );
-    quote.insert(
-        "product_id".to_string(),
-        source_string(source, "product_id"),
-    );
+    quote.insert("option_class".to_string(), source_string(source, "option_class"));
+    quote.insert("product_id".to_string(), source_string(source, "product_id"));
 
     quote
 }
 
 fn source_string(source: &Map<String, Value>, key: &str) -> Value {
-    Value::String(
-        source
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-    )
+    Value::String(source.get(key).and_then(Value::as_str).unwrap_or("").to_string())
 }

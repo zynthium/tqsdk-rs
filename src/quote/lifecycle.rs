@@ -148,10 +148,7 @@ impl Drop for QuoteSubscription {
             });
         } else {
             std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
                     rt.block_on(async move {
                         let _ = ws.remove_quote_subscription(&id).await;
                     });

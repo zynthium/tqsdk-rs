@@ -63,9 +63,7 @@ async fn main() -> tqsdk_rs::Result<()> {
 
     let symbol = "SHFE.au2602";
     let duration = Duration::from_secs(60);
-    let max_updates = env::var("TQ_MAX_UPDATES")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok());
+    let max_updates = env::var("TQ_MAX_UPDATES").ok().and_then(|v| v.parse::<usize>().ok());
     let position_size = env::var("TQ_POSITION_SIZE")
         .ok()
         .and_then(|v| v.parse::<i32>().ok())

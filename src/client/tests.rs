@@ -23,11 +23,7 @@ impl Authenticator for TestAuth {
         Ok(())
     }
 
-    async fn get_td_url(
-        &self,
-        _broker_id: &str,
-        _account_id: &str,
-    ) -> Result<crate::auth::BrokerInfo> {
+    async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
         Err(TqError::NotLoggedIn)
     }
 

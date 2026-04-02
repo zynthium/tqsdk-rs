@@ -120,18 +120,21 @@ impl MultiKlineSeriesData {
             }
         }
 
-        let df = DataFrame::new(main_ids.len(), vec![
-            Column::new("main_id".into(), main_ids),
-            Column::new("timestamp".into(), timestamps),
-            Column::new("symbol".into(), symbols),
-            Column::new("open".into(), opens),
-            Column::new("high".into(), highs),
-            Column::new("low".into(), lows),
-            Column::new("close".into(), closes),
-            Column::new("volume".into(), volumes),
-            Column::new("open_oi".into(), open_ois),
-            Column::new("close_oi".into(), close_ois),
-        ])
+        let df = DataFrame::new(
+            main_ids.len(),
+            vec![
+                Column::new("main_id".into(), main_ids),
+                Column::new("timestamp".into(), timestamps),
+                Column::new("symbol".into(), symbols),
+                Column::new("open".into(), opens),
+                Column::new("high".into(), highs),
+                Column::new("low".into(), lows),
+                Column::new("close".into(), closes),
+                Column::new("volume".into(), volumes),
+                Column::new("open_oi".into(), open_ois),
+                Column::new("close_oi".into(), close_ois),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)

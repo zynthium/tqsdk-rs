@@ -1,6 +1,6 @@
 use super::{
-    BackpressureState, TqWebsocket, WebSocketConfig, derive_message_backlog_max,
-    has_reconnect_notify, is_md_reconnect_complete,
+    BackpressureState, TqWebsocket, WebSocketConfig, derive_message_backlog_max, has_reconnect_notify,
+    is_md_reconnect_complete,
 };
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
@@ -35,10 +35,8 @@ impl TqQuoteWebsocket {
     /// 创建行情 WebSocket
     pub fn new(url: String, dm: Arc<DataManager>, config: WebSocketConfig) -> Self {
         let quote_subscribe_only_add = config.quote_subscribe_only_add;
-        let message_backlog_max = derive_message_backlog_max(
-            config.message_queue_capacity,
-            config.message_backlog_warn_step,
-        );
+        let message_backlog_max =
+            derive_message_backlog_max(config.message_queue_capacity, config.message_backlog_warn_step);
         let base = Arc::new(TqWebsocket::new(url, config.clone()));
         let runtime = QuoteRuntime {
             dm,
@@ -52,8 +50,7 @@ impl TqQuoteWebsocket {
             reconnect_dm: Arc::new(std::sync::RwLock::new(None)),
         };
 
-        let (msg_tx, msg_rx) =
-            tokio::sync::mpsc::channel::<Value>(config.message_queue_capacity);
+        let (msg_tx, msg_rx) = tokio::sync::mpsc::channel::<Value>(config.message_queue_capacity);
         let backpressure = BackpressureState::new(
             msg_tx,
             message_backlog_max,
@@ -85,11 +82,7 @@ impl TqQuoteWebsocket {
         self.base.init(is_reconnection).await
     }
 
-    pub async fn update_quote_subscription(
-        &self,
-        subscription_id: &str,
-        symbols: HashSet<String>,
-    ) -> Result<()> {
+    pub async fn update_quote_subscription(&self, subscription_id: &str, symbols: HashSet<String>) -> Result<()> {
         {
             let mut guard = self.runtime.quote_subscriptions.write().unwrap();
             guard.insert(subscription_id.to_string(), symbols);
@@ -195,9 +188,7 @@ impl TqQuoteWebsocket {
                     return Ok(());
                 }
                 "set_chart" => {
-                    if let Some(chart_id) =
-                        value.get("chart_id").and_then(|chart_id| chart_id.as_str())
-                    {
+                    if let Some(chart_id) = value.get("chart_id").and_then(|chart_id| chart_id.as_str()) {
                         {
                             let mut charts_guard = self.runtime.charts.write().unwrap();
                             let empty_ins_list = value
@@ -227,9 +218,7 @@ impl TqQuoteWebsocket {
                     }
                 }
                 "ins_query" => {
-                    if let Some(query_id) =
-                        value.get("query_id").and_then(|query_id| query_id.as_str())
-                    {
+                    if let Some(query_id) = value.get("query_id").and_then(|query_id| query_id.as_str()) {
                         self.runtime
                             .pending_ins_query
                             .write()
@@ -335,20 +324,12 @@ fn handle_rtn_data(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime, data: &Value
 }
 
 /// 检测到重连通知后，开始缓冲数据到临时 DM
-fn start_reconnect_buffering(
-    base: &Arc<TqWebsocket>,
-    runtime: &QuoteRuntime,
-    array: &[Value],
-    index: usize,
-) {
+fn start_reconnect_buffering(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime, array: &[Value], index: usize) {
     runtime.reconnect_pending.store(true, Ordering::SeqCst);
     let mut diffs = runtime.reconnect_diffs.write().unwrap();
     diffs.clear();
     diffs.extend(array[index..].iter().cloned());
-    let dm_temp = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm_temp = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     dm_temp.merge_data(Value::Array(diffs.clone()), true, true);
     *runtime.reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
 
@@ -361,9 +342,7 @@ fn start_reconnect_buffering(
             let _ = base_for_send.send(&sub).await;
         }
         for chart in charts.values() {
-            if let Some(view_width) = chart
-                .get("view_width")
-                .and_then(|view_width| view_width.as_f64())
+            if let Some(view_width) = chart.get("view_width").and_then(|view_width| view_width.as_f64())
                 && view_width > 0.0
             {
                 debug!(pack = ?chart, "resend request");

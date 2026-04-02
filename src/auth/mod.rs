@@ -42,8 +42,7 @@ impl Default for TqAuthConfig {
         let auth_url = std::env::var("TQ_AUTH_URL").unwrap_or_else(|_| TQ_AUTH_URL.to_string());
         let ns_url = std::env::var("TQ_NS_URL").unwrap_or_else(|_| TQ_NS_URL.to_string());
         let client_id = std::env::var("TQ_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
-        let client_secret =
-            std::env::var("TQ_CLIENT_SECRET").unwrap_or_else(|_| CLIENT_SECRET.to_string());
+        let client_secret = std::env::var("TQ_CLIENT_SECRET").unwrap_or_else(|_| CLIENT_SECRET.to_string());
         let proxy = std::env::var("TQ_AUTH_PROXY")
             .ok()
             .map(|s| s.trim().to_string())
@@ -84,11 +83,7 @@ pub trait Authenticator: Send + Sync {
     async fn login(&mut self) -> crate::errors::Result<()>;
 
     /// 获取指定期货公司的交易服务器地址
-    async fn get_td_url(
-        &self,
-        broker_id: &str,
-        account_id: &str,
-    ) -> crate::errors::Result<BrokerInfo>;
+    async fn get_td_url(&self, broker_id: &str, account_id: &str) -> crate::errors::Result<BrokerInfo>;
 
     /// 获取行情服务器地址
     async fn get_md_url(&self, stock: bool, backtest: bool) -> crate::errors::Result<String>;

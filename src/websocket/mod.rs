@@ -29,10 +29,8 @@ pub use trade::TqTradeWebsocket;
 pub use trading_status::TqTradingStatusWebsocket;
 
 pub(crate) use backpressure::{BackpressureState, derive_message_backlog_max};
-pub(crate) use message::{
-    build_connection_notify, extract_notify_code, has_reconnect_notify, sanitize_log_pack_value,
-};
+pub(crate) use message::{build_connection_notify, extract_notify_code, has_reconnect_notify, sanitize_log_pack_value};
 pub(crate) use reconnect::{
-    extract_trade_positions, is_md_reconnect_complete, is_ops_maintenance_window_cst,
-    is_trade_reconnect_complete, next_shared_reconnect_delay,
+    extract_trade_positions, is_md_reconnect_complete, is_ops_maintenance_window_cst, is_trade_reconnect_complete,
+    next_shared_reconnect_delay,
 };

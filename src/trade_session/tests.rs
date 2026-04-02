@@ -1,8 +1,6 @@
 use super::*;
 use crate::datamanager::{DataManager, DataManagerConfig};
-use crate::types::{
-    DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT,
-};
+use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT};
 use crate::websocket::WebSocketConfig;
 use async_channel::bounded;
 use serde_json::json;
@@ -14,10 +12,7 @@ use tokio::time::{Duration, sleep};
 
 #[tokio::test]
 async fn trade_session_callback_executes_outside_lock() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     dm.merge_data(
         json!({
             "trade": {
@@ -47,10 +42,7 @@ async fn trade_session_callback_executes_outside_lock() {
 
 #[tokio::test]
 async fn trade_session_channel_overflow_drops_but_callbacks_still_fire() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     dm.merge_data(
         json!({
             "trade": {
@@ -85,10 +77,7 @@ async fn trade_session_channel_overflow_drops_but_callbacks_still_fire() {
 
 #[tokio::test]
 async fn trade_session_close_resets_logged_in_state() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let session = TradeSession::new(
         "simnow".to_string(),
         "u".to_string(),
@@ -108,10 +97,7 @@ async fn trade_session_close_resets_logged_in_state() {
 
 #[tokio::test]
 async fn trade_session_failed_connect_clears_stale_logged_in_state() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let session = TradeSession::new(
         "simnow".to_string(),
         "u".to_string(),
@@ -129,10 +115,7 @@ async fn trade_session_failed_connect_clears_stale_logged_in_state() {
 
 #[tokio::test]
 async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let session = TradeSession::new(
         "simnow".to_string(),
         "u".to_string(),
@@ -165,10 +148,7 @@ async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background()
 
 #[tokio::test]
 async fn trade_commands_do_not_queue_when_transport_actor_is_missing() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let session = TradeSession::new(
         "simnow".to_string(),
         "u".to_string(),

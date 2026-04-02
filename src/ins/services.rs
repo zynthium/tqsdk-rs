@@ -23,15 +23,10 @@ impl InsAPI {
             return Err(TqError::InvalidParameter("symbol 不能为空列表".to_string()));
         }
         if symbols.iter().any(|s| s.is_empty()) {
-            return Err(TqError::InvalidParameter(
-                "symbol 参数中不能有空字符串".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("symbol 参数中不能有空字符串".to_string()));
         }
         if days < 1 {
-            return Err(TqError::InvalidParameter(format!(
-                "days 参数 {} 错误。",
-                days
-            )));
+            return Err(TqError::InvalidParameter(format!("days 参数 {} 错误。", days)));
         }
         let mut query_days = days;
         let mut url = url::Url::parse("https://md-settlement-system-fc-api.shinnytech.com/mss")
@@ -104,10 +99,7 @@ impl InsAPI {
             ));
         }
         if days < 1 {
-            return Err(TqError::InvalidParameter(format!(
-                "days 参数 {} 错误。",
-                days
-            )));
+            return Err(TqError::InvalidParameter(format!("days 参数 {} 错误。", days)));
         }
         let mut url = url::Url::parse("https://symbol-ranking-system-fc-api.shinnytech.com/srs")
             .map_err(|e| TqError::InternalError(format!("URL 解析失败: {}", e)))?;
@@ -117,9 +109,7 @@ impl InsAPI {
         }
         if let Some(broker) = broker {
             if broker.is_empty() {
-                return Err(TqError::InvalidParameter(
-                    "broker 不能为空字符串".to_string(),
-                ));
+                return Err(TqError::InvalidParameter("broker 不能为空字符串".to_string()));
             }
             params.push(("broker", broker.to_string()));
         }
@@ -177,14 +167,8 @@ impl InsAPI {
                         });
 
                         let volume = rank_map.get("volume").map(value_to_f64).unwrap_or(f64::NAN);
-                        let varvolume = rank_map
-                            .get("varvolume")
-                            .map(value_to_f64)
-                            .unwrap_or(f64::NAN);
-                        let ranking = rank_map
-                            .get("ranking")
-                            .map(value_to_f64)
-                            .unwrap_or(f64::NAN);
+                        let varvolume = rank_map.get("varvolume").map(value_to_f64).unwrap_or(f64::NAN);
+                        let ranking = rank_map.get("ranking").map(value_to_f64).unwrap_or(f64::NAN);
 
                         match data_type.as_str() {
                             "volume_ranking" => {
@@ -236,9 +220,7 @@ impl InsAPI {
                     "long_ranking" => b.long_ranking,
                     _ => b.short_ranking,
                 };
-                a_rank
-                    .partial_cmp(&b_rank)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                a_rank.partial_cmp(&b_rank).unwrap_or(std::cmp::Ordering::Equal)
             } else {
                 dt_cmp
             }
@@ -286,9 +268,7 @@ impl InsAPI {
             }
         }
         if norm_ids.len() > 100 {
-            return Err(TqError::InvalidParameter(
-                "ids 数量超过限制(<=100)".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("ids 数量超过限制(<=100)".to_string()));
         }
 
         let end_date = Utc::now().date_naive();
@@ -346,18 +326,10 @@ impl InsAPI {
             source: e,
         })?;
 
-        if content
-            .get("error_code")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0)
-            != 0
-        {
+        if content.get("error_code").and_then(|v| v.as_i64()).unwrap_or(0) != 0 {
             return Err(TqError::Other(format!(
                 "edb 指标取值查询失败: {}",
-                content
-                    .get("error_msg")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                content.get("error_msg").and_then(|v| v.as_str()).unwrap_or("")
             )));
         }
 
@@ -365,12 +337,7 @@ impl InsAPI {
         let ids_from_server: Vec<i32> = data
             .get("ids")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_i64())
-                    .map(|v| v as i32)
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_i64()).map(|v| v as i32).collect())
             .unwrap_or_else(|| norm_ids.clone());
         let values_map = data
             .get("values")
@@ -469,13 +436,10 @@ impl InsAPI {
         use chrono::Datelike;
 
         if start_dt > end_dt {
-            return Err(TqError::InvalidParameter(
-                "start_dt 必须小于等于 end_dt".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("start_dt 必须小于等于 end_dt".to_string()));
         }
-        let url = std::env::var("TQ_CHINESE_HOLIDAY_URL").unwrap_or_else(|_| {
-            "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string()
-        });
+        let url = std::env::var("TQ_CHINESE_HOLIDAY_URL")
+            .unwrap_or_else(|_| "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string());
         let headers = self.auth.read().await.base_header();
         let content = fetch_json_with_headers(&url, headers).await?;
         let holidays = content

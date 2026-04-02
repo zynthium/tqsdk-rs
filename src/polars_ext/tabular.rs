@@ -33,11 +33,14 @@ impl SettlementBuffer {
         if self.datetimes.is_empty() {
             return Err(TqError::Other("结算价缓冲区为空".to_string()));
         }
-        let df = DataFrame::new(self.datetimes.len(), vec![
-            Column::new("datetime".into(), &self.datetimes),
-            Column::new("symbol".into(), &self.symbols),
-            Column::new("settlement".into(), &self.settlements),
-        ])
+        let df = DataFrame::new(
+            self.datetimes.len(),
+            vec![
+                Column::new("datetime".into(), &self.datetimes),
+                Column::new("symbol".into(), &self.symbols),
+                Column::new("settlement".into(), &self.settlements),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
         Ok(df)
     }
@@ -96,22 +99,25 @@ impl RankingBuffer {
         if self.datetimes.is_empty() {
             return Err(TqError::Other("持仓排名缓冲区为空".to_string()));
         }
-        let df = DataFrame::new(self.datetimes.len(), vec![
-            Column::new("datetime".into(), &self.datetimes),
-            Column::new("symbol".into(), &self.symbols),
-            Column::new("exchange_id".into(), &self.exchange_ids),
-            Column::new("instrument_id".into(), &self.instrument_ids),
-            Column::new("broker".into(), &self.brokers),
-            Column::new("volume".into(), &self.volumes),
-            Column::new("volume_change".into(), &self.volume_changes),
-            Column::new("volume_ranking".into(), &self.volume_rankings),
-            Column::new("long_oi".into(), &self.long_ois),
-            Column::new("long_change".into(), &self.long_changes),
-            Column::new("long_ranking".into(), &self.long_rankings),
-            Column::new("short_oi".into(), &self.short_ois),
-            Column::new("short_change".into(), &self.short_changes),
-            Column::new("short_ranking".into(), &self.short_rankings),
-        ])
+        let df = DataFrame::new(
+            self.datetimes.len(),
+            vec![
+                Column::new("datetime".into(), &self.datetimes),
+                Column::new("symbol".into(), &self.symbols),
+                Column::new("exchange_id".into(), &self.exchange_ids),
+                Column::new("instrument_id".into(), &self.instrument_ids),
+                Column::new("broker".into(), &self.brokers),
+                Column::new("volume".into(), &self.volumes),
+                Column::new("volume_change".into(), &self.volume_changes),
+                Column::new("volume_ranking".into(), &self.volume_rankings),
+                Column::new("long_oi".into(), &self.long_ois),
+                Column::new("long_change".into(), &self.long_changes),
+                Column::new("long_ranking".into(), &self.long_rankings),
+                Column::new("short_oi".into(), &self.short_ois),
+                Column::new("short_change".into(), &self.short_changes),
+                Column::new("short_ranking".into(), &self.short_rankings),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
         Ok(df)
     }
@@ -146,11 +152,14 @@ impl EdbBuffer {
         if self.dates.is_empty() {
             return Err(TqError::Other("EDB 缓冲区为空".to_string()));
         }
-        let df = DataFrame::new(self.dates.len(), vec![
-            Column::new("date".into(), &self.dates),
-            Column::new("id".into(), &self.ids),
-            Column::new("value".into(), &self.values),
-        ])
+        let df = DataFrame::new(
+            self.dates.len(),
+            vec![
+                Column::new("date".into(), &self.dates),
+                Column::new("id".into(), &self.ids),
+                Column::new("value".into(), &self.values),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
         Ok(df)
     }

@@ -63,11 +63,10 @@ impl TqAuth {
     pub(super) async fn parse_token(&mut self) -> Result<()> {
         use jsonwebtoken::dangerous::insecure_decode;
 
-        let token_data =
-            insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| TqError::Jwt {
-                context: "解析 token 失败".to_string(),
-                source: e,
-            })?;
+        let token_data = insecure_decode::<AccessTokenClaims>(&self.access_token).map_err(|e| TqError::Jwt {
+            context: "解析 token 失败".to_string(),
+            source: e,
+        })?;
         let claims = token_data.claims;
         if self.config.verify_jwt {
             let now = chrono::Utc::now().timestamp();
@@ -77,10 +76,7 @@ impl TqAuth {
                     source: jsonwebtoken::errors::ErrorKind::ExpiredSignature.into(),
                 });
             }
-            let expected_iss = format!(
-                "{}/auth/realms/shinnytech",
-                self.config.auth_url.trim_end_matches('/')
-            );
+            let expected_iss = format!("{}/auth/realms/shinnytech", self.config.auth_url.trim_end_matches('/'));
             if !claims.iss.starts_with(&expected_iss) {
                 return Err(TqError::Jwt {
                     context: "token issuer 无效".to_string(),

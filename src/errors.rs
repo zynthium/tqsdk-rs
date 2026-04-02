@@ -145,8 +145,7 @@ impl TqError {
     /// 无效的 focus_position
     pub fn invalid_focus_position() -> Self {
         TqError::InvalidParameter(
-            "使用 focus_datetime 时必须提供 focus_position，且 focus_position 必须 >= 0"
-                .to_string(),
+            "使用 focus_datetime 时必须提供 focus_position，且 focus_position 必须 >= 0".to_string(),
         )
     }
 

@@ -82,9 +82,7 @@ impl SeriesAPI {
     /// 获取 Tick 序列订阅，对齐 tqsdk-python 的 `get_tick_serial`。
     pub async fn tick(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
-            return Err(TqError::InvalidParameter(
-                "symbol 不能为空字符串".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
         let view_width = normalize_data_length(data_length)?;
         self.subscribe(SeriesOptions {
@@ -108,9 +106,7 @@ impl SeriesAPI {
         left_kline_id: i64,
     ) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
-            return Err(TqError::InvalidParameter(
-                "symbol 不能为空字符串".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
         let view_width = normalize_data_length(data_length)?;
         let duration = normalize_kline_duration(duration)?;
@@ -136,9 +132,7 @@ impl SeriesAPI {
         focus_position: i32,
     ) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
-            return Err(TqError::InvalidParameter(
-                "symbol 不能为空字符串".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
         let view_width = normalize_data_length(data_length)?;
         let duration = normalize_kline_duration(duration)?;
@@ -160,14 +154,10 @@ impl SeriesAPI {
             return Err(TqError::InvalidParameter("symbols 为空".to_string()));
         }
         if options.symbols.iter().any(|s| s.is_empty()) {
-            return Err(TqError::InvalidParameter(
-                "symbols 不能包含空字符串".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("symbols 不能包含空字符串".to_string()));
         }
         if options.view_width == 0 {
-            return Err(TqError::InvalidParameter(
-                "data_length 必须大于 0".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("data_length 必须大于 0".to_string()));
         }
         if options.view_width > 10000 {
             options.view_width = 10000;
@@ -178,10 +168,7 @@ impl SeriesAPI {
             auth.has_md_grants(&symbol_refs)?;
         }
 
-        let has_chart_id = options
-            .chart_id
-            .as_ref()
-            .is_some_and(|chart_id| !chart_id.is_empty());
+        let has_chart_id = options.chart_id.as_ref().is_some_and(|chart_id| !chart_id.is_empty());
         if !has_chart_id {
             options.chart_id = Some(generate_chart_id(&options));
         }
@@ -196,9 +183,7 @@ impl SeriesAPI {
 
 fn normalize_data_length(data_length: usize) -> Result<usize> {
     if data_length == 0 {
-        return Err(TqError::InvalidParameter(
-            "data_length 必须大于 0".to_string(),
-        ));
+        return Err(TqError::InvalidParameter("data_length 必须大于 0".to_string()));
     }
     Ok(data_length.min(10000))
 }
@@ -234,9 +219,7 @@ fn build_realtime_kline_options(
         return Err(TqError::InvalidParameter("symbols 为空".to_string()));
     }
     if symbols.iter().any(|s| s.is_empty()) {
-        return Err(TqError::InvalidParameter(
-            "symbols 不能包含空字符串".to_string(),
-        ));
+        return Err(TqError::InvalidParameter("symbols 不能包含空字符串".to_string()));
     }
     let view_width = normalize_data_length(data_length)?;
     let duration = normalize_kline_duration(duration)?;

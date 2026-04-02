@@ -19,7 +19,8 @@ impl InsAPI {
         }
         if !self.auth.read().await.has_feature("tq_trading_status") {
             return Err(TqError::PermissionDenied(
-                "账户不支持查看交易状态信息，需要购买后才能使用。升级网址：https://www.shinnytech.com/tqsdk-buy/".to_string(),
+                "账户不支持查看交易状态信息，需要购买后才能使用。升级网址：https://www.shinnytech.com/tqsdk-buy/"
+                    .to_string(),
             ));
         }
         let ws = self

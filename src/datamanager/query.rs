@@ -95,9 +95,7 @@ impl DataManager {
 
         for &key in &path[1..path.len() - 1] {
             current = match current {
-                Value::Object(map) => map
-                    .entry(key.to_string())
-                    .or_insert_with(|| Value::Object(Map::new())),
+                Value::Object(map) => map.entry(key.to_string()).or_insert_with(|| Value::Object(Map::new())),
                 _ => return None,
             };
         }
@@ -150,23 +148,15 @@ impl DataManager {
                 chart_id: String::new(),
                 chart: None,
                 last_id: value_to_i64(data_map.get("last_id").unwrap_or(&Value::Null)),
-                trading_day_start_id: value_to_i64(
-                    data_map.get("trading_day_start_id").unwrap_or(&Value::Null),
-                ),
-                trading_day_end_id: value_to_i64(
-                    data_map.get("trading_day_end_id").unwrap_or(&Value::Null),
-                ),
+                trading_day_start_id: value_to_i64(data_map.get("trading_day_start_id").unwrap_or(&Value::Null)),
+                trading_day_end_id: value_to_i64(data_map.get("trading_day_end_id").unwrap_or(&Value::Null)),
                 data: Vec::new(),
                 has_new_bar: false,
             };
 
             if let Some(Value::Object(kline_map)) = data_map.get("data") {
-                let selected_ids = collect_windowed_ids(
-                    kline_map,
-                    right_id,
-                    view_width,
-                    self.config.default_view_width,
-                );
+                let selected_ids =
+                    collect_windowed_ids(kline_map, right_id, view_width, self.config.default_view_width);
                 let mut klines: Vec<Kline> = Vec::with_capacity(selected_ids.len());
                 for id in selected_ids {
                     let id_key = id.to_string();
@@ -179,10 +169,7 @@ impl DataManager {
                             klines.push(kline);
                         }
                         Err(e) => {
-                            error!(
-                                "{}",
-                                TqError::ParseError(format!("K线数据格式错误 id={}: {}", id, e))
-                            );
+                            error!("{}", TqError::ParseError(format!("K线数据格式错误 id={}: {}", id, e)));
                         }
                     }
                 }
@@ -212,15 +199,14 @@ impl DataManager {
         let duration_str = duration.to_string();
         let data_guard = self.data.read().unwrap();
 
-        let (left_id, right_id) = if let Some(Value::Object(chart_map)) =
-            get_by_path_ref(&data_guard, &["charts", chart_id])
-        {
-            let left = value_to_i64(chart_map.get("left_id").unwrap_or(&Value::Null));
-            let right = value_to_i64(chart_map.get("right_id").unwrap_or(&Value::Null));
-            (left, right)
-        } else {
-            (-1, -1)
-        };
+        let (left_id, right_id) =
+            if let Some(Value::Object(chart_map)) = get_by_path_ref(&data_guard, &["charts", chart_id]) {
+                let left = value_to_i64(chart_map.get("left_id").unwrap_or(&Value::Null));
+                let right = value_to_i64(chart_map.get("right_id").unwrap_or(&Value::Null));
+                (left, right)
+            } else {
+                (-1, -1)
+            };
 
         let mut result = MultiKlineSeriesData {
             chart_id: chart_id.to_string(),
@@ -237,34 +223,25 @@ impl DataManager {
 
         let mut aligned_data_indexes: HashMap<String, HashMap<i64, &Value>> = HashMap::new();
         for symbol in symbols {
-            if let Some(Value::Object(kline_map)) = get_by_path_ref(
-                &data_guard,
-                &["klines", symbol.as_str(), duration_str.as_str()],
-            ) {
+            if let Some(Value::Object(kline_map)) =
+                get_by_path_ref(&data_guard, &["klines", symbol.as_str(), duration_str.as_str()])
+            {
                 let metadata = KlineMetadata {
                     symbol: symbol.clone(),
                     last_id: value_to_i64(kline_map.get("last_id").unwrap_or(&Value::Null)),
-                    trading_day_start_id: value_to_i64(
-                        kline_map
-                            .get("trading_day_start_id")
-                            .unwrap_or(&Value::Null),
-                    ),
-                    trading_day_end_id: value_to_i64(
-                        kline_map.get("trading_day_end_id").unwrap_or(&Value::Null),
-                    ),
+                    trading_day_start_id: value_to_i64(kline_map.get("trading_day_start_id").unwrap_or(&Value::Null)),
+                    trading_day_end_id: value_to_i64(kline_map.get("trading_day_end_id").unwrap_or(&Value::Null)),
                 };
                 result.metadata.insert(symbol.clone(), metadata);
                 if let Some(Value::Object(symbol_data_map)) = kline_map.get("data") {
-                    aligned_data_indexes
-                        .insert(symbol.clone(), build_numeric_value_index(symbol_data_map));
+                    aligned_data_indexes.insert(symbol.clone(), build_numeric_value_index(symbol_data_map));
                 }
             }
         }
 
-        if let Some(Value::Object(main_kline_map)) = get_by_path_ref(
-            &data_guard,
-            &["klines", main_symbol.as_str(), duration_str.as_str()],
-        ) {
+        if let Some(Value::Object(main_kline_map)) =
+            get_by_path_ref(&data_guard, &["klines", main_symbol.as_str(), duration_str.as_str()])
+        {
             let mut bindings: HashMap<String, HashMap<i64, i64>> = HashMap::new();
             if let Some(Value::Object(binding_map)) = main_kline_map.get("binding") {
                 for (symbol, binding_info) in binding_map {
@@ -337,8 +314,7 @@ impl DataManager {
                             aligned = false;
                             break;
                         };
-                        let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data)
-                        else {
+                        let Ok(mut kline) = self.convert_to_struct::<Kline>(other_kline_data) else {
                             aligned = false;
                             break;
                         };
@@ -357,12 +333,7 @@ impl DataManager {
     }
 
     /// 获取 Tick 数据
-    pub fn get_ticks_data(
-        &self,
-        symbol: &str,
-        view_width: usize,
-        right_id: i64,
-    ) -> Result<TickSeriesData> {
+    pub fn get_ticks_data(&self, symbol: &str, view_width: usize, right_id: i64) -> Result<TickSeriesData> {
         let data = self
             .get_by_path(&["ticks", symbol])
             .ok_or_else(|| TqError::DataNotFound(format!("Tick 未找到: {}", symbol)))?;
@@ -378,12 +349,7 @@ impl DataManager {
             };
 
             if let Some(Value::Object(tick_map)) = data_map.get("data") {
-                let selected_ids = collect_windowed_ids(
-                    tick_map,
-                    right_id,
-                    view_width,
-                    self.config.default_view_width,
-                );
+                let selected_ids = collect_windowed_ids(tick_map, right_id, view_width, self.config.default_view_width);
                 let mut ticks: Vec<Tick> = Vec::with_capacity(selected_ids.len());
                 for id in selected_ids {
                     let id_key = id.to_string();
@@ -396,13 +362,7 @@ impl DataManager {
                             ticks.push(tick);
                         }
                         Err(e) => {
-                            error!(
-                                "{}",
-                                TqError::ParseError(format!(
-                                    "Tick数据格式错误: id={}, {}",
-                                    id, e
-                                ))
-                            );
+                            error!("{}", TqError::ParseError(format!("Tick数据格式错误: id={}, {}", id, e)));
                         }
                     }
                 }
@@ -500,11 +460,7 @@ fn collect_windowed_ids(
         .filter(|id| right_id <= 0 || *id <= right_id)
         .collect();
     ids.sort_unstable();
-    let target_width = if view_width > 0 {
-        view_width
-    } else {
-        default_view_width
-    };
+    let target_width = if view_width > 0 { view_width } else { default_view_width };
     if ids.len() > target_width {
         let split_index = ids.len() - target_width;
         ids.drain(0..split_index);

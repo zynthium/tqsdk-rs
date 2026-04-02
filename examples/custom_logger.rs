@@ -32,10 +32,7 @@ fn main() {
         .with_line_number(true);
 
     // 组合多个 Layer
-    tracing_subscriber::registry()
-        .with(tqsdk_layer)
-        .with(file_layer)
-        .init();
+    tracing_subscriber::registry().with(tqsdk_layer).with(file_layer).init();
 
     info!("这条日志会同时输出到控制台和文件");
     warn!("警告信息也会被记录");

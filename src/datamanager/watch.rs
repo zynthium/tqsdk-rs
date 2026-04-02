@@ -83,10 +83,7 @@ impl DataManager {
     }
 }
 
-fn get_by_path_ref_strings<'a>(
-    data: &'a HashMap<String, Value>,
-    path: &[String],
-) -> Option<&'a Value> {
+fn get_by_path_ref_strings<'a>(data: &'a HashMap<String, Value>, path: &[String]) -> Option<&'a Value> {
     if path.is_empty() {
         return None;
     }
@@ -102,11 +99,7 @@ fn get_by_path_ref_strings<'a>(
     Some(current)
 }
 
-fn is_path_epoch_changed(
-    data: &HashMap<String, Value>,
-    path: &[String],
-    current_epoch: i64,
-) -> bool {
+fn is_path_epoch_changed(data: &HashMap<String, Value>, path: &[String], current_epoch: i64) -> bool {
     if let Some(Value::Object(map)) = get_by_path_ref_strings(data, path)
         && let Some(Value::Number(epoch_val)) = map.get("_epoch")
         && let Some(epoch) = epoch_val.as_i64()

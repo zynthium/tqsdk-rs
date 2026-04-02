@@ -57,7 +57,13 @@ fn has_md_grants_denies_csi_without_sec_feature() {
 #[test]
 fn has_md_grants_allows_all_futures_exchanges() {
     let auth = auth_with_features(&["futr"]);
-    let exchanges = ["CFFEX.IF2601", "INE.sc2601", "GFEX.si2601", "KQ.m@DCE.m2512", "KQD.test"];
+    let exchanges = [
+        "CFFEX.IF2601",
+        "INE.sc2601",
+        "GFEX.si2601",
+        "KQ.m@DCE.m2512",
+        "KQD.test",
+    ];
     assert!(auth.has_md_grants(exchanges.as_ref()).is_ok());
 }
 

@@ -52,10 +52,7 @@ impl QuoteSubscription {
                             if path_epoch > last_epoch {
                                 match dm.get_quote_data(&symbol) {
                                     Ok(quote) => {
-                                        debug!(
-                                            "获取到 Quote 更新: symbol={}, last_price={}",
-                                            symbol, quote.last_price
-                                        );
+                                        debug!("获取到 Quote 更新: symbol={}, last_price={}", symbol, quote.last_price);
                                         let quote_arc = Arc::new(quote);
                                         match quote_tx.try_send((*quote_arc).clone()) {
                                             Ok(()) => {}
@@ -78,9 +75,7 @@ impl QuoteSubscription {
                     }
                     if !worker_dirty.load(Ordering::SeqCst) {
                         worker_running.store(false, Ordering::SeqCst);
-                        if worker_dirty.load(Ordering::SeqCst)
-                            && !worker_running.swap(true, Ordering::SeqCst)
-                        {
+                        if worker_dirty.load(Ordering::SeqCst) && !worker_running.swap(true, Ordering::SeqCst) {
                             continue;
                         }
                         break;

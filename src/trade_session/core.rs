@@ -100,10 +100,7 @@ impl TradeSession {
             "password": self.password
         });
 
-        info!(
-            "发送交易登录请求: broker={}, user_id={}",
-            self.broker, self.user_id
-        );
+        info!("发送交易登录请求: broker={}, user_id={}", self.broker, self.user_id);
         self.ws.send(&login_req).await?;
         Ok(())
     }

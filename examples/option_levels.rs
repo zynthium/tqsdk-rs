@@ -65,14 +65,7 @@ async fn main() -> Result<()> {
     println!("atm(price_level={:?})={:?}", price_level, atm);
 
     let (in_money, at_money, out_money) = client
-        .query_all_level_options(
-            underlying.as_str(),
-            underlying_price,
-            "CALL",
-            None,
-            None,
-            None,
-        )
+        .query_all_level_options(underlying.as_str(), underlying_price, "CALL", None, None, None)
         .await?;
     println!(
         "all_level_options: in_money={}, at_money={:?}, out_money={}",
@@ -82,13 +75,7 @@ async fn main() -> Result<()> {
     );
 
     let (in_money, at_money, out_money) = client
-        .query_all_level_finance_options(
-            underlying.as_str(),
-            underlying_price,
-            "CALL",
-            &nearbys,
-            None,
-        )
+        .query_all_level_finance_options(underlying.as_str(), underlying_price, "CALL", &nearbys, None)
         .await?;
     println!(
         "all_level_finance_options(nearbys={:?}): in_money={}, at_money={:?}, out_money={}",

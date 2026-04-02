@@ -23,11 +23,11 @@ mod tests;
 pub use market::{Chart, ChartInfo, Kline, Quote, Tick};
 pub use query::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 pub use series::{
-    AlignedKlineSet, KlineMetadata, KlineSeriesData, MultiKlineSeriesData, SeriesData,
-    SeriesOptions, TickSeriesData, UpdateInfo,
+    AlignedKlineSet, KlineMetadata, KlineSeriesData, MultiKlineSeriesData, SeriesData, SeriesOptions, TickSeriesData,
+    UpdateInfo,
 };
 pub use trading::{
-    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Notification, NotifyEvent,
-    OFFSET_CLOSE, OFFSET_CLOSETODAY, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order,
-    PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Position, PositionUpdate, Trade,
+    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Notification, NotifyEvent, OFFSET_CLOSE,
+    OFFSET_CLOSETODAY, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT,
+    Position, PositionUpdate, Trade,
 };

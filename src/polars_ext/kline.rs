@@ -113,17 +113,20 @@ impl KlineBuffer {
             return Err(TqError::Other("K线缓冲区为空".to_string()));
         }
 
-        let df = DataFrame::new(self.ids.len(), vec![
-            Column::new("id".into(), &self.ids),
-            Column::new("datetime".into(), &self.datetimes),
-            Column::new("open".into(), &self.opens),
-            Column::new("high".into(), &self.highs),
-            Column::new("low".into(), &self.lows),
-            Column::new("close".into(), &self.closes),
-            Column::new("volume".into(), &self.volumes),
-            Column::new("open_oi".into(), &self.open_ois),
-            Column::new("close_oi".into(), &self.close_ois),
-        ])
+        let df = DataFrame::new(
+            self.ids.len(),
+            vec![
+                Column::new("id".into(), &self.ids),
+                Column::new("datetime".into(), &self.datetimes),
+                Column::new("open".into(), &self.opens),
+                Column::new("high".into(), &self.highs),
+                Column::new("low".into(), &self.lows),
+                Column::new("close".into(), &self.closes),
+                Column::new("volume".into(), &self.volumes),
+                Column::new("open_oi".into(), &self.open_ois),
+                Column::new("close_oi".into(), &self.close_ois),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)
@@ -138,17 +141,20 @@ impl KlineBuffer {
         let len = self.ids.len();
         let start = len.saturating_sub(n);
 
-        let df = DataFrame::new(len - start, vec![
-            Column::new("id".into(), &self.ids[start..]),
-            Column::new("datetime".into(), &self.datetimes[start..]),
-            Column::new("open".into(), &self.opens[start..]),
-            Column::new("high".into(), &self.highs[start..]),
-            Column::new("low".into(), &self.lows[start..]),
-            Column::new("close".into(), &self.closes[start..]),
-            Column::new("volume".into(), &self.volumes[start..]),
-            Column::new("open_oi".into(), &self.open_ois[start..]),
-            Column::new("close_oi".into(), &self.close_ois[start..]),
-        ])
+        let df = DataFrame::new(
+            len - start,
+            vec![
+                Column::new("id".into(), &self.ids[start..]),
+                Column::new("datetime".into(), &self.datetimes[start..]),
+                Column::new("open".into(), &self.opens[start..]),
+                Column::new("high".into(), &self.highs[start..]),
+                Column::new("low".into(), &self.lows[start..]),
+                Column::new("close".into(), &self.closes[start..]),
+                Column::new("volume".into(), &self.volumes[start..]),
+                Column::new("open_oi".into(), &self.open_ois[start..]),
+                Column::new("close_oi".into(), &self.close_ois[start..]),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)
@@ -163,17 +169,20 @@ impl KlineBuffer {
         let len = self.ids.len();
         let end = if n >= len { len } else { n };
 
-        let df = DataFrame::new(end, vec![
-            Column::new("id".into(), &self.ids[..end]),
-            Column::new("datetime".into(), &self.datetimes[..end]),
-            Column::new("open".into(), &self.opens[..end]),
-            Column::new("high".into(), &self.highs[..end]),
-            Column::new("low".into(), &self.lows[..end]),
-            Column::new("close".into(), &self.closes[..end]),
-            Column::new("volume".into(), &self.volumes[..end]),
-            Column::new("open_oi".into(), &self.open_ois[..end]),
-            Column::new("close_oi".into(), &self.close_ois[..end]),
-        ])
+        let df = DataFrame::new(
+            end,
+            vec![
+                Column::new("id".into(), &self.ids[..end]),
+                Column::new("datetime".into(), &self.datetimes[..end]),
+                Column::new("open".into(), &self.opens[..end]),
+                Column::new("high".into(), &self.highs[..end]),
+                Column::new("low".into(), &self.lows[..end]),
+                Column::new("close".into(), &self.closes[..end]),
+                Column::new("volume".into(), &self.volumes[..end]),
+                Column::new("open_oi".into(), &self.open_ois[..end]),
+                Column::new("close_oi".into(), &self.close_ois[..end]),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)
@@ -187,25 +196,25 @@ impl KlineBuffer {
 
         let len = self.ids.len();
         if start >= len {
-            return Err(TqError::Other(format!(
-                "起始位置 {} 超出范围 {}",
-                start, len
-            )));
+            return Err(TqError::Other(format!("起始位置 {} 超出范围 {}", start, len)));
         }
 
         let end = std::cmp::min(start + length, len);
 
-        let df = DataFrame::new(end - start, vec![
-            Column::new("id".into(), &self.ids[start..end]),
-            Column::new("datetime".into(), &self.datetimes[start..end]),
-            Column::new("open".into(), &self.opens[start..end]),
-            Column::new("high".into(), &self.highs[start..end]),
-            Column::new("low".into(), &self.lows[start..end]),
-            Column::new("close".into(), &self.closes[start..end]),
-            Column::new("volume".into(), &self.volumes[start..end]),
-            Column::new("open_oi".into(), &self.open_ois[start..end]),
-            Column::new("close_oi".into(), &self.close_ois[start..end]),
-        ])
+        let df = DataFrame::new(
+            end - start,
+            vec![
+                Column::new("id".into(), &self.ids[start..end]),
+                Column::new("datetime".into(), &self.datetimes[start..end]),
+                Column::new("open".into(), &self.opens[start..end]),
+                Column::new("high".into(), &self.highs[start..end]),
+                Column::new("low".into(), &self.lows[start..end]),
+                Column::new("close".into(), &self.closes[start..end]),
+                Column::new("volume".into(), &self.volumes[start..end]),
+                Column::new("open_oi".into(), &self.open_ois[start..end]),
+                Column::new("close_oi".into(), &self.close_ois[start..end]),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)

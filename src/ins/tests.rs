@@ -1,11 +1,9 @@
 use super::parse::{
-    BisectPriority, OptionNode, bisect_value_index, filter_option_nodes,
-    parse_query_cont_quotes_result, parse_query_options_result, parse_query_quotes_result,
-    parse_query_symbol_info_result, sort_options_and_get_atm_index,
+    BisectPriority, OptionNode, bisect_value_index, filter_option_nodes, parse_query_cont_quotes_result,
+    parse_query_options_result, parse_query_quotes_result, parse_query_symbol_info_result,
+    sort_options_and_get_atm_index,
 };
-use super::validation::{
-    validate_finance_nearbys, validate_finance_underlying, validate_price_level,
-};
+use super::validation::{validate_finance_nearbys, validate_finance_underlying, validate_price_level};
 use crate::auth::Authenticator;
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
@@ -63,11 +61,7 @@ fn parse_cont_quotes_filters_exchange_product() {
 
 #[test]
 fn parse_options_filters_conditions() {
-    let ts = Utc
-        .with_ymd_and_hms(2024, 12, 1, 0, 0, 0)
-        .unwrap()
-        .timestamp()
-        * 1_000_000_000;
+    let ts = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap().timestamp() * 1_000_000_000;
     let res = json!({
         "result": {
             "multi_symbol_info": [
@@ -142,23 +136,13 @@ fn make_option(
 #[test]
 fn bisect_value_index_tie_priority() {
     let a = vec![100.0, 110.0];
-    assert_eq!(
-        a[bisect_value_index(&a, 105.0, BisectPriority::Right)],
-        110.0
-    );
-    assert_eq!(
-        a[bisect_value_index(&a, 105.0, BisectPriority::Left)],
-        100.0
-    );
+    assert_eq!(a[bisect_value_index(&a, 105.0, BisectPriority::Right)], 110.0);
+    assert_eq!(a[bisect_value_index(&a, 105.0, BisectPriority::Left)], 100.0);
 }
 
 #[test]
 fn atm_equal_distance_rule_call_put() -> Result<()> {
-    let ts = Utc
-        .with_ymd_and_hms(2024, 12, 1, 0, 0, 0)
-        .unwrap()
-        .timestamp()
-        * 1_000_000_000;
+    let ts = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap().timestamp() * 1_000_000_000;
 
     let mut calls = vec![
         make_option("C90", 90.0, "CALL", ts, "", false),
@@ -201,16 +185,8 @@ fn finance_nearbys_validation_matches_python_ranges() {
 
 #[test]
 fn filter_nearbys_keeps_only_selected_expiries() {
-    let ts1 = Utc
-        .with_ymd_and_hms(2024, 11, 1, 0, 0, 0)
-        .unwrap()
-        .timestamp()
-        * 1_000_000_000;
-    let ts2 = Utc
-        .with_ymd_and_hms(2024, 12, 1, 0, 0, 0)
-        .unwrap()
-        .timestamp()
-        * 1_000_000_000;
+    let ts1 = Utc.with_ymd_and_hms(2024, 11, 1, 0, 0, 0).unwrap().timestamp() * 1_000_000_000;
+    let ts2 = Utc.with_ymd_and_hms(2024, 12, 1, 0, 0, 0).unwrap().timestamp() * 1_000_000_000;
 
     let opts = vec![
         make_option("A1", 100.0, "CALL", ts1, "", false),
@@ -283,10 +259,7 @@ fn parse_symbol_info_maps_fields() {
 
     let list = parse_query_symbol_info_result(
         &res,
-        &[
-            "SHFE.cu2405C3000".to_string(),
-            "SHFE.cu2405&cu2406".to_string(),
-        ],
+        &["SHFE.cu2405C3000".to_string(), "SHFE.cu2405&cu2406".to_string()],
         1_731_715_200,
     );
     let option = list[0].as_object().unwrap();
@@ -340,14 +313,9 @@ async fn graphql_live_smoke() -> Result<()> {
             return Ok(());
         }
     };
-    let underlying = quotes
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "SHFE.cu2405".to_string());
+    let underlying = quotes.first().cloned().unwrap_or_else(|| "SHFE.cu2405".to_string());
 
-    let _ = match run_with_timeout(client.query_cont_quotes(Some("SHFE"), Some("cu"), None), 30)
-        .await
-    {
+    let _ = match run_with_timeout(client.query_cont_quotes(Some("SHFE"), Some("cu"), None), 30).await {
         Ok(list) => list,
         Err(err) => {
             println!("graphql_live_smoke query_cont_quotes error: {}", err);
@@ -405,11 +373,7 @@ impl Authenticator for DummyAuth {
         Ok(())
     }
 
-    async fn get_td_url(
-        &self,
-        _broker_id: &str,
-        _account_id: &str,
-    ) -> Result<crate::auth::BrokerInfo> {
+    async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
         Err(TqError::NotLoggedIn)
     }
 
@@ -439,10 +403,7 @@ impl Authenticator for DummyAuth {
 }
 
 fn build_ins_api(features: &[&str]) -> InsAPI {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -452,17 +413,12 @@ fn build_ins_api(features: &[&str]) -> InsAPI {
     for item in features {
         feature_set.insert(item.to_string());
     }
-    let auth = Arc::new(RwLock::new(DummyAuth {
-        features: feature_set,
-    }));
+    let auth = Arc::new(RwLock::new(DummyAuth { features: feature_set }));
     InsAPI::new(dm, ws, None, auth, true)
 }
 
 fn build_ins_api_with_trading_status(features: &[&str]) -> (Arc<DataManager>, InsAPI) {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -477,9 +433,7 @@ fn build_ins_api_with_trading_status(features: &[&str]) -> (Arc<DataManager>, In
     for item in features {
         feature_set.insert(item.to_string());
     }
-    let auth = Arc::new(RwLock::new(DummyAuth {
-        features: feature_set,
-    }));
+    let auth = Arc::new(RwLock::new(DummyAuth { features: feature_set }));
     let api = InsAPI::new(dm.clone(), ws, Some(ts_ws), auth, true);
     (dm, api)
 }
@@ -499,10 +453,7 @@ async fn settlement_rejects_invalid_args() {
 #[tokio::test]
 async fn ranking_rejects_invalid_args() {
     let api = build_ins_api(&[]);
-    let err = api
-        .query_symbol_ranking("", "VOLUME", 1, None, None)
-        .await
-        .unwrap_err();
+    let err = api.query_symbol_ranking("", "VOLUME", 1, None, None).await.unwrap_err();
     assert!(matches!(err, TqError::InvalidParameter(_)));
     let err = api
         .query_symbol_ranking("SHFE.cu2405", "INVALID", 1, None, None)
@@ -523,15 +474,9 @@ async fn edb_rejects_invalid_args() {
     assert!(matches!(err, TqError::InvalidParameter(_)));
     let err = api.query_edb_data(&[1], 0, None, None).await.unwrap_err();
     assert!(matches!(err, TqError::InvalidParameter(_)));
-    let err = api
-        .query_edb_data(&[1], 1, Some("week"), None)
-        .await
-        .unwrap_err();
+    let err = api.query_edb_data(&[1], 1, Some("week"), None).await.unwrap_err();
     assert!(matches!(err, TqError::InvalidParameter(_)));
-    let err = api
-        .query_edb_data(&[1], 1, None, Some("pad"))
-        .await
-        .unwrap_err();
+    let err = api.query_edb_data(&[1], 1, None, Some("pad")).await.unwrap_err();
     assert!(matches!(err, TqError::InvalidParameter(_)));
     let ids: Vec<i32> = (1..=101).collect();
     let err = api.query_edb_data(&ids, 1, None, None).await.unwrap_err();
@@ -571,20 +516,14 @@ async fn trading_status_allows_multiple_subscribers_for_same_symbol() {
         true,
     );
 
-    let rx1 = tokio::time::timeout(
-        Duration::from_secs(1),
-        api.get_trading_status("SHFE.cu2405"),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let rx2 = tokio::time::timeout(
-        Duration::from_secs(1),
-        api.get_trading_status("SHFE.cu2405"),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let rx1 = tokio::time::timeout(Duration::from_secs(1), api.get_trading_status("SHFE.cu2405"))
+        .await
+        .unwrap()
+        .unwrap();
+    let rx2 = tokio::time::timeout(Duration::from_secs(1), api.get_trading_status("SHFE.cu2405"))
+        .await
+        .unwrap()
+        .unwrap();
 
     dm.merge_data(
         json!({
@@ -625,18 +564,12 @@ async fn live_high_priority_interfaces() -> Result<()> {
         Err(err) => println!("query_symbol_settlement error: {}", err),
     }
 
-    match api
-        .query_symbol_ranking(&symbol, "VOLUME", 1, None, None)
-        .await
-    {
+    match api.query_symbol_ranking(&symbol, "VOLUME", 1, None, None).await {
         Ok(ranking) => println!("query_symbol_ranking: {:?}", ranking),
         Err(err) => println!("query_symbol_ranking error: {}", err),
     }
 
-    match api
-        .query_edb_data(&[1, 2], 5, Some("day"), Some("ffill"))
-        .await
-    {
+    match api.query_edb_data(&[1, 2], 5, Some("day"), Some("ffill")).await {
         Ok(edb) => println!("query_edb_data: {:?}", edb),
         Err(err) => println!("query_edb_data error: {}", err),
     }

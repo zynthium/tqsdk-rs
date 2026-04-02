@@ -106,9 +106,7 @@ enum PrototypeBranch {
 
 impl MergeOptions {
     fn new(delete_null: bool, semantics: MergeSemanticsConfig) -> Self {
-        let prototype = semantics
-            .prototype
-            .unwrap_or_else(|| Value::Object(Map::new()));
+        let prototype = semantics.prototype.unwrap_or_else(|| Value::Object(Map::new()));
         Self {
             delete_null,
             persist: semantics.persist,

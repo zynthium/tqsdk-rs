@@ -73,10 +73,7 @@ impl From<&str> for LogLevel {
 ///     // .with(your_custom_layer)
 ///     .init();
 /// ```
-pub fn create_logger_layer<S>(
-    level: &str,
-    filter_crate_only: bool,
-) -> impl Layer<S> + Send + Sync + 'static
+pub fn create_logger_layer<S>(level: &str, filter_crate_only: bool) -> impl Layer<S> + Send + Sync + 'static
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {

@@ -134,21 +134,24 @@ impl TickBuffer {
             return Err(TqError::Other("Tick缓冲区为空".to_string()));
         }
 
-        let df = DataFrame::new(self.ids.len(), vec![
-            Column::new("id".into(), &self.ids),
-            Column::new("datetime".into(), &self.datetimes),
-            Column::new("last_price".into(), &self.last_prices),
-            Column::new("average".into(), &self.averages),
-            Column::new("highest".into(), &self.highests),
-            Column::new("lowest".into(), &self.lowests),
-            Column::new("ask_price1".into(), &self.ask_price1s),
-            Column::new("ask_volume1".into(), &self.ask_volume1s),
-            Column::new("bid_price1".into(), &self.bid_price1s),
-            Column::new("bid_volume1".into(), &self.bid_volume1s),
-            Column::new("volume".into(), &self.volumes),
-            Column::new("amount".into(), &self.amounts),
-            Column::new("open_interest".into(), &self.open_interests),
-        ])
+        let df = DataFrame::new(
+            self.ids.len(),
+            vec![
+                Column::new("id".into(), &self.ids),
+                Column::new("datetime".into(), &self.datetimes),
+                Column::new("last_price".into(), &self.last_prices),
+                Column::new("average".into(), &self.averages),
+                Column::new("highest".into(), &self.highests),
+                Column::new("lowest".into(), &self.lowests),
+                Column::new("ask_price1".into(), &self.ask_price1s),
+                Column::new("ask_volume1".into(), &self.ask_volume1s),
+                Column::new("bid_price1".into(), &self.bid_price1s),
+                Column::new("bid_volume1".into(), &self.bid_volume1s),
+                Column::new("volume".into(), &self.volumes),
+                Column::new("amount".into(), &self.amounts),
+                Column::new("open_interest".into(), &self.open_interests),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)
@@ -163,21 +166,24 @@ impl TickBuffer {
         let len = self.ids.len();
         let start = len.saturating_sub(n);
 
-        let df = DataFrame::new(len - start, vec![
-            Column::new("id".into(), &self.ids[start..]),
-            Column::new("datetime".into(), &self.datetimes[start..]),
-            Column::new("last_price".into(), &self.last_prices[start..]),
-            Column::new("average".into(), &self.averages[start..]),
-            Column::new("highest".into(), &self.highests[start..]),
-            Column::new("lowest".into(), &self.lowests[start..]),
-            Column::new("ask_price1".into(), &self.ask_price1s[start..]),
-            Column::new("ask_volume1".into(), &self.ask_volume1s[start..]),
-            Column::new("bid_price1".into(), &self.bid_price1s[start..]),
-            Column::new("bid_volume1".into(), &self.bid_volume1s[start..]),
-            Column::new("volume".into(), &self.volumes[start..]),
-            Column::new("amount".into(), &self.amounts[start..]),
-            Column::new("open_interest".into(), &self.open_interests[start..]),
-        ])
+        let df = DataFrame::new(
+            len - start,
+            vec![
+                Column::new("id".into(), &self.ids[start..]),
+                Column::new("datetime".into(), &self.datetimes[start..]),
+                Column::new("last_price".into(), &self.last_prices[start..]),
+                Column::new("average".into(), &self.averages[start..]),
+                Column::new("highest".into(), &self.highests[start..]),
+                Column::new("lowest".into(), &self.lowests[start..]),
+                Column::new("ask_price1".into(), &self.ask_price1s[start..]),
+                Column::new("ask_volume1".into(), &self.ask_volume1s[start..]),
+                Column::new("bid_price1".into(), &self.bid_price1s[start..]),
+                Column::new("bid_volume1".into(), &self.bid_volume1s[start..]),
+                Column::new("volume".into(), &self.volumes[start..]),
+                Column::new("amount".into(), &self.amounts[start..]),
+                Column::new("open_interest".into(), &self.open_interests[start..]),
+            ],
+        )
         .map_err(|e| TqError::Other(format!("创建 DataFrame 失败: {}", e)))?;
 
         Ok(df)

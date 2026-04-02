@@ -1,5 +1,5 @@
-use super::{SeriesStreamSubscribers, SeriesSubscription};
 use super::processing::process_series_update;
+use super::{SeriesStreamSubscribers, SeriesSubscription};
 use crate::errors::Result;
 use crate::types::{ChartInfo, SeriesData, UpdateInfo};
 use async_stream::stream;
@@ -102,10 +102,7 @@ impl SeriesSubscription {
         drop(running);
         self.unsubscribe_sent.store(false, Ordering::SeqCst);
 
-        debug!(
-            "启动 Series 订阅: {}",
-            self.options.chart_id.as_deref().unwrap_or("")
-        );
+        debug!("启动 Series 订阅: {}", self.options.chart_id.as_deref().unwrap_or(""));
 
         self.start_watching().await;
         if let Err(e) = self.send_set_chart().await {
@@ -197,9 +194,7 @@ impl SeriesSubscription {
                 options
                     .symbols
                     .iter()
-                    .map(|symbol| {
-                        dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str])
-                    })
+                    .map(|symbol| dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str]))
                     .max()
                     .unwrap_or(0)
             } else {
@@ -263,8 +258,7 @@ impl SeriesSubscription {
 
                         if chart_epoch > last_epoch || data_epoch > last_epoch {
                             if let Some(chart_data) = dm.get_by_path(&["charts", chart_id])
-                                && let Ok(chart_info) =
-                                    dm.convert_to_struct::<ChartInfo>(&chart_data)
+                                && let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data)
                                 && chart_info.ready
                                 && !chart_info.more_data
                             {
@@ -294,15 +288,13 @@ impl SeriesSubscription {
                                             .await;
 
                                             if update_info.has_new_bar
-                                                && let Some(callback) =
-                                                    on_new_bar.read().await.as_ref()
+                                                && let Some(callback) = on_new_bar.read().await.as_ref()
                                             {
                                                 callback(Arc::clone(&series_data));
                                             }
 
                                             if update_info.has_bar_update
-                                                && let Some(callback) =
-                                                    on_bar_update.read().await.as_ref()
+                                                && let Some(callback) = on_bar_update.read().await.as_ref()
                                             {
                                                 callback(Arc::clone(&series_data));
                                             }
@@ -316,10 +308,7 @@ impl SeriesSubscription {
                                             if use_multi_init_view_width
                                                 && !view_width_adjusted.swap(true, Ordering::SeqCst)
                                             {
-                                                let chart_req = build_set_chart_request(
-                                                    &options,
-                                                    options.view_width,
-                                                );
+                                                let chart_req = build_set_chart_request(&options, options.view_width);
                                                 let _ = ws.send(&chart_req).await;
                                             }
                                         }
@@ -340,9 +329,7 @@ impl SeriesSubscription {
                     }
                     if !worker_dirty.load(Ordering::SeqCst) {
                         worker_running.store(false, Ordering::SeqCst);
-                        if worker_dirty.load(Ordering::SeqCst)
-                            && !worker_running.swap(true, Ordering::SeqCst)
-                        {
+                        if worker_dirty.load(Ordering::SeqCst) && !worker_running.swap(true, Ordering::SeqCst) {
                             continue;
                         }
                         break;
@@ -391,18 +378,8 @@ impl SeriesSubscription {
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(super) async fn emit_update(
-        &self,
-        series_data: Arc<SeriesData>,
-        update_info: Arc<UpdateInfo>,
-    ) {
-        dispatch_update(
-            &self.on_update,
-            &self.stream_subscribers,
-            &series_data,
-            &update_info,
-        )
-        .await;
+    pub(super) async fn emit_update(&self, series_data: Arc<SeriesData>, update_info: Arc<UpdateInfo>) {
+        dispatch_update(&self.on_update, &self.stream_subscribers, &series_data, &update_info).await;
     }
 
     /// 获取异步数据流。
@@ -429,10 +406,7 @@ impl SeriesSubscription {
         }
         self.detach_data_callback();
 
-        info!(
-            "关闭 Series 订阅: {}",
-            self.options.chart_id.as_deref().unwrap_or("")
-        );
+        info!("关闭 Series 订阅: {}", self.options.chart_id.as_deref().unwrap_or(""));
 
         if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
             return Ok(());
@@ -465,10 +439,7 @@ impl Drop for SeriesSubscription {
             });
         } else {
             std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() {
                     rt.block_on(async move {
                         let _ = ws.send(&cancel_req).await;
                     });
@@ -478,10 +449,7 @@ impl Drop for SeriesSubscription {
     }
 }
 
-async fn dispatch_stream_subscribers(
-    stream_subscribers: &SeriesStreamSubscribers,
-    series_data: &Arc<SeriesData>,
-) {
+async fn dispatch_stream_subscribers(stream_subscribers: &SeriesStreamSubscribers, series_data: &Arc<SeriesData>) {
     let subscribers = stream_subscribers.read().await.clone();
     let mut has_closed = false;
 
@@ -515,10 +483,7 @@ async fn dispatch_update(
     dispatch_stream_subscribers(stream_subscribers, series_data).await;
 }
 
-fn build_set_chart_request(
-    options: &crate::types::SeriesOptions,
-    view_width: usize,
-) -> serde_json::Value {
+fn build_set_chart_request(options: &crate::types::SeriesOptions, view_width: usize) -> serde_json::Value {
     let chart_id = options.chart_id.as_deref().unwrap_or("");
     let mut chart_req = serde_json::json!({
         "aid": "set_chart",
@@ -530,9 +495,7 @@ fn build_set_chart_request(
 
     if let Some(left_kline_id) = options.left_kline_id {
         chart_req["left_kline_id"] = serde_json::json!(left_kline_id);
-    } else if let (Some(focus_datetime), Some(focus_position)) =
-        (options.focus_datetime, options.focus_position)
-    {
+    } else if let (Some(focus_datetime), Some(focus_position)) = (options.focus_datetime, options.focus_position) {
         chart_req["focus_datetime"] = serde_json::json!(focus_datetime.timestamp_nanos_opt());
         chart_req["focus_position"] = serde_json::json!(focus_position);
     }

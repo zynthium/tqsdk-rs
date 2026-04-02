@@ -9,16 +9,12 @@ pub(super) fn validate_query_variables(variables: &Value) -> Result<()> {
         match value {
             Value::String(s) => {
                 if s.is_empty() {
-                    return Err(TqError::InvalidParameter(
-                        "variables 不支持空字符串".to_string(),
-                    ));
+                    return Err(TqError::InvalidParameter("variables 不支持空字符串".to_string()));
                 }
             }
             Value::Array(items) => {
                 if items.is_empty() {
-                    return Err(TqError::InvalidParameter(
-                        "variables 不支持空列表".to_string(),
-                    ));
+                    return Err(TqError::InvalidParameter("variables 不支持空列表".to_string()));
                 }
                 for item in items {
                     if let Value::String(s) = item
@@ -36,11 +32,7 @@ pub(super) fn validate_query_variables(variables: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn match_query_cache(
-    symbol: &Map<String, Value>,
-    query: &Value,
-    variables: &Value,
-) -> bool {
+pub(super) fn match_query_cache(symbol: &Map<String, Value>, query: &Value, variables: &Value) -> bool {
     match (symbol.get("query"), symbol.get("variables")) {
         (Some(q), Some(v)) => q == query && v == variables,
         _ => false,
@@ -84,10 +76,7 @@ pub(super) fn validate_finance_underlying(underlying_symbol: &str) -> Result<()>
 }
 
 pub(super) fn validate_finance_nearbys(underlying_symbol: &str, nearbys: &[i32]) -> Result<()> {
-    let is_index = matches!(
-        underlying_symbol,
-        "SSE.000300" | "SSE.000852" | "SSE.000016"
-    );
+    let is_index = matches!(underlying_symbol, "SSE.000300" | "SSE.000852" | "SSE.000016");
     if is_index {
         if nearbys.iter().any(|v| !matches!(v, 0..=5)) {
             return Err(TqError::InvalidParameter(format!(

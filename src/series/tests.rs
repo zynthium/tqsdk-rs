@@ -49,11 +49,7 @@ impl Authenticator for TestAuth {
         Ok(())
     }
 
-    async fn get_td_url(
-        &self,
-        _broker_id: &str,
-        _account_id: &str,
-    ) -> Result<crate::auth::BrokerInfo> {
+    async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
         Err(TqError::NotLoggedIn)
     }
 
@@ -83,10 +79,7 @@ impl Authenticator for TestAuth {
 }
 
 fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscription {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -114,10 +107,7 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
 
 #[tokio::test]
 async fn kline_returns_unstarted_subscription() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -126,10 +116,7 @@ async fn kline_returns_unstarted_subscription() {
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
     let api = SeriesAPI::new(dm, ws, auth);
 
-    let sub = api
-        .kline("SHFE.au2602", StdDuration::from_secs(60), 32)
-        .await
-        .unwrap();
+    let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await.unwrap();
 
     assert!(!*sub.running.read().await);
     assert!(sub.data_cb_id.lock().unwrap().is_none());
@@ -137,10 +124,7 @@ async fn kline_returns_unstarted_subscription() {
 
 #[tokio::test]
 async fn start_failure_rolls_back_series_callback_registration() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -242,9 +226,7 @@ async fn data_stream_is_bounded_and_drops_overflow_updates() {
     assert_eq!(streamed.symbols, first.symbols);
 
     assert!(
-        timeout(Duration::from_millis(50), stream.next())
-            .await
-            .is_err(),
+        timeout(Duration::from_millis(50), stream.next()).await.is_err(),
         "second update should be dropped when stream queue is full"
     );
 }

@@ -36,11 +36,7 @@ impl TqTradingStatusWebsocket {
                     && let Some(payload) = data.get("data").and_then(|payload| payload.as_array())
                 {
                     if payload.iter().any(has_reconnect_notify) {
-                        let sub = runtime_clone
-                            .subscribe_trading_status
-                            .read()
-                            .unwrap()
-                            .clone();
+                        let sub = runtime_clone.subscribe_trading_status.read().unwrap().clone();
                         let base_for_send = Arc::clone(&base_clone);
                         tokio::spawn(async move {
                             if let Some(sub) = sub {
@@ -52,27 +48,16 @@ impl TqTradingStatusWebsocket {
                     let mut diffs = payload.clone();
                     let mut received = HashMap::<String, String>::new();
                     for diff in diffs.iter_mut() {
-                        if let Some(map) = diff
-                            .get_mut("trading_status")
-                            .and_then(|value| value.as_object_mut())
-                        {
+                        if let Some(map) = diff.get_mut("trading_status").and_then(|value| value.as_object_mut()) {
                             for (symbol, trading_status_value) in map.iter_mut() {
-                                if let Some(trading_status_map) =
-                                    trading_status_value.as_object_mut()
-                                {
+                                if let Some(trading_status_map) = trading_status_value.as_object_mut() {
                                     if !trading_status_map.contains_key("symbol") {
-                                        trading_status_map.insert(
-                                            "symbol".to_string(),
-                                            Value::String(symbol.clone()),
-                                        );
+                                        trading_status_map.insert("symbol".to_string(), Value::String(symbol.clone()));
                                     }
-                                    if let Some(status_value) =
-                                        trading_status_map.get_mut("trade_status")
+                                    if let Some(status_value) = trading_status_map.get_mut("trade_status")
                                         && let Some(status) = status_value.as_str()
                                     {
-                                        let normalized = if status == "AUCTIONORDERING"
-                                            || status == "CONTINOUS"
-                                        {
+                                        let normalized = if status == "AUCTIONORDERING" || status == "CONTINOUS" {
                                             status.to_string()
                                         } else {
                                             "NOTRADING".to_string()
@@ -118,11 +103,7 @@ impl TqTradingStatusWebsocket {
             let runtime_clone = runtime.clone();
             base.on_open(move || {
                 let base = Arc::clone(&base_clone);
-                let sub = runtime_clone
-                    .subscribe_trading_status
-                    .read()
-                    .unwrap()
-                    .clone();
+                let sub = runtime_clone.subscribe_trading_status.read().unwrap().clone();
                 tokio::spawn(async move {
                     if let Some(sub) = sub {
                         let _ = base.send(&sub).await;

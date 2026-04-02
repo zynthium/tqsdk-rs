@@ -7,13 +7,7 @@ pub(crate) fn extract_notify_code(value: &Value) -> Option<i64> {
     value.as_str().and_then(|s| s.parse::<i64>().ok())
 }
 
-pub(crate) fn build_connection_notify(
-    code: i64,
-    level: &str,
-    content: String,
-    url: String,
-    conn_id: String,
-) -> Value {
+pub(crate) fn build_connection_notify(code: i64, level: &str, content: String, url: String, conn_id: String) -> Value {
     let notify_id = uuid::Uuid::new_v4().to_string();
     json!({
         "aid": "rtn_data",

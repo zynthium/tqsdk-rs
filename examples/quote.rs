@@ -33,9 +33,7 @@ async fn quote_subscription_example() {
         ..Default::default()
     };
 
-    let mut client = Client::new(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
+    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
 
     // 初始化行情功能
     client.init_market().await.expect("初始化行情功能失败");
@@ -89,10 +87,7 @@ async fn quote_subscription_example() {
                     quote.last_price, quote.change, quote.bid_price1, quote.ask_price1
                 );
             }
-            info!(
-                "[回调] {}: 最新价={:.2}",
-                quote.instrument_id, quote.last_price
-            );
+            info!("[回调] {}: 最新价={:.2}", quote.instrument_id, quote.last_price);
         })
         .await;
 
@@ -120,9 +115,7 @@ async fn single_kline_subscription_example() {
     // let symbol = "SHFE.au2602";
     let symbol = "CFFEX.IF2512";
 
-    let mut client = Client::new(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
+    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -181,10 +174,7 @@ async fn single_kline_subscription_example() {
                 && let Some(single) = &data.single
                 && let Some(chart) = &single.chart
             {
-                info!(
-                    "✅ Chart 同步完成! 范围: [{},{}]",
-                    chart.left_id, chart.right_id
-                );
+                info!("✅ Chart 同步完成! 范围: [{},{}]", chart.left_id, chart.right_id);
             }
         }
     })
@@ -206,10 +196,7 @@ async fn single_kline_subscription_example() {
 
             // 示例：计算最近5根K线的平均价格
             if sym_data.data.len() >= 5 {
-                let sum: f64 = sym_data.data[sym_data.data.len() - 5..]
-                    .iter()
-                    .map(|k| k.close)
-                    .sum();
+                let sum: f64 = sym_data.data[sym_data.data.len() - 5..].iter().map(|k| k.close).sum();
                 let ma5 = sum / 5.0;
                 info!("   MA5={:.2}", ma5);
             }
@@ -247,9 +234,7 @@ async fn multi_kline_subscription_example() {
         ..Default::default()
     };
 
-    let mut client = Client::new(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
+    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -291,11 +276,7 @@ async fn multi_kline_subscription_example() {
             && let Some(multi) = &data.multi
         {
             info!("✅ 多合约 Chart 同步完成!");
-            info!(
-                "主合约: {}, 合约数: {}",
-                multi.main_symbol,
-                multi.symbols.len()
-            );
+            info!("主合约: {}, 合约数: {}", multi.main_symbol, multi.symbols.len());
             info!(
                 "数据范围: [{}, {}], 总共 {} 根K线",
                 multi.left_id,
@@ -327,9 +308,7 @@ async fn tick_subscription_example() {
         ..Default::default()
     };
 
-    let mut client = Client::new(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
+    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -340,20 +319,22 @@ async fn tick_subscription_example() {
     // 先注册所有回调函数
     sub.on_new_bar(|data| {
         if let Some(tick_data) = &data.tick_data
-            && let Some(tick) = tick_data.data.last() {
-                info!(
-                    "📈 新 Tick: [{}] 最新价={:.2} 买一={:.2}({}) 卖一={:.2}({}) 成交量={} (序列长度={})",
-                    tick.id,
-                    tick.last_price,
-                    tick.bid_price1,
-                    tick.bid_volume1,
-                    tick.ask_price1,
-                    tick.ask_volume1,
-                    tick.volume,
-                    tick_data.data.len()
-                );
-            }
-    }).await;
+            && let Some(tick) = tick_data.data.last()
+        {
+            info!(
+                "📈 新 Tick: [{}] 最新价={:.2} 买一={:.2}({}) 卖一={:.2}({}) 成交量={} (序列长度={})",
+                tick.id,
+                tick.last_price,
+                tick.bid_price1,
+                tick.bid_volume1,
+                tick.ask_price1,
+                tick.ask_volume1,
+                tick.volume,
+                tick_data.data.len()
+            );
+        }
+    })
+    .await;
 
     sub.on_bar_update(|data| {
         if let Some(tick_data) = &data.tick_data
@@ -397,10 +378,7 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
     fs::create_dir_all("logs").expect("无法创建日志目录");
 
     // 生成日志文件名（带时间戳）
-    let log_file = format!(
-        "logs/quote_{}.log",
-        chrono::Local::now().format("%Y%m%d_%H%M%S")
-    );
+    let log_file = format!("logs/quote_{}.log", chrono::Local::now().format("%Y%m%d_%H%M%S"));
     let file = fs::File::create(&log_file).expect("无法创建日志文件");
 
     // 构建过滤器

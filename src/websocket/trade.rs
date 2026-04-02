@@ -1,7 +1,6 @@
 use super::{
-    BackpressureState, NotifyCallback, TqWebsocket, WebSocketConfig, derive_message_backlog_max,
-    extract_notify_code, extract_trade_positions, has_reconnect_notify,
-    is_trade_reconnect_complete,
+    BackpressureState, NotifyCallback, TqWebsocket, WebSocketConfig, derive_message_backlog_max, extract_notify_code,
+    extract_trade_positions, has_reconnect_notify, is_trade_reconnect_complete,
 };
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
@@ -33,10 +32,8 @@ pub struct TqTradeWebsocket {
 impl TqTradeWebsocket {
     /// 创建交易 WebSocket
     pub fn new(url: String, dm: Arc<DataManager>, config: WebSocketConfig) -> Self {
-        let message_backlog_max = derive_message_backlog_max(
-            config.message_queue_capacity,
-            config.message_backlog_warn_step,
-        );
+        let message_backlog_max =
+            derive_message_backlog_max(config.message_queue_capacity, config.message_backlog_warn_step);
         let base = Arc::new(TqWebsocket::new(url, config.clone()));
         let runtime = TradeRuntime {
             dm,
@@ -49,8 +46,7 @@ impl TqTradeWebsocket {
             reconnect_prev_positions: Arc::new(std::sync::RwLock::new(HashMap::new())),
         };
 
-        let (msg_tx, mut msg_rx) =
-            tokio::sync::mpsc::channel::<Value>(config.message_queue_capacity);
+        let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<Value>(config.message_queue_capacity);
         let backpressure = BackpressureState::new(
             msg_tx,
             message_backlog_max,
@@ -75,14 +71,12 @@ impl TqTradeWebsocket {
                             "rtn_data" => {
                                 if let Some(payload) = data.get("data") {
                                     if let Some(array) = payload.as_array() {
-                                        let reconnect_index =
-                                            array.iter().position(has_reconnect_notify);
+                                        let reconnect_index = array.iter().position(has_reconnect_notify);
                                         let (notifies, cleaned_data) =
                                             TqTradeWebsocket::separate_notifies(array.clone());
                                         debug!("notifies: {:?}", notifies);
 
-                                        let callback =
-                                            runtime_clone.on_notify.read().unwrap().clone();
+                                        let callback = runtime_clone.on_notify.read().unwrap().clone();
                                         if let Some(callback) = callback {
                                             for notify in notifies {
                                                 callback(notify);
@@ -90,130 +84,75 @@ impl TqTradeWebsocket {
                                         }
 
                                         if let Some(index) = reconnect_index {
-                                            runtime_clone
-                                                .reconnect_pending
-                                                .store(true, Ordering::SeqCst);
-                                            *runtime_clone
-                                                .reconnect_prev_positions
-                                                .write()
-                                                .unwrap() =
+                                            runtime_clone.reconnect_pending.store(true, Ordering::SeqCst);
+                                            *runtime_clone.reconnect_prev_positions.write().unwrap() =
                                                 extract_trade_positions(&runtime_clone.dm);
-                                            let mut diffs =
-                                                runtime_clone.reconnect_diffs.write().unwrap();
+                                            let mut diffs = runtime_clone.reconnect_diffs.write().unwrap();
                                             diffs.clear();
                                             diffs.extend(cleaned_data[index..].iter().cloned());
                                             let dm_temp = Arc::new(DataManager::new(
                                                 HashMap::new(),
                                                 DataManagerConfig::default(),
                                             ));
-                                            dm_temp.merge_data(
-                                                Value::Array(diffs.clone()),
-                                                true,
-                                                true,
-                                            );
-                                            *runtime_clone.reconnect_dm.write().unwrap() =
-                                                Some(Arc::clone(&dm_temp));
+                                            dm_temp.merge_data(Value::Array(diffs.clone()), true, true);
+                                            *runtime_clone.reconnect_dm.write().unwrap() = Some(Arc::clone(&dm_temp));
                                             let base_for_send = Arc::clone(&base_clone);
-                                            let req_login =
-                                                runtime_clone.req_login.read().unwrap().clone();
-                                            let confirm_settlement = runtime_clone
-                                                .confirm_settlement
-                                                .read()
-                                                .unwrap()
-                                                .clone();
+                                            let req_login = runtime_clone.req_login.read().unwrap().clone();
+                                            let confirm_settlement =
+                                                runtime_clone.confirm_settlement.read().unwrap().clone();
                                             tokio::spawn(async move {
                                                 if let Some(login) = req_login {
-                                                    let log_pack =
-                                                        super::sanitize_log_pack_value(&login);
+                                                    let log_pack = super::sanitize_log_pack_value(&login);
                                                     debug!(pack = %log_pack, "resend request");
                                                     let _ = base_for_send.send(&login).await;
                                                 }
                                                 if let Some(confirm) = confirm_settlement {
-                                                    let log_pack =
-                                                        super::sanitize_log_pack_value(&confirm);
+                                                    let log_pack = super::sanitize_log_pack_value(&confirm);
                                                     debug!(pack = %log_pack, "resend request");
                                                     let _ = base_for_send.send(&confirm).await;
                                                 }
                                                 let _ = base_for_send.send_peek_message().await;
                                             });
-                                        } else if runtime_clone
-                                            .reconnect_pending
-                                            .load(Ordering::SeqCst)
-                                        {
-                                            let mut diffs =
-                                                runtime_clone.reconnect_diffs.write().unwrap();
+                                        } else if runtime_clone.reconnect_pending.load(Ordering::SeqCst) {
+                                            let mut diffs = runtime_clone.reconnect_diffs.write().unwrap();
                                             diffs.extend(cleaned_data.iter().cloned());
-                                            if let Some(dm_temp) = runtime_clone
-                                                .reconnect_dm
-                                                .read()
-                                                .unwrap()
-                                                .as_ref()
-                                                .cloned()
+                                            if let Some(dm_temp) =
+                                                runtime_clone.reconnect_dm.read().unwrap().as_ref().cloned()
                                             {
-                                                dm_temp.merge_data(
-                                                    Value::Array(cleaned_data.clone()),
-                                                    true,
-                                                    true,
-                                                );
+                                                dm_temp.merge_data(Value::Array(cleaned_data.clone()), true, true);
                                             }
                                         }
 
                                         if runtime_clone.reconnect_pending.load(Ordering::SeqCst) {
-                                            let dm_temp = runtime_clone
-                                                .reconnect_dm
-                                                .read()
-                                                .unwrap()
-                                                .as_ref()
-                                                .cloned();
-                                            let prev_positions = runtime_clone
-                                                .reconnect_prev_positions
-                                                .read()
-                                                .unwrap()
-                                                .clone();
+                                            let dm_temp = runtime_clone.reconnect_dm.read().unwrap().as_ref().cloned();
+                                            let prev_positions =
+                                                runtime_clone.reconnect_prev_positions.read().unwrap().clone();
                                             if let Some(dm_temp) = dm_temp {
                                                 if let Some(removal_diffs) =
-                                                    is_trade_reconnect_complete(
-                                                        &dm_temp,
-                                                        &prev_positions,
-                                                    )
+                                                    is_trade_reconnect_complete(&dm_temp, &prev_positions)
                                                 {
-                                                    let mut diffs = runtime_clone
-                                                        .reconnect_diffs
-                                                        .write()
-                                                        .unwrap();
+                                                    let mut diffs = runtime_clone.reconnect_diffs.write().unwrap();
                                                     let mut pending = diffs.clone();
                                                     diffs.clear();
-                                                    runtime_clone
-                                                        .reconnect_pending
-                                                        .store(false, Ordering::SeqCst);
-                                                    *runtime_clone.reconnect_dm.write().unwrap() =
-                                                        None;
+                                                    runtime_clone.reconnect_pending.store(false, Ordering::SeqCst);
+                                                    *runtime_clone.reconnect_dm.write().unwrap() = None;
                                                     if !removal_diffs.is_empty() {
                                                         pending.extend(removal_diffs);
                                                     }
-                                                    runtime_clone.dm.merge_data(
-                                                        Value::Array(pending),
-                                                        true,
-                                                        true,
-                                                    );
+                                                    runtime_clone.dm.merge_data(Value::Array(pending), true, true);
                                                     debug!("data completed");
                                                 } else {
                                                     debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
                                                     let base_for_peek = Arc::clone(&base_clone);
                                                     tokio::spawn(async move {
-                                                        let _ =
-                                                            base_for_peek.send_peek_message().await;
+                                                        let _ = base_for_peek.send_peek_message().await;
                                                     });
                                                 }
                                             }
                                             continue;
                                         }
 
-                                        runtime_clone.dm.merge_data(
-                                            Value::Array(cleaned_data),
-                                            true,
-                                            true,
-                                        );
+                                        runtime_clone.dm.merge_data(Value::Array(cleaned_data), true, true);
                                     } else {
                                         runtime_clone.dm.merge_data(payload.clone(), true, true);
                                     }
@@ -228,12 +167,8 @@ impl TqTradeWebsocket {
                                     data.get("user_name").and_then(|value| value.as_str()),
                                     data.get("trading_day").and_then(|value| value.as_str()),
                                 ) {
-                                    debug!(
-                                        "收到结算单: user={}, trading_day={}",
-                                        user_name, trading_day
-                                    );
-                                    let settlement =
-                                        TqTradeWebsocket::parse_settlement_content(settlement_info);
+                                    debug!("收到结算单: user={}, trading_day={}", user_name, trading_day);
+                                    let settlement = TqTradeWebsocket::parse_settlement_content(settlement_info);
                                     let settlement_data = json!({
                                         "trade": {
                                             user_name: {
@@ -264,16 +199,10 @@ impl TqTradeWebsocket {
             let base_clone = Arc::clone(&base);
             let runtime_clone = runtime.clone();
             base.on_close(move || {
-                runtime_clone
-                    .reconnect_pending
-                    .store(false, Ordering::SeqCst);
+                runtime_clone.reconnect_pending.store(false, Ordering::SeqCst);
                 runtime_clone.reconnect_diffs.write().unwrap().clear();
                 *runtime_clone.reconnect_dm.write().unwrap() = None;
-                runtime_clone
-                    .reconnect_prev_positions
-                    .write()
-                    .unwrap()
-                    .clear();
+                runtime_clone.reconnect_prev_positions.write().unwrap().clear();
                 let base_for_reconnect = Arc::clone(&base_clone);
                 tokio::spawn(async move {
                     base_for_reconnect.reconnect().await;
@@ -479,15 +408,8 @@ mod tests {
 
     #[tokio::test]
     async fn req_login_logs_are_redacted() {
-        let dm = Arc::new(DataManager::new(
-            HashMap::new(),
-            DataManagerConfig::default(),
-        ));
-        let ws = TqTradeWebsocket::new(
-            "wss://example.com".to_string(),
-            dm,
-            WebSocketConfig::default(),
-        );
+        let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+        let ws = TqTradeWebsocket::new("wss://example.com".to_string(), dm, WebSocketConfig::default());
         let writer = SharedWriter::default();
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(Level::DEBUG)
@@ -507,13 +429,7 @@ mod tests {
         .unwrap();
 
         let logs = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
-        assert!(
-            !logs.contains("super-secret"),
-            "日志不应包含明文密码: {logs}"
-        );
-        assert!(
-            !logs.contains("\"password\""),
-            "日志不应包含 password 字段: {logs}"
-        );
+        assert!(!logs.contains("super-secret"), "日志不应包含明文密码: {logs}");
+        assert!(!logs.contains("\"password\""), "日志不应包含 password 字段: {logs}");
     }
 }

@@ -1,12 +1,10 @@
 use super::InsAPI;
 use super::parse::{
-    filter_option_nodes, parse_option_nodes, parse_query_cont_quotes_result,
-    parse_query_options_result, parse_query_quotes_result, parse_query_symbol_info_result,
-    sort_options_and_get_atm_index,
+    filter_option_nodes, parse_option_nodes, parse_query_cont_quotes_result, parse_query_options_result,
+    parse_query_quotes_result, parse_query_symbol_info_result, sort_options_and_get_atm_index,
 };
 use super::validation::{
-    validate_finance_nearbys, validate_finance_underlying, validate_option_class,
-    validate_price_level,
+    validate_finance_nearbys, validate_finance_underlying, validate_option_class, validate_price_level,
 };
 use crate::errors::{Result, TqError};
 use chrono::Utc;
@@ -18,8 +16,7 @@ impl InsAPI {
     /// `query` 为 GraphQL 文本，`variables` 为变量对象。
     pub async fn query_graphql(&self, query: &str, variables: Option<Value>) -> Result<Value> {
         let vars = variables.unwrap_or_else(|| Value::Object(Map::new()));
-        self.send_ins_query(query.to_string(), Some(vars), None, 60)
-            .await
+        self.send_ins_query(query.to_string(), Some(vars), None, 60).await
     }
 
     /// 查询合约列表
@@ -42,9 +39,7 @@ impl InsAPI {
         }
         if let Some(ex) = exchange_id {
             if ex.is_empty() {
-                return Err(TqError::InvalidParameter(
-                    "exchange_id 不能为空".to_string(),
-                ));
+                return Err(TqError::InvalidParameter("exchange_id 不能为空".to_string()));
             }
             let is_future_ex = matches!(ex, "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX");
             let need_pass_ex = match ins_class {
@@ -145,17 +140,10 @@ impl InsAPI {
             .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
             .await?;
 
-        Ok(parse_query_cont_quotes_result(
-            &res,
-            exchange_id,
-            product_id,
-        ))
+        Ok(parse_query_cont_quotes_result(&res, exchange_id, product_id))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "对外 API 保持与 Python SDK 查询参数一致"
-    )]
+    #[expect(clippy::too_many_arguments, reason = "对外 API 保持与 Python SDK 查询参数一致")]
     /// 查询期权列表
     ///
     /// `underlying_symbol` 为标的合约，其余参数用于筛选期权集合。
@@ -170,9 +158,7 @@ impl InsAPI {
         has_a: Option<bool>,
     ) -> Result<Vec<String>> {
         if underlying_symbol.is_empty() {
-            return Err(TqError::InvalidParameter(
-                "underlying_symbol 不能为空".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("underlying_symbol 不能为空".to_string()));
         }
 
         let query = r#"query($instrument_id:[String], $derivative_class:[Class]){
@@ -224,10 +210,7 @@ impl InsAPI {
         ))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "对外 API 保持与 Python SDK 查询参数一致"
-    )]
+    #[expect(clippy::too_many_arguments, reason = "对外 API 保持与 Python SDK 查询参数一致")]
     pub async fn query_atm_options(
         &self,
         underlying_symbol: &str,
@@ -285,14 +268,7 @@ impl InsAPI {
             .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
             .await?;
         let nodes = parse_option_nodes(&res);
-        let mut nodes = filter_option_nodes(
-            nodes,
-            Some(option_class),
-            exercise_year,
-            exercise_month,
-            has_a,
-            None,
-        );
+        let mut nodes = filter_option_nodes(nodes, Some(option_class), exercise_year, exercise_month, has_a, None);
 
         if nodes.is_empty() {
             return Ok(price_level.iter().map(|_| None).collect());
@@ -366,14 +342,7 @@ impl InsAPI {
             .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
             .await?;
         let nodes = parse_option_nodes(&res);
-        let mut nodes = filter_option_nodes(
-            nodes,
-            Some(option_class),
-            exercise_year,
-            exercise_month,
-            has_a,
-            None,
-        );
+        let mut nodes = filter_option_nodes(nodes, Some(option_class), exercise_year, exercise_month, has_a, None);
 
         if nodes.is_empty() {
             return Ok((vec![], vec![], vec![]));
@@ -449,8 +418,7 @@ impl InsAPI {
             .send_ins_query(query.to_string(), Some(Value::Object(vars)), None, 60)
             .await?;
         let nodes = parse_option_nodes(&res);
-        let mut nodes =
-            filter_option_nodes(nodes, Some(option_class), None, None, has_a, Some(nearbys));
+        let mut nodes = filter_option_nodes(nodes, Some(option_class), None, None, has_a, Some(nearbys));
 
         if nodes.is_empty() {
             return Ok((vec![], vec![], vec![]));
@@ -478,9 +446,7 @@ impl InsAPI {
             return Err(TqError::InvalidParameter("symbol 不能为空列表".to_string()));
         }
         if symbols.iter().any(|s| s.is_empty()) {
-            return Err(TqError::InvalidParameter(
-                "symbol 参数中不能有空字符串".to_string(),
-            ));
+            return Err(TqError::InvalidParameter("symbol 参数中不能有空字符串".to_string()));
         }
         let symbol_list: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
         let symbol_json = serde_json::to_string(&symbol_list)

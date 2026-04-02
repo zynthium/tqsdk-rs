@@ -5,10 +5,7 @@ use std::sync::{Arc, RwLock};
 
 impl DataManager {
     /// 创建新的数据管理器
-    pub fn new(
-        initial_data: HashMap<String, serde_json::Value>,
-        config: DataManagerConfig,
-    ) -> Self {
+    pub fn new(initial_data: HashMap<String, serde_json::Value>, config: DataManagerConfig) -> Self {
         Self {
             data: Arc::new(RwLock::new(initial_data)),
             epoch: std::sync::atomic::AtomicI64::new(0),

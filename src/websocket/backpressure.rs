@@ -7,16 +7,10 @@ use tracing::warn;
 
 type OverflowHandler = Arc<dyn Fn() + Send + Sync>;
 
-pub(crate) fn derive_message_backlog_max(
-    message_queue_capacity: usize,
-    message_backlog_warn_step: usize,
-) -> usize {
+pub(crate) fn derive_message_backlog_max(message_queue_capacity: usize, message_backlog_warn_step: usize) -> usize {
     let capacity = message_queue_capacity.max(1);
     let warn_step = message_backlog_warn_step.max(1);
-    capacity
-        .saturating_mul(4)
-        .max(warn_step.saturating_mul(2))
-        .max(64)
+    capacity.saturating_mul(4).max(warn_step.saturating_mul(2)).max(64)
 }
 
 fn try_merge_rtn_data_inplace(base: &mut Value, next: Value) -> std::result::Result<(), Value> {
@@ -128,11 +122,8 @@ impl BackpressureState {
                         for _ in 0..overflow {
                             queue.pop_front();
                         }
-                        let dropped_total =
-                            self.dropped_counter.fetch_add(overflow, Ordering::Relaxed) + overflow;
-                        if dropped_total == overflow
-                            || dropped_total.is_multiple_of(self.backlog_warn_step)
-                        {
+                        let dropped_total = self.dropped_counter.fetch_add(overflow, Ordering::Relaxed) + overflow;
+                        if dropped_total == overflow || dropped_total.is_multiple_of(self.backlog_warn_step) {
                             warn!(
                                 "{} 消息 backlog 达到上限，丢弃最旧消息: dropped_now={} dropped_total={} backlog_max={}",
                                 self.channel_name, overflow, dropped_total, self.backlog_max
@@ -201,9 +192,7 @@ impl BackpressureState {
                             count
                         };
                         if cleared > 0 {
-                            let dropped_total =
-                                self.dropped_counter.fetch_add(cleared, Ordering::Relaxed)
-                                    + cleared;
+                            let dropped_total = self.dropped_counter.fetch_add(cleared, Ordering::Relaxed) + cleared;
                             warn!(
                                 "{} 消息处理队列已关闭，清理积压消息: cleared={} dropped_total={}",
                                 self.channel_name, cleared, dropped_total
@@ -232,8 +221,8 @@ impl BackpressureState {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::sync::atomic::Ordering;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     #[tokio::test]
     async fn enqueue_backlog_is_bounded_and_drops_oldest() {

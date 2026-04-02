@@ -5,9 +5,7 @@ use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
-use crate::types::{
-    EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus,
-};
+use crate::types::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use crate::websocket::WebSocketConfig;
 use async_channel::Receiver;
 use chrono::NaiveDate;
@@ -33,10 +31,7 @@ impl Client {
     ///
     /// 如需更多配置选项，请使用 `ClientBuilder`
     pub async fn new(username: &str, password: &str, config: ClientConfig) -> Result<Self> {
-        ClientBuilder::new(username, password)
-            .config(config)
-            .build()
-            .await
+        ClientBuilder::new(username, password).config(config).build().await
     }
 
     /// 创建客户端构建器
@@ -81,9 +76,7 @@ impl Client {
     /// 获取 Series API
     pub fn series(&self) -> Result<Arc<SeriesAPI>> {
         if !self.market_active.load(Ordering::SeqCst) {
-            return Err(TqError::InternalError(
-                "Series API 未初始化或已关闭".to_string(),
-            ));
+            return Err(TqError::InternalError("Series API 未初始化或已关闭".to_string()));
         }
         self.series_api
             .clone()
@@ -93,20 +86,14 @@ impl Client {
     /// 获取合约查询 API
     pub fn ins(&self) -> Result<Arc<InsAPI>> {
         if !self.market_active.load(Ordering::SeqCst) {
-            return Err(TqError::InternalError(
-                "合约查询 API 未初始化或已关闭".to_string(),
-            ));
+            return Err(TqError::InternalError("合约查询 API 未初始化或已关闭".to_string()));
         }
         self.ins_api
             .clone()
             .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))
     }
 
-    pub async fn query_graphql(
-        &self,
-        query: &str,
-        variables: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value> {
+    pub async fn query_graphql(&self, query: &str, variables: Option<serde_json::Value>) -> Result<serde_json::Value> {
         self.ins()?.query_graphql(query, variables).await
     }
 
@@ -129,9 +116,7 @@ impl Client {
         product_id: Option<&str>,
         has_night: Option<bool>,
     ) -> Result<Vec<String>> {
-        self.ins()?
-            .query_cont_quotes(exchange_id, product_id, has_night)
-            .await
+        self.ins()?.query_cont_quotes(exchange_id, product_id, has_night).await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -158,10 +143,7 @@ impl Client {
             .await
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "对外 API 保持与 InsAPI/Python SDK 参数一致"
-    )]
+    #[expect(clippy::too_many_arguments, reason = "对外 API 保持与 InsAPI/Python SDK 参数一致")]
     pub async fn query_atm_options(
         &self,
         underlying_symbol: &str,
@@ -215,13 +197,7 @@ impl Client {
         has_a: Option<bool>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
         self.ins()?
-            .query_all_level_finance_options(
-                underlying_symbol,
-                underlying_price,
-                option_class,
-                nearbys,
-                has_a,
-            )
+            .query_all_level_finance_options(underlying_symbol, underlying_price, option_class, nearbys, has_a)
             .await
     }
 
@@ -235,9 +211,7 @@ impl Client {
         days: i32,
         start_dt: Option<NaiveDate>,
     ) -> Result<Vec<SymbolSettlement>> {
-        self.ins()?
-            .query_symbol_settlement(symbols, days, start_dt)
-            .await
+        self.ins()?.query_symbol_settlement(symbols, days, start_dt).await
     }
 
     pub async fn query_symbol_ranking(
@@ -278,9 +252,7 @@ impl Client {
     /// 订阅 Quote。
     pub async fn subscribe_quote(&self, symbols: &[&str]) -> Result<Arc<QuoteSubscription>> {
         if !self.market_active.load(Ordering::SeqCst) || self.quotes_ws.is_none() {
-            return Err(TqError::InternalError(
-                "行情 WebSocket 未初始化或已关闭".to_string(),
-            ));
+            return Err(TqError::InternalError("行情 WebSocket 未初始化或已关闭".to_string()));
         }
         {
             let auth = self.auth.read().await;
@@ -295,12 +267,7 @@ impl Client {
     }
 
     /// 创建交易会话（不自动连接）
-    pub async fn create_trade_session(
-        &self,
-        broker: &str,
-        user_id: &str,
-        password: &str,
-    ) -> Result<Arc<TradeSession>> {
+    pub async fn create_trade_session(&self, broker: &str, user_id: &str, password: &str) -> Result<Arc<TradeSession>> {
         let auth = self.auth.read().await;
         let broker_info = auth.get_td_url(broker, user_id).await?;
 

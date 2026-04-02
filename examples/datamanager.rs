@@ -34,14 +34,8 @@ async fn watch_example() {
             if let Value::Object(quote_map) = data {
                 info!(
                     "📊 Quote 更新: 最新价={:.2}, 成交量={}",
-                    quote_map
-                        .get("last_price")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(0.0),
-                    quote_map
-                        .get("volume")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(0)
+                    quote_map.get("last_price").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    quote_map.get("volume").and_then(|v| v.as_i64()).unwrap_or(0)
                 );
             }
         }
@@ -84,8 +78,7 @@ async fn watch_example() {
 
     // 取消监听
     info!("取消监听...");
-    dm.unwatch(&["quotes".to_string(), "SHFE.au2512".to_string()])
-        .ok();
+    dm.unwatch(&["quotes".to_string(), "SHFE.au2512".to_string()]).ok();
 
     info!("Watch 示例结束");
 }
@@ -157,10 +150,7 @@ async fn multi_watch_example() {
                     info!(
                         "📊 {} 更新: {:.2}",
                         symbol,
-                        quote_map
-                            .get("last_price")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(0.0)
+                        quote_map.get("last_price").and_then(|v| v.as_f64()).unwrap_or(0.0)
                     );
                 }
             }
@@ -254,9 +244,7 @@ async fn on_data_callback_example() {
 #[tokio::main]
 async fn main() {
     // 初始化日志
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
     // 运行各个示例
     watch_example().await;

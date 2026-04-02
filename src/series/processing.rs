@@ -7,10 +7,7 @@ use tokio::sync::RwLock;
 use tracing::trace;
 
 /// 处理 Series 更新
-#[expect(
-    clippy::too_many_arguments,
-    reason = "序列更新计算需要共享多份增量状态"
-)]
+#[expect(clippy::too_many_arguments, reason = "序列更新计算需要共享多份增量状态")]
 pub(super) async fn process_series_update(
     dm: &DataManager,
     options: &SeriesOptions,
@@ -78,8 +75,7 @@ async fn get_single_kline_data(dm: &DataManager, options: &SeriesOptions) -> Res
             chart.view_width = options.view_width;
             chart
         });
-    let mut kline_data =
-        dm.get_klines_data(symbol, options.duration, options.view_width, right_id)?;
+    let mut kline_data = dm.get_klines_data(symbol, options.duration, options.view_width, right_id)?;
 
     kline_data.chart_id = chart_id.to_string();
     kline_data.chart = chart_info;
@@ -99,12 +95,7 @@ async fn get_multi_kline_data(dm: &DataManager, options: &SeriesOptions) -> Resu
         .chart_id
         .as_deref()
         .ok_or_else(|| TqError::InternalError("SeriesOptions.chart_id 为空".to_string()))?;
-    let multi_data = dm.get_multi_klines_data(
-        &options.symbols,
-        options.duration,
-        chart_id,
-        options.view_width,
-    )?;
+    let multi_data = dm.get_multi_klines_data(&options.symbols, options.duration, chart_id, options.view_width)?;
 
     Ok(SeriesData {
         is_multi: true,
@@ -161,15 +152,9 @@ async fn detect_new_bars(
     let duration_str = if data.is_tick {
         String::new()
     } else if data.is_multi {
-        data.multi
-            .as_ref()
-            .map(|m| m.duration.to_string())
-            .unwrap_or_default()
+        data.multi.as_ref().map(|m| m.duration.to_string()).unwrap_or_default()
     } else {
-        data.single
-            .as_ref()
-            .map(|s| s.duration.to_string())
-            .unwrap_or_default()
+        data.single.as_ref().map(|s| s.duration.to_string()).unwrap_or_default()
     };
 
     for symbol in &data.symbols {
@@ -222,13 +207,11 @@ async fn detect_chart_range_change(
 
     let multi_chart = if let Some(multi) = &data.multi {
         if let Some(chart_data) = dm.get_by_path(&["charts", &multi.chart_id]) {
-            dm.convert_to_struct::<ChartInfo>(&chart_data)
-                .ok()
-                .map(|mut c| {
-                    c.chart_id = multi.chart_id.clone();
-                    c.view_width = multi.view_width;
-                    c
-                })
+            dm.convert_to_struct::<ChartInfo>(&chart_data).ok().map(|mut c| {
+                c.chart_id = multi.chart_id.clone();
+                c.view_width = multi.view_width;
+                c
+            })
         } else {
             None
         }

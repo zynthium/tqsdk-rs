@@ -29,9 +29,7 @@ async fn trade_callback_example() {
         ..Default::default()
     };
 
-    let client = Client::new(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
+    let client = Client::new(&username, &password, config).await.expect("创建客户端失败");
 
     // 创建交易会话（不自动连接）
     info!("创建交易会话: simnow, {}", sim_user_id);

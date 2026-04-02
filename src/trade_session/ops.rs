@@ -16,16 +16,9 @@ impl TradeSession {
         let instrument_id = req.get_instrument_id();
 
         use uuid::Uuid;
-        let order_id = format!(
-            "TQRS_{}",
-            Uuid::new_v4().simple().to_string()[..8].to_uppercase()
-        );
+        let order_id = format!("TQRS_{}", Uuid::new_v4().simple().to_string()[..8].to_uppercase());
 
-        let time_condition = if req.price_type == "ANY" {
-            "IOC"
-        } else {
-            "GFD"
-        };
+        let time_condition = if req.price_type == "ANY" { "IOC" } else { "GFD" };
 
         let order_req = serde_json::json!({
             "aid": "insert_order",
@@ -100,8 +93,7 @@ impl TradeSession {
 
     /// 获取所有委托单
     pub async fn get_orders(&self) -> Result<HashMap<String, Order>> {
-        let Some(serde_json::Value::Object(orders_map)) =
-            self.dm.get_by_path(&["trade", &self.user_id, "orders"])
+        let Some(serde_json::Value::Object(orders_map)) = self.dm.get_by_path(&["trade", &self.user_id, "orders"])
         else {
             return Ok(HashMap::new());
         };
@@ -124,8 +116,7 @@ impl TradeSession {
 
     /// 获取所有成交记录
     pub async fn get_trades(&self) -> Result<HashMap<String, Trade>> {
-        let Some(serde_json::Value::Object(trades_map)) =
-            self.dm.get_by_path(&["trade", &self.user_id, "trades"])
+        let Some(serde_json::Value::Object(trades_map)) = self.dm.get_by_path(&["trade", &self.user_id, "trades"])
         else {
             return Ok(HashMap::new());
         };
@@ -158,10 +149,7 @@ impl TradeSession {
 
         self.logged_in.store(false, Ordering::SeqCst);
 
-        info!(
-            "连接交易服务器: broker={}, user_id={}",
-            self.broker, self.user_id
-        );
+        info!("连接交易服务器: broker={}, user_id={}", self.broker, self.user_id);
 
         if let Err(e) = self.ws.init(false).await {
             self.running.store(false, Ordering::SeqCst);

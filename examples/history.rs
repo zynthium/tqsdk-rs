@@ -66,24 +66,13 @@ async fn history_kline_with_left_id_example() {
                     if let Some(chart) = &single.chart {
                         info!("   最终范围: [{}, {}]", chart.left_id, chart.right_id);
                         info!("   总数据量: {} 根K线", sym_data.data.len());
-                        info!(
-                            "   Chart More Data: {}, Ready: {}",
-                            chart.more_data, chart.ready
-                        );
+                        info!("   Chart More Data: {}, Ready: {}", chart.more_data, chart.ready);
 
                         // 验证数据范围是否正确
-                        if let (Some(first), Some(last)) =
-                            (sym_data.data.first(), sym_data.data.last())
-                        {
+                        if let (Some(first), Some(last)) = (sym_data.data.first(), sym_data.data.last()) {
                             info!("\n数据范围验证:");
-                            info!(
-                                "   首根 K线 ID: {} (应该 >= left_id: {})",
-                                first.id, chart.left_id
-                            );
-                            info!(
-                                "   末根 K线 ID: {} (应该 <= right_id: {})",
-                                last.id, chart.right_id
-                            );
+                            info!("   首根 K线 ID: {} (应该 >= left_id: {})", first.id, chart.left_id);
+                            info!("   末根 K线 ID: {} (应该 <= right_id: {})", last.id, chart.right_id);
 
                             if last.id <= chart.right_id && first.id >= chart.left_id {
                                 info!("   ✓ 数据范围正确！");
@@ -212,10 +201,7 @@ async fn interface_live_test_example() {
         .expect("创建客户端失败");
     client.init_market().await.expect("初始化行情功能失败");
 
-    match client
-        .query_cont_quotes(Some("GFEX"), Some("lc"), None)
-        .await
-    {
+    match client.query_cont_quotes(Some("GFEX"), Some("lc"), None).await {
         Ok(list) => info!("query_cont_quotes: {:?}", list),
         Err(err) => info!("query_cont_quotes error: {}", err),
     }
@@ -230,18 +216,12 @@ async fn interface_live_test_example() {
         Err(err) => info!("query_symbol_settlement error: {}", err),
     }
 
-    match client
-        .query_symbol_ranking(&symbol, "VOLUME", 1, None, None)
-        .await
-    {
+    match client.query_symbol_ranking(&symbol, "VOLUME", 1, None, None).await {
         Ok(ranking) => info!("query_symbol_ranking: {:?}", ranking),
         Err(err) => info!("query_symbol_ranking error: {}", err),
     }
 
-    match client
-        .query_edb_data(&[1, 2], 5, Some("day"), Some("ffill"))
-        .await
-    {
+    match client.query_edb_data(&[1, 2], 5, Some("day"), Some("ffill")).await {
         Ok(edb) => info!("query_edb_data: {:?}", edb),
         Err(err) => info!("query_edb_data error: {}", err),
     }
@@ -290,10 +270,7 @@ fn init_logger_with_file(level: &str, filter_crate_only: bool) {
     fs::create_dir_all("logs").expect("无法创建日志目录");
 
     // 生成日志文件名（带时间戳）
-    let log_file = format!(
-        "logs/quote_{}.log",
-        chrono::Local::now().format("%Y%m%d_%H%M%S")
-    );
+    let log_file = format!("logs/quote_{}.log", chrono::Local::now().format("%Y%m%d_%H%M%S"));
     let file = fs::File::create(&log_file).expect("无法创建日志文件");
 
     // 构建过滤器

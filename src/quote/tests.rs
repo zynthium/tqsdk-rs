@@ -8,10 +8,7 @@ use tokio::time::{Duration, sleep, timeout};
 
 #[tokio::test]
 async fn start_failure_rolls_back_quote_callback_registration() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -28,10 +25,7 @@ async fn start_failure_rolls_back_quote_callback_registration() {
 
 #[tokio::test]
 async fn quote_channel_is_bounded_and_drops_overflow_updates() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -81,10 +75,7 @@ async fn quote_channel_is_bounded_and_drops_overflow_updates() {
 
 #[tokio::test]
 async fn quote_channel_overflow_still_invokes_callback_for_each_update() {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        DataManagerConfig::default(),
-    ));
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
