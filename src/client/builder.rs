@@ -88,19 +88,14 @@ impl ClientBuilder {
     ///
     /// # 示例
     ///
-    /// ```no_run
-    /// # use tqsdk_rs::*;
-    /// # use tqsdk_rs::auth::TqAuth;
-    /// # async fn example() -> Result<()> {
-    /// let mut auth = TqAuth::new("username".to_string(), "password".to_string());
-    /// auth.login().await?;
+    /// ```ignore
+    /// use tqsdk_rs::Client;
     ///
+    /// // 传入你自己的实现了 Authenticator 的认证器实例
     /// let client = Client::builder("username", "password")
-    ///     .auth(auth)
+    ///     .auth(custom_authenticator)
     ///     .build()
     ///     .await?;
-    /// # Ok(())
-    /// # }
     /// ```
     pub fn auth<A: Authenticator + 'static>(mut self, auth: A) -> Self {
         self.auth = Some(Arc::new(RwLock::new(auth)));
