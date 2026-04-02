@@ -13,13 +13,10 @@ use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::time::Duration;
 
 /// 版本号
 pub(crate) const VERSION: &str = "3.8.1";
-pub(crate) const TQ_AUTH_URL: &str = "https://auth.shinnytech.com";
-pub(crate) const TQ_NS_URL: &str = "https://api.shinnytech.com/ns";
-pub(crate) const TQ_MD_URL_ENV: &str = "TQ_MD_URL";
+const NS_URL: &str = "https://api.shinnytech.com/ns";
 /// 客户端 ID
 pub(crate) const CLIENT_ID: &str = "shinny_tq";
 /// 客户端密钥
@@ -28,49 +25,6 @@ pub(crate) const CLIENT_SECRET: &str = "be30b9f4-6862-488a-99ad-21bde0400081";
 #[derive(Debug, Clone)]
 pub(crate) struct TqAuthConfig {
     pub auth_url: String,
-    pub ns_url: String,
-    pub client_id: String,
-    pub client_secret: String,
-    pub proxy: Option<String>,
-    pub no_proxy: bool,
-    pub verify_jwt: bool,
-    pub http_timeout: Duration,
-}
-
-impl Default for TqAuthConfig {
-    fn default() -> Self {
-        let auth_url = std::env::var("TQ_AUTH_URL").unwrap_or_else(|_| TQ_AUTH_URL.to_string());
-        let ns_url = std::env::var("TQ_NS_URL").unwrap_or_else(|_| TQ_NS_URL.to_string());
-        let client_id = std::env::var("TQ_CLIENT_ID").unwrap_or_else(|_| CLIENT_ID.to_string());
-        let client_secret = std::env::var("TQ_CLIENT_SECRET").unwrap_or_else(|_| CLIENT_SECRET.to_string());
-        let proxy = std::env::var("TQ_AUTH_PROXY")
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let no_proxy = matches!(
-            std::env::var("TQ_AUTH_NO_PROXY").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        );
-        let verify_jwt = matches!(
-            std::env::var("TQ_AUTH_VERIFY_JWT").as_deref(),
-            Ok("1") | Ok("true") | Ok("TRUE") | Ok("yes") | Ok("YES")
-        );
-        let http_timeout_secs: u64 = std::env::var("TQ_HTTP_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(30);
-
-        TqAuthConfig {
-            auth_url,
-            ns_url,
-            client_id,
-            client_secret,
-            proxy,
-            no_proxy,
-            verify_jwt,
-            http_timeout: Duration::from_secs(http_timeout_secs),
-        }
-    }
 }
 
 /// 认证器接口
@@ -189,4 +143,10 @@ pub(crate) struct TqAuth {
     refresh_token: String,
     auth_id: String,
     grants: Grants,
+}
+
+impl TqAuth {
+    pub(crate) fn ns_url(&self) -> &str {
+        NS_URL
+    }
 }

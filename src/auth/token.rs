@@ -1,4 +1,4 @@
-use super::{AccessTokenClaims, AuthResponse, Grants, TqAuth, VERSION};
+use super::{AccessTokenClaims, AuthResponse, CLIENT_ID, CLIENT_SECRET, Grants, TqAuth, VERSION};
 use crate::errors::{Result, TqError};
 use reqwest::header::{ACCEPT, USER_AGENT};
 use tracing::{debug, info};
@@ -12,8 +12,8 @@ impl TqAuth {
         );
 
         let params = [
-            ("client_id", self.config.client_id.as_str()),
-            ("client_secret", self.config.client_secret.as_str()),
+            ("client_id", CLIENT_ID),
+            ("client_secret", CLIENT_SECRET),
             ("username", &self.username),
             ("password", &self.password),
             ("grant_type", "password"),
@@ -68,28 +68,6 @@ impl TqAuth {
             source: e,
         })?;
         let claims = token_data.claims;
-        if self.config.verify_jwt {
-            let now = chrono::Utc::now().timestamp();
-            if claims.exp <= now {
-                return Err(TqError::Jwt {
-                    context: "token 已过期".to_string(),
-                    source: jsonwebtoken::errors::ErrorKind::ExpiredSignature.into(),
-                });
-            }
-            let expected_iss = format!("{}/auth/realms/shinnytech", self.config.auth_url.trim_end_matches('/'));
-            if !claims.iss.starts_with(&expected_iss) {
-                return Err(TqError::Jwt {
-                    context: "token issuer 无效".to_string(),
-                    source: jsonwebtoken::errors::ErrorKind::InvalidIssuer.into(),
-                });
-            }
-            if claims.azp != self.config.client_id {
-                return Err(TqError::Jwt {
-                    context: "token azp 不匹配".to_string(),
-                    source: jsonwebtoken::errors::ErrorKind::InvalidAudience.into(),
-                });
-            }
-        }
         self.auth_id = claims.sub;
         self.grants = Grants::default();
 

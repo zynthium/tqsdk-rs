@@ -3,6 +3,7 @@
 //! 统一的客户端入口
 
 mod builder;
+mod endpoints;
 mod facade;
 mod market;
 
@@ -20,11 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock;
 
-pub(crate) const TQ_INS_URL_DEFAULT: &str = "https://openmd.shinnytech.com/t/md/symbols/latest.json";
-
-fn default_ins_url() -> String {
-    std::env::var("TQ_INS_URL").unwrap_or_else(|_| TQ_INS_URL_DEFAULT.to_string())
-}
+pub use endpoints::{EndpointConfig, TradeSessionOptions};
 
 /// 客户端配置
 #[derive(Debug, Clone)]
@@ -36,7 +33,6 @@ pub struct ClientConfig {
     /// 开发模式
     pub development: bool,
     pub stock: bool,
-    pub ins_url: String,
     pub message_queue_capacity: usize,
     pub message_backlog_warn_step: usize,
     pub message_batch_max: usize,
@@ -49,7 +45,6 @@ impl Default for ClientConfig {
             view_width: 10000,
             development: false,
             stock: true,
-            ins_url: default_ins_url(),
             message_queue_capacity: 2048,
             message_backlog_warn_step: 1024,
             message_batch_max: 32,
@@ -65,6 +60,7 @@ pub struct ClientBuilder {
     username: String,
     password: String,
     config: ClientConfig,
+    endpoints: EndpointConfig,
     auth: Option<Arc<RwLock<dyn Authenticator>>>,
 }
 
@@ -73,6 +69,7 @@ pub struct Client {
     #[allow(dead_code)]
     username: String,
     config: ClientConfig,
+    endpoints: EndpointConfig,
     auth: Arc<RwLock<dyn Authenticator>>,
     dm: Arc<DataManager>,
     quotes_ws: Option<Arc<TqQuoteWebsocket>>,

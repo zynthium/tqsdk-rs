@@ -1,4 +1,4 @@
-use super::{Client, ClientBuilder, ClientConfig};
+use super::{Client, ClientBuilder, ClientConfig, TradeSessionOptions};
 use crate::auth::Authenticator;
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
@@ -23,6 +23,7 @@ impl Client {
     /// # async fn example() -> Result<()> {
     /// let client = ClientBuilder::new("username", "password")
     ///     .config(ClientConfig::default())
+    ///     .endpoints(EndpointConfig::from_env())
     ///     .build()
     ///     .await?;
     /// # Ok(())
@@ -45,6 +46,7 @@ impl Client {
     ///     .log_level("debug")
     ///     .view_width(5000)
     ///     .development(true)
+    ///     .endpoints(EndpointConfig::from_env())
     ///     .build()
     ///     .await?;
     /// # Ok(())
@@ -55,7 +57,7 @@ impl Client {
     }
 
     pub fn ins_url(&self) -> &str {
-        &self.config.ins_url
+        &self.endpoints.ins_url
     }
 
     /// 设置认证器
@@ -268,8 +270,31 @@ impl Client {
 
     /// 创建交易会话（不自动连接）
     pub async fn create_trade_session(&self, broker: &str, user_id: &str, password: &str) -> Result<Arc<TradeSession>> {
+        self.create_trade_session_with_options(broker, user_id, password, TradeSessionOptions::default())
+            .await
+    }
+
+    /// 创建交易会话（支持覆盖交易地址）
+    ///
+    /// 优先级：`TradeSessionOptions.td_url_override` > `ClientBuilder::td_url` /
+    /// `EndpointConfig.td_url` > `TQ_TD_URL` > 鉴权返回的默认交易地址。
+    pub async fn create_trade_session_with_options(
+        &self,
+        broker: &str,
+        user_id: &str,
+        password: &str,
+        options: TradeSessionOptions,
+    ) -> Result<Arc<TradeSession>> {
         let auth = self.auth.read().await;
-        let broker_info = auth.get_td_url(broker, user_id).await?;
+        let td_url = if let Some(url) = options
+            .td_url_override
+            .filter(|url| !url.trim().is_empty())
+            .or_else(|| self.endpoints.td_url.clone())
+        {
+            url
+        } else {
+            auth.get_td_url(broker, user_id).await?.url
+        };
 
         let ws_config = WebSocketConfig {
             headers: auth.base_header(),
@@ -285,7 +310,7 @@ impl Client {
             user_id.to_string(),
             password.to_string(),
             Arc::clone(&self.dm),
-            broker_info.url,
+            td_url,
             ws_config,
         ));
 

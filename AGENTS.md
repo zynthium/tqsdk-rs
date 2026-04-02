@@ -87,7 +87,7 @@ examples/
 | `SIMNOW_PASS_0` | `trade` 示例的 SimNow 密码 |
 | `TQ_UNDERLYING` | `option_levels` 示例的标的合约 |
 
-还有少量高级环境变量会覆盖默认服务地址或 HTTP 行为，例如 `TQ_AUTH_URL`、`TQ_NS_URL`、`TQ_INS_URL`、`TQ_HTTP_TIMEOUT_SECS`。只有在排查网络、联调代理、切换服务端点时才应修改。
+还有少量高级环境变量会覆盖默认服务地址，例如 `TQ_AUTH_URL`、`TQ_MD_URL`、`TQ_TD_URL`、`TQ_INS_URL`、`TQ_CHINESE_HOLIDAY_URL`。只有在排查网络、联调特殊服务或切换服务端点时才应修改。
 
 ## 验证策略
 

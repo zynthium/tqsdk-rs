@@ -11,17 +11,17 @@
 //! ## 快速开始
 //!
 //! ```no_run
-//! use tqsdk_rs::{Client, ClientConfig};
+//! use tqsdk_rs::{Client, ClientConfig, EndpointConfig};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // 创建客户端
-//!     let mut client = Client::new("username", "password", ClientConfig::default()).await?;
+//!     let mut client = Client::builder("username", "password")
+//!         .config(ClientConfig::default())
+//!         .endpoints(EndpointConfig::from_env())
+//!         .build()
+//!         .await?;
 //!
-//!     // 初始化行情
 //!     client.init_market().await?;
-//!
-//!     // 订阅行情
 //!     let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
 //!     quote_sub.start().await?;
 //!
@@ -77,7 +77,7 @@ pub mod polars_ext;
 // 重新导出常用类型
 pub use auth::Authenticator;
 pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
-pub use client::{Client, ClientBuilder, ClientConfig, ClientOption};
+pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
 pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;

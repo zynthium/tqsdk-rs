@@ -1,4 +1,4 @@
-use super::{Authenticator, BrokerInfo, MdUrlResponse, TQ_MD_URL_ENV, TqAuth};
+use super::{Authenticator, BrokerInfo, MdUrlResponse, TqAuth};
 use crate::errors::{Result, TqError};
 use async_trait::async_trait;
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, USER_AGENT};
@@ -58,13 +58,7 @@ impl Authenticator for TqAuth {
     }
 
     async fn get_md_url(&self, stock: bool, backtest: bool) -> Result<String> {
-        if let Ok(md_url) = std::env::var(TQ_MD_URL_ENV) {
-            let trimmed = md_url.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
-        let ns_url = self.config.ns_url.clone();
+        let ns_url = self.ns_url().to_string();
         let client = self.build_http_client()?;
 
         let response = client

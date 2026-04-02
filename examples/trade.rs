@@ -10,6 +10,14 @@ use std::time::Duration;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
+async fn build_client(username: &str, password: &str, config: ClientConfig) -> Result<Client> {
+    Client::builder(username, password)
+        .config(config)
+        .endpoints(EndpointConfig::from_env())
+        .build()
+        .await
+}
+
 /// 使用回调模式的交易示例（实盘交易）
 async fn trade_callback_example() {
     info!("==================== 交易回调模式示例（实盘）====================");
@@ -29,15 +37,29 @@ async fn trade_callback_example() {
         ..Default::default()
     };
 
-    let client = Client::new(&username, &password, config).await.expect("创建客户端失败");
+    let client = build_client(&username, &password, config)
+        .await
+        .expect("创建客户端失败");
 
     // 创建交易会话（不自动连接）
     info!("创建交易会话: simnow, {}", sim_user_id);
-    let trader = client
-        .create_trade_session("simnow", &sim_user_id, &sim_password)
-        // .create_trade_session("X兴证期货", &sim_user_id, &sim_password)
-        .await
-        .expect("创建交易会话失败");
+    let trader = if let Ok(td_url) = env::var("TQ_TD_URL") {
+        let td_url = td_url.trim().to_string();
+        client
+            .create_trade_session_with_options(
+                "simnow",
+                &sim_user_id,
+                &sim_password,
+                TradeSessionOptions {
+                    td_url_override: (!td_url.is_empty()).then_some(td_url),
+                },
+            )
+            .await
+    } else {
+        client.create_trade_session("simnow", &sim_user_id, &sim_password).await
+    }
+    // .create_trade_session("X兴证期货", &sim_user_id, &sim_password)
+    .expect("创建交易会话失败");
 
     // 先注册账户更新回调（避免丢失消息）
     trader

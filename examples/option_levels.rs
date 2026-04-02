@@ -2,6 +2,14 @@ use std::env;
 use std::time::Duration;
 use tqsdk_rs::prelude::*;
 
+async fn build_client(user: &str, pass: &str, config: ClientConfig) -> Result<Client> {
+    Client::builder(user, pass)
+        .config(config)
+        .endpoints(EndpointConfig::from_env())
+        .build()
+        .await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let user = match env::var("TQ_AUTH_USER") {
@@ -28,7 +36,7 @@ async fn main() -> Result<()> {
         stock: true,
         ..Default::default()
     };
-    let mut client = Client::new(&user, &pass, config).await?;
+    let mut client = build_client(&user, &pass, config).await?;
     client.init_market().await?;
 
     let quote_sub = client.subscribe_quote(&[underlying.as_str()]).await?;

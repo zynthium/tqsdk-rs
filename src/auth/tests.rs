@@ -3,13 +3,21 @@ use std::collections::HashSet;
 
 #[test]
 fn test_tq_auth_creation() {
-    let auth = TqAuth::new("test_user".to_string(), "test_pass".to_string());
+    let auth = TqAuth::new(
+        "test_user".to_string(),
+        "test_pass".to_string(),
+        "https://auth.shinnytech.com".to_string(),
+    );
     assert_eq!(auth.username, "test_user");
     assert_eq!(auth.password, "test_pass");
 }
 
 fn auth_with_features(features: &[&str]) -> TqAuth {
-    let mut auth = TqAuth::new("test".to_string(), "pass".to_string());
+    let mut auth = TqAuth::new(
+        "test".to_string(),
+        "pass".to_string(),
+        "https://auth.shinnytech.com".to_string(),
+    );
     auth.grants = Grants {
         features: features.iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
         accounts: HashSet::new(),

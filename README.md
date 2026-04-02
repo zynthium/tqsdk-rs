@@ -110,7 +110,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
 
-    let mut client = Client::new(&username, &password, ClientConfig::default()).await?;
+    let mut client = Client::builder(&username, &password)
+        .config(ClientConfig::default())
+        .endpoints(EndpointConfig::from_env())
+        .build()
+        .await?;
     client.init_market().await?;
 
     let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
@@ -143,6 +147,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .view_width(5000)
         .development(true)
         .message_queue_capacity(4096)
+        .build()
+        .await?;
+
+    client.init_market().await?;
+    Ok(())
+}
+```
+
+### 覆盖服务端点
+
+```rust
+use std::env;
+use tqsdk_rs::{Client, EndpointConfig};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+
+    let endpoints = EndpointConfig {
+        auth_url: "https://auth.shinnytech.com".to_string(),
+        md_url: Some("wss://example.com/md".to_string()),
+        td_url: None,
+        ins_url: "https://openmd.shinnytech.com/t/md/symbols/latest.json".to_string(),
+        holiday_url: "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string(),
+    };
+
+    let mut client = Client::builder(username, password)
+        .endpoints(endpoints)
         .build()
         .await?;
 
@@ -307,6 +340,23 @@ sub_with_focus.start().await?;
 let session = client
     .create_trade_session("simnow", &sim_user_id, &sim_password)
     .await?;
+```
+
+如需覆盖交易地址，可以使用 `TradeSessionOptions`：
+
+```rust
+use tqsdk_rs::TradeSessionOptions;
+
+let session = client
+    .create_trade_session_with_options(
+        "simnow",
+        &sim_user_id,
+        &sim_password,
+        TradeSessionOptions {
+            td_url_override: Some("wss://example.com/trade".to_string()),
+        },
+    )
+    .await?;
 
 session
     .on_account(|account| {
@@ -314,6 +364,9 @@ session
     })
     .await;
 
+
+优先级为：`TradeSessionOptions.td_url_override` > `ClientBuilder::td_url` /
+`EndpointConfig.td_url` > `TQ_TD_URL` > 鉴权返回的默认交易地址。
 session
     .on_position(|symbol, position| {
         println!(
@@ -576,15 +629,9 @@ cargo run --example option_levels
 | 变量 | 说明 |
 |------|------|
 | `TQ_AUTH_URL` | 认证服务地址，默认 `https://auth.shinnytech.com` |
-| `TQ_NS_URL` | 名称服务地址，默认 `https://api.shinnytech.com/ns` |
 | `TQ_MD_URL` | 覆盖行情服务地址 |
+| `TQ_TD_URL` | 覆盖交易服务地址 |
 | `TQ_INS_URL` | 覆盖合约信息地址 |
-| `TQ_CLIENT_ID` | OAuth 客户端 ID，默认内置 `shinny_tq` |
-| `TQ_CLIENT_SECRET` | OAuth 客户端密钥 |
-| `TQ_AUTH_PROXY` | 认证请求代理地址 |
-| `TQ_AUTH_NO_PROXY` | 设为 `1`/`true` 时禁用认证请求代理 |
-| `TQ_AUTH_VERIFY_JWT` | 设为 `1`/`true` 时启用 JWT 签名校验 |
-| `TQ_HTTP_TIMEOUT_SECS` | HTTP 超时秒数 |
 | `TQ_CHINESE_HOLIDAY_URL` | 覆盖交易日历假期数据源 |
 
 ## 技术栈

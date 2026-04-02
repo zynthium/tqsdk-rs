@@ -414,7 +414,14 @@ fn build_ins_api(features: &[&str]) -> InsAPI {
         feature_set.insert(item.to_string());
     }
     let auth = Arc::new(RwLock::new(DummyAuth { features: feature_set }));
-    InsAPI::new(dm, ws, None, auth, true)
+    InsAPI::new(
+        dm,
+        ws,
+        None,
+        auth,
+        true,
+        "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string(),
+    )
 }
 
 fn build_ins_api_with_trading_status(features: &[&str]) -> (Arc<DataManager>, InsAPI) {
@@ -434,7 +441,14 @@ fn build_ins_api_with_trading_status(features: &[&str]) -> (Arc<DataManager>, In
         feature_set.insert(item.to_string());
     }
     let auth = Arc::new(RwLock::new(DummyAuth { features: feature_set }));
-    let api = InsAPI::new(dm.clone(), ws, Some(ts_ws), auth, true);
+    let api = InsAPI::new(
+        dm.clone(),
+        ws,
+        Some(ts_ws),
+        auth,
+        true,
+        "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string(),
+    );
     (dm, api)
 }
 

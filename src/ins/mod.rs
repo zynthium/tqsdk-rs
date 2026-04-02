@@ -31,6 +31,7 @@ pub struct InsAPI {
     auth: Arc<RwLock<dyn Authenticator>>,
     trading_status_symbols: Arc<RwLock<HashSet<String>>>,
     stock: bool,
+    holiday_url: String,
 }
 
 impl InsAPI {
@@ -43,6 +44,7 @@ impl InsAPI {
         trading_status_ws: Option<Arc<TqTradingStatusWebsocket>>,
         auth: Arc<RwLock<dyn Authenticator>>,
         stock: bool,
+        holiday_url: String,
     ) -> Self {
         Self {
             dm,
@@ -51,6 +53,7 @@ impl InsAPI {
             auth,
             trading_status_symbols: Arc::new(RwLock::new(HashSet::new())),
             stock,
+            holiday_url,
         }
     }
 

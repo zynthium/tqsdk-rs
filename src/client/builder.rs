@@ -1,4 +1,4 @@
-use super::{Client, ClientBuilder, ClientConfig};
+use super::{Client, ClientBuilder, ClientConfig, EndpointConfig};
 use crate::auth::{Authenticator, TqAuth};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::Result;
@@ -34,6 +34,7 @@ impl ClientBuilder {
             username: username.into(),
             password: password.into(),
             config: ClientConfig::default(),
+            endpoints: EndpointConfig::default(),
             auth: None,
         }
     }
@@ -56,8 +57,33 @@ impl ClientBuilder {
         self
     }
 
+    pub fn endpoints(mut self, endpoints: EndpointConfig) -> Self {
+        self.endpoints = endpoints;
+        self
+    }
+
+    pub fn auth_url(mut self, url: impl Into<String>) -> Self {
+        self.endpoints.auth_url = url.into();
+        self
+    }
+
+    pub fn md_url(mut self, url: impl Into<String>) -> Self {
+        self.endpoints.md_url = Some(url.into());
+        self
+    }
+
+    pub fn td_url(mut self, url: impl Into<String>) -> Self {
+        self.endpoints.td_url = Some(url.into());
+        self
+    }
+
     pub fn ins_url(mut self, url: impl Into<String>) -> Self {
-        self.config.ins_url = url.into();
+        self.endpoints.ins_url = url.into();
+        self
+    }
+
+    pub fn holiday_url(mut self, url: impl Into<String>) -> Self {
+        self.endpoints.holiday_url = url.into();
         self
     }
 
@@ -113,7 +139,11 @@ impl ClientBuilder {
         let auth: Arc<RwLock<dyn Authenticator>> = if let Some(custom_auth) = self.auth {
             custom_auth
         } else {
-            let mut auth = TqAuth::new(self.username.clone(), self.password.clone());
+            let mut auth = TqAuth::new(
+                self.username.clone(),
+                self.password.clone(),
+                self.endpoints.auth_url.clone(),
+            );
             auth.login().await?;
             Arc::new(RwLock::new(auth))
         };
@@ -128,6 +158,7 @@ impl ClientBuilder {
         Ok(Client {
             username: self.username,
             config: self.config,
+            endpoints: self.endpoints,
             auth,
             dm,
             quotes_ws: None,

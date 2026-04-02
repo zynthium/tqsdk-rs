@@ -21,7 +21,7 @@ impl Client {
             return Ok(());
         }
 
-        let url = self.config.ins_url.trim();
+        let url = self.endpoints.ins_url.trim();
         if url.is_empty() {
             return Ok(());
         }
@@ -63,7 +63,11 @@ impl Client {
 
     async fn load_market_bootstrap(&self, backtest: bool) -> Result<MarketBootstrap> {
         let auth = self.auth.read().await;
-        let md_url = auth.get_md_url(self.config.stock, backtest).await?;
+        let md_url = if let Some(md_url) = self.endpoints.md_url.as_deref() {
+            md_url.to_string()
+        } else {
+            auth.get_md_url(self.config.stock, backtest).await?
+        };
         let headers = auth.base_header();
         let enable_trading_status = auth.has_feature("tq_trading_status");
         drop(auth);
@@ -140,6 +144,7 @@ impl Client {
             trading_status_ws,
             Arc::clone(&self.auth),
             self.config.stock,
+            self.endpoints.holiday_url.clone(),
         )));
         self.market_active.store(true, Ordering::SeqCst);
 

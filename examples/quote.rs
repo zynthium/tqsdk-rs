@@ -17,6 +17,14 @@ fn get_credentials() -> (String, String) {
     (username, password)
 }
 
+async fn build_client(username: &str, password: &str, config: ClientConfig) -> Result<Client> {
+    Client::builder(username, password)
+        .config(config)
+        .endpoints(EndpointConfig::from_env())
+        .build()
+        .await
+}
+
 /// Quote 订阅示例
 #[allow(dead_code)]
 async fn quote_subscription_example() {
@@ -33,7 +41,9 @@ async fn quote_subscription_example() {
         ..Default::default()
     };
 
-    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
+    let mut client = build_client(&username, &password, config)
+        .await
+        .expect("创建客户端失败");
 
     // 初始化行情功能
     client.init_market().await.expect("初始化行情功能失败");
@@ -115,7 +125,9 @@ async fn single_kline_subscription_example() {
     // let symbol = "SHFE.au2602";
     let symbol = "CFFEX.IF2512";
 
-    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
+    let mut client = build_client(&username, &password, config)
+        .await
+        .expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -234,7 +246,9 @@ async fn multi_kline_subscription_example() {
         ..Default::default()
     };
 
-    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
+    let mut client = build_client(&username, &password, config)
+        .await
+        .expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -308,7 +322,9 @@ async fn tick_subscription_example() {
         ..Default::default()
     };
 
-    let mut client = Client::new(&username, &password, config).await.expect("创建客户端失败");
+    let mut client = build_client(&username, &password, config)
+        .await
+        .expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 

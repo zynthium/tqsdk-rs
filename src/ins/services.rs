@@ -438,10 +438,8 @@ impl InsAPI {
         if start_dt > end_dt {
             return Err(TqError::InvalidParameter("start_dt 必须小于等于 end_dt".to_string()));
         }
-        let url = std::env::var("TQ_CHINESE_HOLIDAY_URL")
-            .unwrap_or_else(|_| "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string());
         let headers = self.auth.read().await.base_header();
-        let content = fetch_json_with_headers(&url, headers).await?;
+        let content = fetch_json_with_headers(&self.holiday_url, headers).await?;
         let holidays = content
             .as_array()
             .ok_or_else(|| TqError::ParseError("节假日数据格式错误".to_string()))?;

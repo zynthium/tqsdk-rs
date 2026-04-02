@@ -11,6 +11,14 @@ use std::time::Duration;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
+async fn build_client(username: &str, password: &str, config: ClientConfig) -> Result<Client> {
+    Client::builder(username, password)
+        .config(config)
+        .endpoints(EndpointConfig::from_env())
+        .build()
+        .await
+}
+
 /// 使用 left_kline_id 订阅历史 K线
 async fn history_kline_with_left_id_example() {
     info!("==================== 历史 K线订阅示例（使用 left_kline_id） ====================");
@@ -18,11 +26,16 @@ async fn history_kline_with_left_id_example() {
     let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
     let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
 
-    let mut client = Client::builder(&username, &password)
-        .view_width(100000)
-        .build()
-        .await
-        .expect("创建客户端失败");
+    let mut client = build_client(
+        &username,
+        &password,
+        ClientConfig {
+            view_width: 100000,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("创建客户端失败");
 
     client.init_market().await.expect("初始化行情功能失败");
 
@@ -196,7 +209,7 @@ async fn interface_live_test_example() {
     let pass = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
     let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.cu2605".to_string());
 
-    let mut client = Client::new(&user, &pass, ClientConfig::default())
+    let mut client = build_client(&user, &pass, ClientConfig::default())
         .await
         .expect("创建客户端失败");
     client.init_market().await.expect("初始化行情功能失败");

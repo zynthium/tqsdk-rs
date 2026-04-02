@@ -74,11 +74,13 @@ fn build_client_with_market() -> Client {
         None,
         Arc::clone(&auth),
         true,
+        "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string(),
     ));
 
     Client {
         username: "tester".to_string(),
         config: ClientConfig::default(),
+        endpoints: EndpointConfig::default(),
         auth,
         dm,
         quotes_ws: Some(quotes_ws),
@@ -145,4 +147,22 @@ async fn close_invalidates_market_interfaces() {
     assert!(client.series().is_err());
     assert!(client.ins().is_err());
     assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
+}
+
+#[tokio::test]
+async fn create_trade_session_allows_td_url_override() {
+    let client = build_client_with_market();
+
+    let session = client
+        .create_trade_session_with_options(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade".to_string()),
+            },
+        )
+        .await;
+
+    assert!(session.is_ok());
 }
