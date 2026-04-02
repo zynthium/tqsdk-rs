@@ -1,3 +1,0 @@
-[workspace]
-members = ["tqsdk-rs", "samples/*"]
-resolver = "2"
