@@ -474,9 +474,37 @@ let backtest = client
     .await?;
 
 let dm = backtest.dm();
-if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
-    println!("raw quote = {:?}", data);
+
+// 获取 Quote 数据
+if let Some(quote) = dm.get_quote_data("SHFE.au2602") {
+    println!("最新价: {}", quote.last_price);
+    println!("买一价: {}", quote.bid_price1);
+    println!("卖一价: {}", quote.ask_price1);
 }
+
+// 获取 K线数据
+// 参数：合约代码, 周期(纳秒), 数量, right_id(-1表示最新)
+if let Some(klines) = dm.get_klines_data("SHFE.au2602", 60_000_000_000, 100, -1) {
+    println!("K线数量: {}", klines.data.len());
+}
+
+// 路径访问（灵活访问任意数据）
+if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
+    println!("原始数据: {:?}", data);
+}
+
+// 检查数据是否在最近一次更新中发生了变化
+if dm.is_changing(&["quotes", "SHFE.au2602"]) {
+    println!("数据在最近一次更新中发生了变化");
+}
+
+// 获取指定路径的数据更新版本号（更推荐的增量更新检测方式）
+let path_epoch = dm.get_path_epoch(&["quotes", "SHFE.au2602"]);
+println!("路径 ["quotes", "SHFE.au2602"] 的 epoch: {}", path_epoch);
+
+// 获取当前全局版本号
+let epoch = dm.get_epoch();
+println!("当前全局 epoch: {}", epoch);
 ```
 
 ### 4. 回测与历史回放
