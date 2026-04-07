@@ -4,7 +4,7 @@ use std::env;
 use std::time::{Duration, Instant};
 use tqsdk_rs::{BacktestConfig, Client};
 
-const BACKTEST_VIEW_WIDTH: usize = 10000;
+const BACKTEST_VIEW_WIDTH: usize = 500;
 
 fn nanos_to_cst_naive_date(nanos: i64) -> NaiveDate {
     let secs = nanos / 1_000_000_000;
@@ -27,11 +27,11 @@ async fn main() -> tqsdk_rs::Result<()> {
     let start_date = env::var("TQ_START_DT")
         .ok()
         .and_then(|v| NaiveDate::parse_from_str(&v, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 1, 2).unwrap());
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 4, 6).unwrap());
     let end_date = env::var("TQ_END_DT")
         .ok()
         .and_then(|v| NaiveDate::parse_from_str(&v, "%Y-%m-%d").ok())
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 1, 31).unwrap());
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2026, 4, 7).unwrap());
 
     // Set time zone to Shanghai
     let tz = FixedOffset::east_opt(8 * 3600).unwrap();
@@ -53,7 +53,7 @@ async fn main() -> tqsdk_rs::Result<()> {
         .with_timezone(&Utc);
 
     let mut client = Client::builder(&username, &password)
-        .log_level("debug")
+        .log_level("trace")
         .view_width(2000)
         .build()
         .await?;
@@ -61,7 +61,7 @@ async fn main() -> tqsdk_rs::Result<()> {
         .init_market_backtest(BacktestConfig::new(start_dt, end_dt))
         .await?;
 
-    let symbol = "SHFE.au2602";
+    let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.au2606".to_string());
     let duration = Duration::from_secs(60);
     let max_updates = env::var("TQ_MAX_UPDATES").ok().and_then(|v| v.parse::<usize>().ok());
     let position_size = env::var("TQ_POSITION_SIZE")
@@ -75,14 +75,14 @@ async fn main() -> tqsdk_rs::Result<()> {
     println!("    INFO - 模拟交易成交记录, 账户: TQSIM");
     println!("    INFO - 模拟交易账户资金, 账户: TQSIM");
 
-    client.query_symbol_info(&[symbol]).await?;
+    client.query_symbol_info(&[&symbol]).await?;
 
-    let quote_sub = client.subscribe_quote(&[symbol]).await?;
+    let quote_sub = client.subscribe_quote(&[&symbol]).await?;
     quote_sub.start().await?;
 
     let series_api = client.series()?;
     let sub = series_api
-        .kline_history_with_focus(symbol, duration, BACKTEST_VIEW_WIDTH, start_dt, 0)
+        .kline_history_with_focus(&symbol, duration, BACKTEST_VIEW_WIDTH, start_dt, 0)
         .await?;
 
     let latest_data = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -101,12 +101,13 @@ async fn main() -> tqsdk_rs::Result<()> {
         }
     })
     .await;
+    sub.start().await?;
 
     let mut rx = rx;
     let start_wait = Instant::now();
     let mut chart_ready = false;
     loop {
-        if start_wait.elapsed() > Duration::from_secs(120) {
+        if start_wait.elapsed() > Duration::from_secs(300) {
             break;
         }
         tokio::select! {
@@ -140,7 +141,7 @@ async fn main() -> tqsdk_rs::Result<()> {
     let mut last_delta: Option<f64> = None;
     let mut last_signal = "none".to_string();
     let klines = series_data
-        .get_symbol_klines(symbol)
+        .get_symbol_klines(&symbol)
         .ok_or_else(|| tqsdk_rs::TqError::DataNotFound("K线数据不存在".to_string()))?;
 
     let mut ordered = klines.data.clone();

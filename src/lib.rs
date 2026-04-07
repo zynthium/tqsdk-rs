@@ -50,6 +50,7 @@ pub mod datamanager;
 pub mod auth;
 
 // WebSocket 连接
+pub mod cache;
 #[path = "websocket/mod.rs"]
 pub mod websocket;
 

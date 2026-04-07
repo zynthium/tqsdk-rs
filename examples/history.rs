@@ -199,6 +199,9 @@ async fn history_kline_with_focus_example() {
         }
     })
     .await;
+    // 所有回调注册完成后，启动监听（不会错过数据）
+    sub.start().await.expect("启动监听失败");
+    info!("✅ 订阅已启动");
 
     tokio::time::sleep(Duration::from_secs(30)).await;
     info!("\n历史 K线订阅示例结束");

@@ -579,6 +579,8 @@ subscription
         }
     })
     .await;
+
+subscription.start().await?;
 ```
 
 如果需要增量维护窗口，可以结合 `KlineBuffer` / `TickBuffer` 使用。
@@ -743,6 +745,10 @@ series_sub.on_update(|data, info| {
         println!("新 K 线");
     }
 }).await;
+
+// 注册回调后，别忘了显式启动
+quote_sub.start().await?;
+series_sub.start().await?;
 ```
 
 回调参数大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。

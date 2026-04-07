@@ -1,9 +1,14 @@
 use super::{KlineSymbols, SeriesAPI, SeriesSubscription};
+use crate::cache::kline::DiskKlineCache;
 use crate::errors::{Result, TqError};
-use crate::types::SeriesOptions;
+use crate::types::{Kline, Range, SeriesOptions, rangeset_intersection, rangeset_union};
 use chrono::{DateTime, Utc};
+use serde_json::{Map, Value, json};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
+use tokio::sync::RwLock;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 impl From<&str> for KlineSymbols {
@@ -61,7 +66,13 @@ impl SeriesAPI {
         ws: std::sync::Arc<crate::websocket::TqQuoteWebsocket>,
         auth: std::sync::Arc<tokio::sync::RwLock<dyn crate::auth::Authenticator>>,
     ) -> Self {
-        Self { dm, ws, auth }
+        Self {
+            dm,
+            ws,
+            auth,
+            kline_cache: Arc::new(RwLock::new(HashMap::new())),
+            disk_cache: Arc::new(DiskKlineCache::new(None)),
+        }
     }
 
     /// 获取 K 线序列订阅（单合约/多合约对齐），对齐 tqsdk-python 的 `get_kline_serial`。
@@ -173,12 +184,103 @@ impl SeriesAPI {
             options.chart_id = Some(generate_chart_id(&options));
         }
 
-        Ok(Arc::new(SeriesSubscription::new(
+        let sub = Arc::new(SeriesSubscription::new(
             Arc::clone(&self.dm),
             Arc::clone(&self.ws),
-            options,
-        )?))
+            options.clone(),
+            Arc::clone(&self.kline_cache),
+            Arc::clone(&self.disk_cache),
+        )?);
+
+        // 历史窗口：仅进行本地缓存预热，不发网络请求，保持显式 start() 语义。
+        if let Some(left_kline_id) = options.left_kline_id {
+            let symbol = options.symbols[0].clone();
+            let duration = options.duration;
+            let view_width = options.view_width as i64;
+            let requested_range = Range::new(left_kline_id, left_kline_id + view_width);
+
+            let mut disk_cached_ranges = Vec::new();
+            let mut disk_klines = Vec::new();
+            match self.disk_cache.read_metadata(&symbol, duration) {
+                Ok(Some(metadata)) => {
+                    disk_cached_ranges = metadata.ranges;
+                    let ranges_to_read = rangeset_intersection(&vec![requested_range.clone()], &disk_cached_ranges);
+                    for range in ranges_to_read {
+                        match self.disk_cache.read_klines(&symbol, duration, &range) {
+                            Ok(klines) => disk_klines.extend(klines),
+                            Err(e) => warn!(
+                                "读取磁盘缓存失败: symbol={}, duration={}, range={:?}, error={}",
+                                symbol, duration, range, e
+                            ),
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => warn!(
+                    "读取磁盘缓存元数据失败: symbol={}, duration={}, error={}",
+                    symbol, duration, e
+                ),
+            }
+
+            if !disk_klines.is_empty()
+                && let Some(payload) = merge_cached_klines_into_datamanager_payload(&symbol, duration, &disk_klines)
+            {
+                self.dm.merge_data(payload, true, false);
+                debug!(
+                    "已从磁盘缓存注入 K线到 DataManager: symbol={}, duration={}, count={}",
+                    symbol,
+                    duration,
+                    disk_klines.len()
+                );
+            }
+
+            if !disk_cached_ranges.is_empty() {
+                let mut cache = self.kline_cache.write().await;
+                let cached_ranges_entry = cache.entry((symbol.clone(), duration)).or_insert_with(Vec::new);
+                *cached_ranges_entry = rangeset_union(cached_ranges_entry, &disk_cached_ranges);
+                debug!("预热缓存范围: key=({symbol}, {duration}), ranges={cached_ranges_entry:?}");
+            }
+        }
+
+        Ok(sub)
     }
+}
+
+fn merge_cached_klines_into_datamanager_payload(symbol: &str, duration: i64, klines: &[Kline]) -> Option<Value> {
+    let mut by_id = std::collections::BTreeMap::<i64, Kline>::new();
+    for kline in klines {
+        by_id.insert(kline.id, kline.clone());
+    }
+
+    let mut kline_data_map = Map::new();
+    let mut max_id: Option<i64> = None;
+    for (id, kline) in by_id {
+        let Ok(mut value) = serde_json::to_value(kline) else {
+            continue;
+        };
+        if let Value::Object(ref mut obj) = value {
+            obj.remove("id");
+        }
+        kline_data_map.insert(id.to_string(), value);
+        max_id = Some(max_id.map_or(id, |current| current.max(id)));
+    }
+
+    let max_id = max_id?;
+    if kline_data_map.is_empty() {
+        return None;
+    }
+
+    let duration_key = duration.to_string();
+    Some(json!({
+        "klines": {
+            symbol: {
+                duration_key: {
+                    "last_id": max_id + 1,
+                    "data": Value::Object(kline_data_map)
+                }
+            }
+        }
+    }))
 }
 
 fn normalize_data_length(data_length: usize) -> Result<usize> {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::cache::kline::DiskKlineCache;
 use crate::datamanager::DataManagerConfig;
 use crate::errors::{Result, TqError};
 use crate::types::{SeriesData, UpdateInfo};
@@ -7,6 +8,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, pin_mut};
 use reqwest::header::HeaderMap;
 use std::collections::HashMap;
+use std::env;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -89,6 +91,13 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
         },
     ));
 
+    // 新增 kline_cache 和 disk_cache
+    let kline_cache = Arc::new(RwLock::new(HashMap::new()));
+    let test_cache_dir = env::temp_dir().join("tqsdk_rs_test_kline_cache");
+    // 确保目录存在，且清空旧数据
+    let _ = std::fs::remove_dir_all(&test_cache_dir); // 尝试清空，忽略错误
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir)));
+
     SeriesSubscription::new(
         dm,
         ws,
@@ -101,6 +110,8 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
             focus_datetime: None,
             focus_position: None,
         },
+        kline_cache,
+        disk_cache,
     )
     .unwrap()
 }
@@ -132,6 +143,12 @@ async fn start_failure_rolls_back_series_callback_registration() {
     ));
     ws.force_send_failure_for_test();
 
+    // 新增 kline_cache 和 disk_cache
+    let kline_cache = Arc::new(RwLock::new(HashMap::new()));
+    let test_cache_dir = env::temp_dir().join("tqsdk_rs_test_kline_cache_failure_test"); // 使用不同的临时目录
+    let _ = std::fs::remove_dir_all(&test_cache_dir);
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir)));
+
     let sub = SeriesSubscription::new(
         dm,
         ws,
@@ -144,6 +161,8 @@ async fn start_failure_rolls_back_series_callback_registration() {
             focus_datetime: None,
             focus_position: None,
         },
+        kline_cache,
+        disk_cache,
     )
     .unwrap();
 

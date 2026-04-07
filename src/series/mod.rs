@@ -15,8 +15,9 @@ mod subscription;
 mod tests;
 
 use crate::auth::Authenticator;
+use crate::cache::kline::DiskKlineCache;
 use crate::datamanager::DataManager;
-use crate::types::{SeriesData, UpdateInfo};
+use crate::types::{RangeSet, SeriesData, UpdateInfo};
 use crate::websocket::TqQuoteWebsocket;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,6 +49,8 @@ pub struct SeriesAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     auth: Arc<RwLock<dyn Authenticator>>,
+    kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
+    disk_cache: Arc<DiskKlineCache>,
 }
 
 /// Series 订阅句柄。
@@ -57,10 +60,13 @@ pub struct SeriesAPI {
 /// - 更新/新 Bar/错误回调注册
 /// - 流式消费
 /// - 主动关闭
+#[derive(Clone)]
 pub struct SeriesSubscription {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     options: SeriesOptions,
+    kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
+    disk_cache: Arc<DiskKlineCache>,
 
     // 状态跟踪
     last_ids: Arc<RwLock<HashMap<String, i64>>>,
@@ -78,5 +84,6 @@ pub struct SeriesSubscription {
 
     running: Arc<RwLock<bool>>,
     unsubscribe_sent: Arc<AtomicBool>,
+    history_cache_persisted: Arc<AtomicBool>,
     data_cb_id: Arc<std::sync::Mutex<Option<i64>>>,
 }

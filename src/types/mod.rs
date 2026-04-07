@@ -14,6 +14,7 @@
 mod helpers;
 mod market;
 mod query;
+pub mod rangeset;
 mod series;
 mod trading;
 
@@ -22,6 +23,7 @@ mod tests;
 
 pub use market::{Chart, ChartInfo, Kline, Quote, Tick};
 pub use query::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
+pub use rangeset::{Range, RangeSet, rangeset_difference, rangeset_intersection, rangeset_merge, rangeset_union};
 pub use series::{
     AlignedKlineSet, KlineMetadata, KlineSeriesData, MultiKlineSeriesData, SeriesData, SeriesOptions, TickSeriesData,
     UpdateInfo,
