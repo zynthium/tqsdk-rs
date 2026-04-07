@@ -860,6 +860,9 @@ let layer = create_logger_layer("info", false);
 
 - `view_width` 决定本地维护的序列窗口大小。
 - `message_queue_capacity` 决定 Quote / Series stream / 离线发送等缓冲上限。
+- `series_disk_cache_enabled` 可关闭 Series 的磁盘缓存。
+- `series_disk_cache_max_bytes` 可限制缓存总大小（字节），超限时会按文件修改时间优先清理旧段。
+- `series_disk_cache_retention_days` 可按保留天数清理历史缓存段。
 - 实时策略通常不需要盲目拉大这两个值，先按默认值运行，再按吞吐瓶颈调优。
 
 ## 与 Go 版本对比

@@ -9,7 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tracing::warn;
 
 const CACHE_DIR: &str = ".tqsdk_cache";
@@ -94,6 +94,13 @@ impl From<CachedKline> for Kline {
 struct SegmentFile {
     path: PathBuf,
     range: Range,
+}
+
+#[derive(Debug, Clone)]
+struct SegmentFileMeta {
+    path: PathBuf,
+    size_bytes: u64,
+    modified: SystemTime,
 }
 
 pub struct DiskKlineCache {
@@ -265,6 +272,121 @@ impl DiskKlineCache {
         }
         self.maybe_compact_segments_locked(symbol, duration)?;
         Ok(())
+    }
+
+    pub fn total_segment_bytes(&self) -> Result<u64> {
+        let files = self.list_all_segment_files()?;
+        Ok(files.into_iter().map(|f| f.size_bytes).sum())
+    }
+
+    pub fn enforce_limits(&self, max_bytes: Option<u64>, retention_days: Option<u64>) -> Result<()> {
+        let _in_process_lock = self
+            .write_lock
+            .lock()
+            .map_err(|e| TqError::Other(format!("缓存写锁已中毒: {e}")))?;
+
+        self.evict_expired_segments(retention_days)?;
+        self.evict_by_total_size(max_bytes)?;
+        self.cleanup_empty_kline_dirs()?;
+        Ok(())
+    }
+
+    fn evict_expired_segments(&self, retention_days: Option<u64>) -> Result<()> {
+        let Some(days) = retention_days else {
+            return Ok(());
+        };
+
+        let ttl = Duration::from_secs(days.saturating_mul(24 * 60 * 60));
+        let cutoff = SystemTime::now().checked_sub(ttl).unwrap_or(UNIX_EPOCH);
+
+        for file in self.list_all_segment_files()? {
+            if file.modified <= cutoff {
+                let _ = fs::remove_file(file.path);
+            }
+        }
+        Ok(())
+    }
+
+    fn evict_by_total_size(&self, max_bytes: Option<u64>) -> Result<()> {
+        let Some(limit) = max_bytes else {
+            return Ok(());
+        };
+
+        let mut files = self.list_all_segment_files()?;
+        let mut total: u64 = files.iter().map(|f| f.size_bytes).sum();
+        if total <= limit {
+            return Ok(());
+        }
+
+        files.sort_by_key(|f| f.modified);
+        for file in files {
+            if total <= limit {
+                break;
+            }
+            if fs::remove_file(&file.path).is_ok() {
+                total = total.saturating_sub(file.size_bytes);
+            }
+        }
+        Ok(())
+    }
+
+    fn list_all_segment_files(&self) -> Result<Vec<SegmentFileMeta>> {
+        let root = self.base_path.join("kline");
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        self.collect_segment_files_recursive(&root, &mut out)?;
+        Ok(out)
+    }
+
+    fn collect_segment_files_recursive(&self, dir: &Path, out: &mut Vec<SegmentFileMeta>) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                self.collect_segment_files_recursive(&path, out)?;
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some(SEGMENT_FILE_EXT) {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            out.push(SegmentFileMeta {
+                path,
+                size_bytes: metadata.len(),
+                modified: metadata.modified().unwrap_or(UNIX_EPOCH),
+            });
+        }
+        Ok(())
+    }
+
+    fn cleanup_empty_kline_dirs(&self) -> Result<()> {
+        let root = self.base_path.join("kline");
+        if !root.exists() {
+            return Ok(());
+        }
+        self.cleanup_empty_dirs_recursive(&root)?;
+        Ok(())
+    }
+
+    fn cleanup_empty_dirs_recursive(&self, dir: &Path) -> Result<bool> {
+        let mut has_entries = false;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                let child_has_entries = self.cleanup_empty_dirs_recursive(&path)?;
+                if !child_has_entries {
+                    let _ = fs::remove_dir(&path);
+                } else {
+                    has_entries = true;
+                }
+            } else {
+                has_entries = true;
+            }
+        }
+        Ok(has_entries)
     }
 
     fn append_contiguous_run_locked(&self, symbol: &str, duration: i64, run: &[Kline]) -> Result<()> {
@@ -735,6 +857,66 @@ mod tests {
         assert_eq!(loaded.len(), 24);
         assert_eq!(loaded.first().map(|k| k.id), Some(0));
         assert_eq!(loaded.last().map(|k| k.id), Some(23));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforce_limits_should_shrink_total_size_to_limit() {
+        let dir = test_cache_dir("disk_cache_limit_size");
+        let cache = DiskKlineCache::new(Some(dir.clone()));
+        let symbol = "SHFE.au2606";
+        let duration = 60_000_000_000i64;
+
+        let klines: Vec<Kline> = (0..40).map(|id| sample_kline(id, 100.0 + id as f64)).collect();
+        cache
+            .append_klines(symbol, duration, &klines)
+            .expect("append should succeed");
+
+        let before = cache.total_segment_bytes().expect("get total size should succeed");
+        assert!(before > 0, "cache should contain segment bytes before enforcing limit");
+
+        let limit = (before / 2).max(1);
+        cache
+            .enforce_limits(Some(limit), None)
+            .expect("enforce size limit should succeed");
+
+        let after = cache.total_segment_bytes().expect("get total size should succeed");
+        assert!(
+            after <= limit,
+            "cache size should be <= limit after enforce_limits: after={after}, limit={limit}"
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn enforce_limits_with_zero_day_retention_should_purge_segments() {
+        let dir = test_cache_dir("disk_cache_retention_zero");
+        let cache = DiskKlineCache::new(Some(dir.clone()));
+        let symbol = "SHFE.ag2606";
+        let duration = 60_000_000_000i64;
+
+        cache
+            .append_klines(symbol, duration, &[sample_kline(1, 10.0), sample_kline(2, 20.0)])
+            .expect("append should succeed");
+        assert!(
+            cache.total_segment_bytes().expect("get total size should succeed") > 0,
+            "cache should not be empty after append"
+        );
+
+        cache
+            .enforce_limits(None, Some(0))
+            .expect("enforce retention should succeed");
+
+        assert_eq!(cache.total_segment_bytes().expect("get total size should succeed"), 0);
+        assert!(
+            cache
+                .read_metadata(symbol, duration)
+                .expect("read metadata should succeed")
+                .is_none(),
+            "retention should remove all expired segments"
+        );
 
         let _ = fs::remove_dir_all(dir);
     }

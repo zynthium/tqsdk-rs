@@ -1,4 +1,4 @@
-use super::{KlineSymbols, SeriesAPI, SeriesSubscription};
+use super::{KlineSymbols, SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 use crate::cache::kline::DiskKlineCache;
 use crate::errors::{Result, TqError};
 use crate::types::{Kline, Range, SeriesOptions, rangeset_difference, rangeset_intersection, rangeset_union};
@@ -73,12 +73,23 @@ impl SeriesAPI {
         ws: std::sync::Arc<crate::websocket::TqQuoteWebsocket>,
         auth: std::sync::Arc<tokio::sync::RwLock<dyn crate::auth::Authenticator>>,
     ) -> Self {
+        Self::new_with_cache_policy(dm, ws, auth, SeriesCachePolicy::default())
+    }
+
+    /// 创建 Series API 实例（可自定义磁盘缓存策略）。
+    pub fn new_with_cache_policy(
+        dm: std::sync::Arc<crate::datamanager::DataManager>,
+        ws: std::sync::Arc<crate::websocket::TqQuoteWebsocket>,
+        auth: std::sync::Arc<tokio::sync::RwLock<dyn crate::auth::Authenticator>>,
+        cache_policy: SeriesCachePolicy,
+    ) -> Self {
         Self {
             dm,
             ws,
             auth,
             kline_cache: Arc::new(RwLock::new(HashMap::new())),
             disk_cache: Arc::new(DiskKlineCache::new(None)),
+            cache_policy,
         }
     }
 
@@ -190,6 +201,16 @@ impl SeriesAPI {
             .checked_add(view_width as i64)
             .ok_or_else(|| TqError::InvalidParameter("请求区间过大".to_string()))?;
         let requested_range = Range::new(left_kline_id, requested_end);
+        if !self.cache_policy.enabled {
+            let fetched = self
+                .fetch_history_chunk_by_id(symbol, duration, left_kline_id, view_width)
+                .await?;
+            let filtered = fetched
+                .into_iter()
+                .filter(|k| left_kline_id <= k.id && k.id < requested_end)
+                .collect();
+            return Ok(dedup_sort_klines_by_id(filtered));
+        }
 
         let mut cached_ranges = match self.disk_cache.read_metadata(symbol, duration_nano) {
             Ok(Some(metadata)) => metadata.ranges,
@@ -222,6 +243,7 @@ impl SeriesAPI {
                 symbol.to_string(),
                 duration_nano,
                 fetched.clone(),
+                self.cache_policy,
             )
             .await?;
             if let Some(added_range) = range_from_klines(&fetched) {
@@ -271,6 +293,18 @@ impl SeriesAPI {
             return Err(TqError::InvalidParameter("end_dt 必须晚于 start_dt".to_string()));
         }
         let requested_dt_range = Range::new(start_nano, end_nano);
+        if !self.cache_policy.enabled {
+            let estimated = estimate_view_width_from_datetime_range(&requested_dt_range, duration_nano)?;
+            let focus = DateTime::<Utc>::from_timestamp_nanos(start_nano);
+            let fetched = self
+                .fetch_history_chunk_by_focus(symbol, duration, estimated, focus, 0)
+                .await?;
+            let filtered = fetched
+                .into_iter()
+                .filter(|k| start_nano <= k.datetime && k.datetime < end_nano)
+                .collect();
+            return Ok(dedup_sort_klines_by_id(filtered));
+        }
 
         let mut cached_id_ranges = match self.disk_cache.read_metadata(symbol, duration_nano) {
             Ok(Some(metadata)) => metadata.ranges,
@@ -311,6 +345,7 @@ impl SeriesAPI {
                 symbol.to_string(),
                 duration_nano,
                 filtered.clone(),
+                self.cache_policy,
             )
             .await?;
 
@@ -475,10 +510,11 @@ impl SeriesAPI {
             options.clone(),
             Arc::clone(&self.kline_cache),
             Arc::clone(&self.disk_cache),
+            self.cache_policy,
         )?);
 
         // 历史窗口：仅进行本地缓存预热，不发网络请求，保持显式 start() 语义。
-        if options.left_kline_id.is_some() {
+        if options.left_kline_id.is_some() && self.cache_policy.enabled {
             let symbol = options.symbols[0].clone();
             let duration = options.duration;
 
@@ -627,8 +663,12 @@ async fn append_klines_to_disk(
     symbol: String,
     duration: i64,
     klines: Vec<Kline>,
+    cache_policy: SeriesCachePolicy,
 ) -> Result<()> {
-    tokio::task::spawn_blocking(move || disk_cache.append_klines(&symbol, duration, &klines))
-        .await
-        .map_err(|e| TqError::Other(format!("历史磁盘缓存写入任务失败: {e}")))?
+    tokio::task::spawn_blocking(move || {
+        disk_cache.append_klines(&symbol, duration, &klines)?;
+        disk_cache.enforce_limits(cache_policy.max_bytes, cache_policy.retention_days)
+    })
+    .await
+    .map_err(|e| TqError::Other(format!("历史磁盘缓存写入任务失败: {e}")))?
 }

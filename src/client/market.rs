@@ -2,7 +2,7 @@ use super::Client;
 use crate::backtest::{BacktestConfig, BacktestHandle};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
-use crate::series::SeriesAPI;
+use crate::series::{SeriesAPI, SeriesCachePolicy};
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
@@ -128,10 +128,15 @@ impl Client {
         quotes_ws.init(false).await?;
 
         self.quotes_ws = Some(Arc::clone(&quotes_ws));
-        self.series_api = Some(Arc::new(SeriesAPI::new(
+        self.series_api = Some(Arc::new(SeriesAPI::new_with_cache_policy(
             Arc::clone(&self.dm),
             Arc::clone(&quotes_ws),
             Arc::clone(&self.auth),
+            SeriesCachePolicy {
+                enabled: self.config.series_disk_cache_enabled,
+                max_bytes: self.config.series_disk_cache_max_bytes,
+                retention_days: self.config.series_disk_cache_retention_days,
+            },
         )));
 
         let trading_status_ws = self

@@ -1,5 +1,5 @@
 use super::processing::process_series_update;
-use super::{SeriesStreamSubscribers, SeriesSubscription};
+use super::{SeriesCachePolicy, SeriesStreamSubscribers, SeriesSubscription};
 use crate::cache::kline::DiskKlineCache;
 use crate::errors::Result;
 use crate::types::{ChartInfo, Range, RangeSet, SeriesData, UpdateInfo};
@@ -21,6 +21,7 @@ impl SeriesSubscription {
         options: crate::types::SeriesOptions,
         kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
         disk_cache: Arc<DiskKlineCache>,
+        cache_policy: SeriesCachePolicy,
     ) -> Result<Self> {
         let mut last_ids = std::collections::HashMap::new();
         for symbol in &options.symbols {
@@ -33,6 +34,7 @@ impl SeriesSubscription {
             options,
             kline_cache,
             disk_cache,
+            cache_policy,
             last_ids: Arc::new(tokio::sync::RwLock::new(last_ids)),
             last_left_id: Arc::new(tokio::sync::RwLock::new(-1)),
             last_right_id: Arc::new(tokio::sync::RwLock::new(-1)),
@@ -180,6 +182,7 @@ impl SeriesSubscription {
         let has_chart_sync = Arc::clone(&self.has_chart_sync);
         let kline_cache = Arc::clone(&self.kline_cache);
         let disk_cache = Arc::clone(&self.disk_cache);
+        let cache_policy = self.cache_policy;
         let history_cache_persisted = Arc::clone(&self.history_cache_persisted);
 
         let on_update = Arc::clone(&self.on_update);
@@ -242,6 +245,7 @@ impl SeriesSubscription {
             let ws = Arc::clone(&ws);
             let view_width_adjusted = Arc::clone(&view_width_adjusted);
             let disk_cache = Arc::clone(&disk_cache);
+            let cache_policy = cache_policy;
             let history_cache_persisted = Arc::clone(&history_cache_persisted);
             let last_processed_epoch = Arc::clone(&last_processed_epoch);
             tokio::spawn(async move {
@@ -302,7 +306,10 @@ impl SeriesSubscription {
                                             )
                                             .await;
 
-                                            if options.duration != 0 && options.symbols.len() == 1 {
+                                            if cache_policy.enabled
+                                                && options.duration != 0
+                                                && options.symbols.len() == 1
+                                            {
                                                 let symbol = options.symbols[0].clone();
                                                 let duration = options.duration;
 
@@ -316,6 +323,7 @@ impl SeriesSubscription {
                                                         symbol.clone(),
                                                         duration,
                                                         single_data.data.clone(),
+                                                        cache_policy,
                                                     )
                                                     .await
                                                     {
@@ -345,6 +353,7 @@ impl SeriesSubscription {
                                                             symbol.clone(),
                                                             duration,
                                                             vec![completed_kline.clone()],
+                                                            cache_policy,
                                                         )
                                                         .await
                                                         {
@@ -592,8 +601,12 @@ async fn append_klines_to_disk(
     symbol: String,
     duration: i64,
     klines: Vec<crate::types::Kline>,
+    cache_policy: SeriesCachePolicy,
 ) -> Result<()> {
-    tokio::task::spawn_blocking(move || disk_cache.append_klines(&symbol, duration, &klines))
-        .await
-        .map_err(|e| crate::errors::TqError::Other(format!("磁盘缓存写入任务失败: {e}")))?
+    tokio::task::spawn_blocking(move || {
+        disk_cache.append_klines(&symbol, duration, &klines)?;
+        disk_cache.enforce_limits(cache_policy.max_bytes, cache_policy.retention_days)
+    })
+    .await
+    .map_err(|e| crate::errors::TqError::Other(format!("磁盘缓存写入任务失败: {e}")))?
 }

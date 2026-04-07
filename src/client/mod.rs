@@ -36,6 +36,9 @@ pub struct ClientConfig {
     pub message_queue_capacity: usize,
     pub message_backlog_warn_step: usize,
     pub message_batch_max: usize,
+    pub series_disk_cache_enabled: bool,
+    pub series_disk_cache_max_bytes: Option<u64>,
+    pub series_disk_cache_retention_days: Option<u64>,
 }
 
 impl Default for ClientConfig {
@@ -48,6 +51,9 @@ impl Default for ClientConfig {
             message_queue_capacity: 2048,
             message_backlog_warn_step: 1024,
             message_batch_max: 32,
+            series_disk_cache_enabled: true,
+            series_disk_cache_max_bytes: None,
+            series_disk_cache_retention_days: None,
         }
     }
 }

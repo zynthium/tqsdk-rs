@@ -86,6 +86,7 @@ Client (facade + builder + market)
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 回测生命周期：`BacktestHandle` 释放时会注销内部 DataManager 回调，避免长会话回调累积。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
+- 缓存治理：Series 磁盘缓存支持开关、按总容量上限清理、按保留天数清理。
 
 ## 阅读建议
 

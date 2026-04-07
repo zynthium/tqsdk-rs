@@ -102,6 +102,28 @@ impl ClientBuilder {
         self
     }
 
+    /// 是否启用 Series 磁盘缓存。
+    pub fn series_disk_cache_enabled(mut self, enabled: bool) -> Self {
+        self.config.series_disk_cache_enabled = enabled;
+        self
+    }
+
+    /// 设置 Series 磁盘缓存总大小上限（字节）。
+    ///
+    /// 传入 `None` 或 `Some(0)` 表示不限制。
+    pub fn series_disk_cache_max_bytes(mut self, max_bytes: Option<u64>) -> Self {
+        self.config.series_disk_cache_max_bytes = max_bytes.filter(|v| *v > 0);
+        self
+    }
+
+    /// 设置 Series 磁盘缓存保留天数。
+    ///
+    /// 传入 `None` 或 `Some(0)` 表示不按保留天数清理。
+    pub fn series_disk_cache_retention_days(mut self, days: Option<u64>) -> Self {
+        self.config.series_disk_cache_retention_days = days.filter(|v| *v > 0);
+        self
+    }
+
     /// 设置完整配置
     pub fn config(mut self, config: ClientConfig) -> Self {
         self.config = config;

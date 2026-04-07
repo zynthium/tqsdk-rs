@@ -31,6 +31,24 @@ type SeriesCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Syn
 type SeriesErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
 type SeriesStreamSubscribers = Arc<RwLock<Vec<tokio::sync::mpsc::Sender<Arc<SeriesData>>>>>;
 
+/// Series 磁盘缓存策略。
+#[derive(Debug, Clone, Copy)]
+pub struct SeriesCachePolicy {
+    pub enabled: bool,
+    pub max_bytes: Option<u64>,
+    pub retention_days: Option<u64>,
+}
+
+impl Default for SeriesCachePolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_bytes: None,
+            retention_days: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KlineSymbols(Vec<String>);
 
@@ -51,6 +69,7 @@ pub struct SeriesAPI {
     auth: Arc<RwLock<dyn Authenticator>>,
     kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
     disk_cache: Arc<DiskKlineCache>,
+    cache_policy: SeriesCachePolicy,
 }
 
 /// Series 订阅句柄。
@@ -67,6 +86,7 @@ pub struct SeriesSubscription {
     options: SeriesOptions,
     kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
     disk_cache: Arc<DiskKlineCache>,
+    cache_policy: SeriesCachePolicy,
 
     // 状态跟踪
     last_ids: Arc<RwLock<HashMap<String, i64>>>,

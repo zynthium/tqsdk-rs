@@ -138,6 +138,7 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
         },
         kline_cache,
         disk_cache,
+        SeriesCachePolicy::default(),
     )
     .unwrap()
 }
@@ -228,6 +229,7 @@ async fn start_failure_rolls_back_series_callback_registration() {
         },
         kline_cache,
         disk_cache,
+        SeriesCachePolicy::default(),
     )
     .unwrap();
 
@@ -265,6 +267,7 @@ async fn realtime_kline_should_persist_without_on_new_bar_callback() {
         },
         kline_cache,
         Arc::clone(&disk_cache),
+        SeriesCachePolicy::default(),
     )
     .expect("create subscription should succeed");
 
@@ -359,6 +362,57 @@ async fn kline_data_series_by_id_returns_cached_data_without_network() {
     assert_eq!(out.len(), 4);
     assert_eq!(out[0].id, 200);
     assert_eq!(out[3].id, 203);
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
+async fn kline_data_series_by_id_ignores_disk_cache_when_cache_disabled() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: false,
+            ..SeriesCachePolicy::default()
+        },
+    );
+
+    let symbol = "SHFE.au2602";
+    let duration = 60_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("data_series_cache_disabled");
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir.clone())));
+    disk_cache
+        .append_klines(
+            symbol,
+            duration,
+            &[
+                sample_kline(200, 700.0),
+                sample_kline(201, 701.0),
+                sample_kline(202, 702.0),
+                sample_kline(203, 703.0),
+            ],
+        )
+        .expect("prepare disk cache should succeed");
+    api.disk_cache = Arc::clone(&disk_cache);
+
+    let err = api
+        .kline_data_series_by_id(symbol, StdDuration::from_secs(60), 4, 200)
+        .await
+        .expect_err("cache disabled should bypass disk cache and hit websocket fetch path");
+
+    assert!(
+        matches!(err, TqError::WebSocketError(_)),
+        "expected websocket error for fetch path when cache disabled, got: {err:?}"
+    );
 
     let _ = std::fs::remove_dir_all(test_cache_dir);
 }
