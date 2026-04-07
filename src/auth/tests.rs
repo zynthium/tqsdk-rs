@@ -63,6 +63,19 @@ fn has_md_grants_denies_csi_without_sec_feature() {
 }
 
 #[test]
+fn has_md_grants_denies_limited_index_without_lmt_idx_feature() {
+    let auth = auth_with_features(&["sec"]);
+    let err = auth.has_md_grants(&["SSE.000300"]).unwrap_err();
+    assert!(err.to_string().contains("不支持查看"));
+}
+
+#[test]
+fn has_md_grants_allows_limited_index_with_lmt_idx_feature() {
+    let auth = auth_with_features(&["lmt_idx"]);
+    assert!(auth.has_md_grants(&["SSE.000300"]).is_ok());
+}
+
+#[test]
 fn has_md_grants_allows_all_futures_exchanges() {
     let auth = auth_with_features(&["futr"]);
     let exchanges = [

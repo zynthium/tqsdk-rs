@@ -566,6 +566,41 @@ async fn trading_status_allows_multiple_subscribers_for_same_symbol() {
 }
 
 #[tokio::test]
+async fn trading_status_receiver_drop_should_release_symbol_ref_count() {
+    let (dm, api) = build_ins_api_with_trading_status(&["tq_trading_status"]);
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.cu2405": {
+                    "class": "FUTURE"
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    let rx1 = api.get_trading_status("SHFE.cu2405").await.unwrap();
+    let rx2 = api.get_trading_status("SHFE.cu2405").await.unwrap();
+
+    assert_eq!(api.trading_status_ref_count_for_test("SHFE.cu2405").await, 2);
+
+    drop(rx1);
+    drop(rx2);
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if api.trading_status_ref_count_for_test("SHFE.cu2405").await == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("receiver drop should eventually release symbol ref-count");
+}
+
+#[tokio::test]
 #[ignore]
 async fn live_high_priority_interfaces() -> Result<()> {
     let auth_user = std::env::var("TQ_AUTH_USER").ok();

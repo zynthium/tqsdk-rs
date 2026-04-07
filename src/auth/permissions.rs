@@ -105,6 +105,16 @@ impl Authenticator for TqAuth {
         for symbol in symbols {
             let prefix = symbol.split('.').next().unwrap_or("");
 
+            if matches!(*symbol, "SSE.000016" | "SSE.000300" | "SSE.000905" | "SSE.000852") {
+                if !self.has_feature("lmt_idx") {
+                    return Err(TqError::PermissionDenied(format!(
+                        "您的账户不支持查看 {} 的行情数据",
+                        symbol
+                    )));
+                }
+                continue;
+            }
+
             if matches!(
                 prefix,
                 "CFFEX" | "SHFE" | "DCE" | "CZCE" | "INE" | "GFEX" | "SSWE" | "KQ" | "KQD"
@@ -118,16 +128,6 @@ impl Authenticator for TqAuth {
             if prefix == "CSI" || matches!(prefix, "SSE" | "SZSE") {
                 if !self.has_feature("sec") {
                     return Err(TqError::permission_denied_stocks());
-                }
-                continue;
-            }
-
-            if matches!(*symbol, "SSE.000016" | "SSE.000300" | "SSE.000905" | "SSE.000852") {
-                if !self.has_feature("lmt_idx") {
-                    return Err(TqError::PermissionDenied(format!(
-                        "您的账户不支持查看 {} 的行情数据",
-                        symbol
-                    )));
                 }
                 continue;
             }

@@ -5,6 +5,7 @@ use async_channel::{Receiver, TrySendError, bounded};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::time::Duration;
 use tracing::warn;
 
 impl InsAPI {
@@ -64,19 +65,23 @@ impl InsAPI {
             ws.update_option_underlyings(option_mapping);
         }
 
-        {
+        let subscribe_req = {
             let mut guard = self.trading_status_symbols.write().await;
-            guard.insert(subscribe_symbol.clone());
-            let ins_list = guard.iter().cloned().collect::<Vec<String>>().join(",");
-            let req = json!({
+            *guard.entry(subscribe_symbol.clone()).or_insert(0) += 1;
+            let mut symbols = guard.keys().cloned().collect::<Vec<String>>();
+            symbols.sort();
+            json!({
                 "aid": "subscribe_trading_status",
-                "ins_list": ins_list
-            });
-            ws.send(&req).await?;
-        }
+                "ins_list": symbols.join(",")
+            })
+        };
+        ws.send(&subscribe_req).await?;
 
         let (tx, rx) = bounded(ws.message_queue_capacity());
         let dm = Arc::clone(&self.dm);
+        let ws = Arc::clone(ws);
+        let trading_status_symbols = Arc::clone(&self.trading_status_symbols);
+        let subscribe_symbol_for_cleanup = subscribe_symbol.clone();
         let symbol_string = symbol.to_string();
         let watch_path = vec!["trading_status".to_string(), symbol_string.clone()];
         let (watch_id, watch) = dm.watch_register(watch_path.clone());
@@ -96,22 +101,47 @@ impl InsAPI {
                 }
             }
             loop {
-                if watch.recv().await.is_err() {
+                if tx.is_closed() {
                     break;
                 }
-                if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
-                    && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
-                {
-                    match tx.try_send(status) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => {
-                            warn!("交易状态通道已满，丢弃一次更新");
+                tokio::select! {
+                    recv = watch.recv() => {
+                        if recv.is_err() {
+                            break;
                         }
-                        Err(TrySendError::Closed(_)) => break,
+                        if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
+                            && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
+                        {
+                            match tx.try_send(status) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    warn!("交易状态通道已满，丢弃一次更新");
+                                }
+                                Err(TrySendError::Closed(_)) => break,
+                            }
+                        }
                     }
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                 }
             }
             let _ = dm.unwatch_by_id(&watch_path, watch_id);
+
+            let unsubscribe_req = {
+                let mut guard = trading_status_symbols.write().await;
+                if let Some(count) = guard.get_mut(&subscribe_symbol_for_cleanup) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        guard.remove(&subscribe_symbol_for_cleanup);
+                    }
+                }
+                let mut symbols = guard.keys().cloned().collect::<Vec<String>>();
+                symbols.sort();
+                json!({
+                    "aid": "subscribe_trading_status",
+                    "ins_list": symbols.join(",")
+                })
+            };
+            let _ = ws.send(&unsubscribe_req).await;
         });
 
         Ok(rx)

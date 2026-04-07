@@ -96,7 +96,6 @@ where
         .with_line_number(true)
         .with_file(true)
         .with_ansi(true)
-        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
         .compact()
         .with_filter(filter)
 }

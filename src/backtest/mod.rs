@@ -54,4 +54,5 @@ pub struct BacktestHandle {
     start_dt: i64,
     end_dt: i64,
     current_dt: Arc<RwLock<i64>>,
+    data_cb_id: Option<i64>,
 }

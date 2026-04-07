@@ -17,7 +17,7 @@ use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket};
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, Instant, MissedTickBehavior};
@@ -29,7 +29,7 @@ pub struct InsAPI {
     ws: Arc<TqQuoteWebsocket>,
     trading_status_ws: Option<Arc<TqTradingStatusWebsocket>>,
     auth: Arc<RwLock<dyn Authenticator>>,
-    trading_status_symbols: Arc<RwLock<HashSet<String>>>,
+    trading_status_symbols: Arc<RwLock<HashMap<String, usize>>>,
     stock: bool,
     holiday_url: String,
 }
@@ -51,7 +51,7 @@ impl InsAPI {
             ws,
             trading_status_ws,
             auth,
-            trading_status_symbols: Arc::new(RwLock::new(HashSet::new())),
+            trading_status_symbols: Arc::new(RwLock::new(HashMap::new())),
             stock,
             holiday_url,
         }
@@ -125,5 +125,11 @@ impl InsAPI {
                 }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn trading_status_ref_count_for_test(&self, symbol: &str) -> usize {
+        let guard = self.trading_status_symbols.read().await;
+        guard.get(symbol).copied().unwrap_or(0)
     }
 }

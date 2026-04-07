@@ -9,9 +9,9 @@
 ```text
 Client (facade + builder + market)
 ├── auth/          认证 (Authenticator trait → TqAuth)
-│   ├── core       TqAuth 实现 (登录/token 刷新)
-│   ├── token      JWT 解析
-│   └── permissions 权限检查
+│   ├── core       TqAuth 实现 (登录/token 获取)
+│   ├── token      JWT 解析 + claims 校验
+│   └── permissions 权限检查（含指数权限分支）
 ├── websocket/     WebSocket 连接层
 │   ├── core       TqWebsocket 基类 (I/O actor 模式)
 │   ├── quote      TqQuoteWebsocket (行情通道)
@@ -25,6 +25,8 @@ Client (facade + builder + market)
 │   ├── merge      递归合并 (prototype 语义)
 │   ├── query      路径查询 + 数据转换
 │   └── watch      路径监听
+├── cache/         本地缓存
+│   └── kline      K线分段磁盘缓存（写锁、去重、区间读取、压缩）
 ├── quote/         Quote 订阅 (回调 + channel 双模式)
 │   ├── lifecycle  订阅生命周期 (start/stop)
 │   └── watch      数据变更监听
@@ -35,7 +37,7 @@ Client (facade + builder + market)
 ├── ins/           合约查询与基础数据
 │   ├── query      GraphQL 查询 + 合约列表/期权筛选
 │   ├── services   结算价/持仓排名/EDB/交易日历 (HTTP)
-│   ├── trading_status 交易状态订阅
+│   ├── trading_status 交易状态订阅（按 symbol 引用计数聚合）
 │   ├── parse      查询结果解析
 │   └── validation 参数校验 + 缓存匹配
 ├── trade_session/ 交易会话
@@ -43,7 +45,7 @@ Client (facade + builder + market)
 │   ├── ops        下单/撤单/查询持仓/账户/成交
 │   └── watch      数据变更监听 (DM → channel/callback)
 ├── backtest/      回测控制
-│   ├── core       初始化 + 时间推进 + 事件分发
+│   ├── core       初始化 + 时间推进 + 事件分发 + 回调清理
 │   └── parsing    回测时间状态解析
 ├── polars_ext/    Polars DataFrame 转换 (可选 feature)
 │   ├── kline      KlineBuffer (K线 → DataFrame)
@@ -62,9 +64,10 @@ Client (facade + builder + market)
 | 模块 | 入口类型 | 职责 |
 |------|---------|------|
 | `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期 |
-| `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析、权限检查 |
+| `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
+| `cache` | `DiskKlineCache` | K线本地持久化、按区间读取、段压缩与并发写保护 |
 | `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
 | `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
@@ -80,11 +83,15 @@ Client (facade + builder + market)
 - 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
+- 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
+- 回测生命周期：`BacktestHandle` 释放时会注销内部 DataManager 回调，避免长会话回调累积。
+- 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
 
 ## 阅读建议
 
 - 想理解外部 API：先看 `src/lib.rs`、`src/client.rs`、`src/client/`
 - 想理解状态模型：看 `src/datamanager/`
+- 想理解历史 K 线磁盘复用：看 `src/cache/kline.rs` 与 `src/series/api.rs`
 - 想理解实时链路：看 `src/websocket/`、`src/quote/`、`src/series/`
 - 想理解查询接口：看 `src/ins/`
 - 想理解交易链路：看 `src/trade_session/`

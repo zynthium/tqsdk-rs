@@ -31,7 +31,7 @@ impl BacktestHandle {
         );
 
         let (tx, rx) = async_channel::bounded(1);
-        dm.on_data(move || {
+        let data_cb_id = dm.on_data_register(move || {
             let _ = tx.try_send(());
         });
 
@@ -42,6 +42,7 @@ impl BacktestHandle {
             start_dt,
             end_dt,
             current_dt: Arc::new(tokio::sync::RwLock::new(start_dt)),
+            data_cb_id: Some(data_cb_id),
         }
     }
 
@@ -111,5 +112,44 @@ impl BacktestHandle {
     /// 获取内部数据管理器
     pub fn dm(&self) -> Arc<crate::datamanager::DataManager> {
         Arc::clone(&self.dm)
+    }
+}
+
+impl Drop for BacktestHandle {
+    fn drop(&mut self) {
+        if let Some(id) = self.data_cb_id.take() {
+            let _ = self.dm.off_data(id);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datamanager::{DataManager, DataManagerConfig};
+    use crate::websocket::WebSocketConfig;
+    use chrono::Duration as ChronoDuration;
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn backtest_handle_drop_should_unregister_data_callback() {
+        let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+        let ws = Arc::new(crate::websocket::TqQuoteWebsocket::new(
+            "wss://example.com".to_string(),
+            Arc::clone(&dm),
+            WebSocketConfig::default(),
+        ));
+
+        assert_eq!(dm.callback_count_for_test(), 0);
+        {
+            let now = Utc::now();
+            let _handle = BacktestHandle::new(
+                Arc::clone(&dm),
+                ws,
+                BacktestConfig::new(now, now + ChronoDuration::days(1)),
+            );
+            assert_eq!(dm.callback_count_for_test(), 1);
+        }
+        assert_eq!(dm.callback_count_for_test(), 0);
     }
 }

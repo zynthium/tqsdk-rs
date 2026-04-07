@@ -51,4 +51,9 @@ impl DataManager {
     pub fn get_epoch(&self) -> i64 {
         self.epoch.load(Ordering::SeqCst)
     }
+
+    #[cfg(test)]
+    pub(crate) fn callback_count_for_test(&self) -> usize {
+        self.on_data_callbacks.read().unwrap().len()
+    }
 }

@@ -1,5 +1,6 @@
 use super::{AccessTokenClaims, AuthResponse, CLIENT_ID, CLIENT_SECRET, Grants, TqAuth, VERSION};
 use crate::errors::{Result, TqError};
+use chrono::Utc;
 use reqwest::header::{ACCEPT, USER_AGENT};
 use tracing::{debug, info};
 
@@ -68,6 +69,7 @@ impl TqAuth {
             source: e,
         })?;
         let claims = token_data.claims;
+        self.validate_access_token_claims(&claims)?;
         self.auth_id = claims.sub;
         self.grants = Grants::default();
 
@@ -84,6 +86,23 @@ impl TqAuth {
             self.grants.accounts.len()
         );
 
+        Ok(())
+    }
+
+    fn validate_access_token_claims(&self, claims: &AccessTokenClaims) -> Result<()> {
+        const CLOCK_SKEW_SECS: i64 = 60;
+        let now = Utc::now().timestamp();
+        if claims.exp <= now - CLOCK_SKEW_SECS {
+            return Err(TqError::AuthenticationError("认证 token 已过期".to_string()));
+        }
+        if claims.nbf > now + CLOCK_SKEW_SECS {
+            return Err(TqError::AuthenticationError(
+                "认证 token 尚未生效，请检查系统时间".to_string(),
+            ));
+        }
+        if claims.azp != CLIENT_ID {
+            return Err(TqError::AuthenticationError("认证 token client_id 不匹配".to_string()));
+        }
         Ok(())
     }
 }

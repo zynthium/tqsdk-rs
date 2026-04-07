@@ -30,6 +30,7 @@ src/
 ├── auth/           认证、token、权限检查
 ├── websocket/      WebSocket 连接、背压、重连、消息分发
 ├── datamanager/    DIFF 合并、查询、监听
+├── cache/          本地 K 线磁盘缓存（分段写入/压缩/区间读取）
 ├── quote/          行情订阅
 ├── series/         K 线/Tick 订阅与处理
 ├── ins/            合约与基础数据查询

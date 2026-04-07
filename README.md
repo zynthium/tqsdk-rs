@@ -59,6 +59,13 @@
 - 修复 `SeriesSubscription::data_stream()` 覆盖 `on_update()` 的接口行为：
   `data_stream()` 现在与 `on_update()` 可并存，不再互相覆盖。
 - 将 Quote、TradingStatus、Series stream、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
+- 修复 `has_md_grants` 的指数权限判断顺序：
+  `SSE.000016` / `SSE.000300` / `SSE.000905` / `SSE.000852` 现在会优先校验 `lmt_idx` 权限。
+- 修复 `BacktestHandle` 生命周期中回调未注销的问题，实例释放后会自动取消 DataManager 回调注册。
+- 优化交易状态订阅生命周期：
+  多订阅者按引用计数聚合，receiver 释放后会自动减少订阅集合并回发 `subscribe_trading_status`。
+- 日志与磁盘缓存初始化移除库级 `panic` 路径，改为可降级行为和告警输出。
+- token 解析新增 claims 校验（`exp` / `nbf` / `azp`），减少异常 token 对权限边界的影响。
 
 ## 验证与排查
 
@@ -383,10 +390,6 @@ session
         println!("权益={} 可用={}", account.balance, account.available);
     })
     .await;
-
-
-优先级为：`TradeSessionOptions.td_url_override` > `ClientBuilder::td_url` /
-`EndpointConfig.td_url` > `TQ_TD_URL` > 鉴权返回的默认交易地址。
 session
     .on_position(|symbol, position| {
         println!(
@@ -410,6 +413,9 @@ while !session.is_ready() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 ```
+
+优先级为：`TradeSessionOptions.td_url_override` > `ClientBuilder::td_url` /
+`EndpointConfig.td_url` > `TQ_TD_URL` > 鉴权返回的默认交易地址。
 
 说明：
 
@@ -496,7 +502,7 @@ let backtest = client
 let dm = backtest.dm();
 
 // 获取 Quote 数据
-if let Some(quote) = dm.get_quote_data("SHFE.au2602") {
+if let Ok(quote) = dm.get_quote_data("SHFE.au2602") {
     println!("最新价: {}", quote.last_price);
     println!("买一价: {}", quote.bid_price1);
     println!("卖一价: {}", quote.ask_price1);
@@ -504,7 +510,7 @@ if let Some(quote) = dm.get_quote_data("SHFE.au2602") {
 
 // 获取 K线数据
 // 参数：合约代码, 周期(纳秒), 数量, right_id(-1表示最新)
-if let Some(klines) = dm.get_klines_data("SHFE.au2602", 60_000_000_000, 100, -1) {
+if let Ok(klines) = dm.get_klines_data("SHFE.au2602", 60_000_000_000, 100, -1) {
     println!("K线数量: {}", klines.data.len());
 }
 
@@ -520,7 +526,7 @@ if dm.is_changing(&["quotes", "SHFE.au2602"]) {
 
 // 获取指定路径的数据更新版本号（更推荐的增量更新检测方式）
 let path_epoch = dm.get_path_epoch(&["quotes", "SHFE.au2602"]);
-println!("路径 ["quotes", "SHFE.au2602"] 的 epoch: {}", path_epoch);
+println!("路径 [\"quotes\", \"SHFE.au2602\"] 的 epoch: {}", path_epoch);
 
 // 获取当前全局版本号
 let epoch = dm.get_epoch();
@@ -609,14 +615,20 @@ subscription.start().await?;
 
 #### 切换账号（运行时）
 
+支持在运行时动态切换账号：
+
 ```rust
 use tqsdk_rs::auth::TqAuth;
 
-let mut auth = TqAuth::new("user2".to_string(), "pass2".to_string());
-auth.login().await?;
-client.set_auth(auth).await;
+// 创建新的认证器
+let mut new_auth = TqAuth::new("user2".to_string(), "pass2".to_string());
+new_auth.login().await?;
+
+// 切换认证器
+client.set_auth(new_auth).await;
+
+// 重新初始化行情（使用新账号）
 client.init_market().await?;
-```
 
 #### 权限检查
 
@@ -630,6 +642,11 @@ if auth.has_feature("futr") {
 match auth.has_md_grants(&["SHFE.au2602", "SHFE.ag2512"]) {
     Ok(()) => println!("有行情权限"),
     Err(err) => println!("权限不足: {}", err),
+}
+
+match auth.has_md_grants(&["SSE.000300"]) {
+    Ok(()) => println!("有指数行情权限"),
+    Err(err) => println!("指数权限不足(需 lmt_idx): {}", err),
 }
 ```
 
@@ -688,15 +705,15 @@ cargo run --example option_levels
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| `tokio` | 1.48 | 异步运行时 |
-| `yawc` | 0.2.7 | WebSocket 客户端 |
+| `tokio` | 1.50 | 异步运行时 |
+| `yawc` | 0.3.3 | WebSocket 客户端 |
 | `reqwest` | 0.12 | HTTP / GraphQL 请求 |
 | `serde` / `serde_json` | 1.0 | 序列化与 JSON |
-| `jsonwebtoken` | 10.2 | JWT 认证 |
+| `jsonwebtoken` | 10.3 | JWT 认证 |
 | `tracing` / `tracing-subscriber` | 0.1 / 0.3 | 日志与可观测性 |
-| `async-channel` | 2.3 | 异步通道 |
+| `async-channel` | 2.5 | 异步通道 |
 | `chrono` | 0.4 | 时间处理 |
-| `polars` | 0.44 | 可选列式分析能力 |
+| `polars` | 0.53 | 可选列式分析能力 |
 
 ## 项目结构
 
@@ -705,6 +722,7 @@ tqsdk-rs/
 ├── src/
 │   ├── auth/              # 认证与权限
 │   ├── backtest/          # 回测实现
+│   ├── cache/             # 本地 K 线磁盘缓存（分段写入/压缩/区间读取）
 │   ├── client/            # ClientBuilder / facade / market
 │   ├── datamanager/       # DIFF 合并与 watch
 │   ├── ins/               # 合约、期权、交易状态等查询

@@ -10,6 +10,7 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 const CACHE_DIR: &str = ".tqsdk_cache";
 const SEGMENT_FILE_EXT: &str = "kline";
@@ -113,15 +114,30 @@ impl Drop for DiskWriteGuards<'_> {
 
 impl DiskKlineCache {
     pub fn new(base_path: Option<PathBuf>) -> Self {
-        let base_path = base_path.unwrap_or_else(|| {
-            let home_dir = dirs::home_dir().expect("无法获取用户主目录");
-            home_dir.join(CACHE_DIR)
+        let mut resolved_base_path = base_path.unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|home_dir| home_dir.join(CACHE_DIR))
+                .unwrap_or_else(|| std::env::temp_dir().join(CACHE_DIR))
         });
-        if let Err(e) = fs::create_dir_all(&base_path) {
-            panic!("无法创建缓存目录 {}: {}", base_path.display(), e);
+        if let Err(e) = fs::create_dir_all(&resolved_base_path) {
+            let fallback = std::env::temp_dir().join(CACHE_DIR);
+            if fallback != resolved_base_path && fs::create_dir_all(&fallback).is_ok() {
+                warn!(
+                    "创建缓存目录失败，回退到临时目录: path={}, error={}",
+                    resolved_base_path.display(),
+                    e
+                );
+                resolved_base_path = fallback;
+            } else {
+                warn!(
+                    "创建缓存目录失败，将在首次写入时重试: path={}, error={}",
+                    resolved_base_path.display(),
+                    e
+                );
+            }
         }
         Self {
-            base_path,
+            base_path: resolved_base_path,
             write_lock: Mutex::new(()),
         }
     }
@@ -138,8 +154,8 @@ impl DiskKlineCache {
     fn get_temp_segment_file_path(&self, symbol: &str, duration: i64, range: &Range) -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("clock should be after unix epoch")
-            .as_nanos();
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         self.get_segment_dir_path(symbol, duration)
             .join(format!("{}.{}.{}.tmp", range.start, range.end, suffix))
     }
