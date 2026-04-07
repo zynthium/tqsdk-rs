@@ -1,15 +1,22 @@
 use super::{KlineSymbols, SeriesAPI, SeriesSubscription};
 use crate::cache::kline::DiskKlineCache;
 use crate::errors::{Result, TqError};
-use crate::types::{Kline, Range, SeriesOptions, rangeset_intersection, rangeset_union};
+use crate::types::{Kline, Range, SeriesOptions, rangeset_difference, rangeset_intersection, rangeset_union};
 use chrono::{DateTime, Utc};
-use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
+use tokio::sync::oneshot;
 use tracing::{debug, warn};
 use uuid::Uuid;
+
+#[cfg(not(test))]
+const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(30);
+#[cfg(test)]
+const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 
 impl From<&str> for KlineSymbols {
     fn from(value: &str) -> Self {
@@ -159,6 +166,284 @@ impl SeriesAPI {
         .await
     }
 
+    /// 获取固定窗口的历史 K 线快照（不随行情更新）。
+    ///
+    /// 与 `kline_history` 的区别是：
+    /// - 本接口返回一次性 `Vec<Kline>`，而不是订阅句柄。
+    /// - 优先复用磁盘缓存，仅下载缺失区间。
+    pub async fn kline_data_series_by_id(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        data_length: usize,
+        left_kline_id: i64,
+    ) -> Result<Vec<Kline>> {
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+        }
+        if left_kline_id < 0 {
+            return Err(TqError::InvalidParameter("left_kline_id 必须 >= 0".to_string()));
+        }
+        let view_width = normalize_data_length(data_length)?;
+        let duration_nano = normalize_kline_duration(duration)?;
+        let requested_end = left_kline_id
+            .checked_add(view_width as i64)
+            .ok_or_else(|| TqError::InvalidParameter("请求区间过大".to_string()))?;
+        let requested_range = Range::new(left_kline_id, requested_end);
+
+        let mut cached_ranges = match self.disk_cache.read_metadata(symbol, duration_nano) {
+            Ok(Some(metadata)) => metadata.ranges,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                warn!(
+                    "读取磁盘缓存元数据失败，将回退到在线下载: symbol={}, duration={}, error={}",
+                    symbol, duration_nano, e
+                );
+                Vec::new()
+            }
+        };
+
+        let missing_ranges = rangeset_difference(&vec![requested_range.clone()], &cached_ranges);
+        for missing in missing_ranges {
+            if missing.is_empty() {
+                continue;
+            }
+            let missing_width = usize::try_from(missing.len())
+                .map_err(|_| TqError::InvalidParameter("请求区间长度非法".to_string()))?;
+            let fetched = self
+                .fetch_history_chunk_by_id(symbol, duration, missing.start, missing_width)
+                .await?;
+            if fetched.is_empty() {
+                continue;
+            }
+
+            append_klines_to_disk(
+                Arc::clone(&self.disk_cache),
+                symbol.to_string(),
+                duration_nano,
+                fetched.clone(),
+            )
+            .await?;
+            if let Some(added_range) = range_from_klines(&fetched) {
+                cached_ranges = rangeset_union(&cached_ranges, &vec![added_range]);
+            }
+        }
+
+        // 最终只返回请求窗口内的数据，按 id 去重并排序，避免磁盘中历史重复片段影响结果。
+        let intersected_ranges = rangeset_intersection(&vec![requested_range], &cached_ranges);
+        let mut result = Vec::new();
+        for range in intersected_ranges {
+            match self.disk_cache.read_klines(symbol, duration_nano, &range) {
+                Ok(mut klines) => result.append(&mut klines),
+                Err(e) => {
+                    warn!(
+                        "读取磁盘缓存区间失败: symbol={}, duration={}, range={:?}, error={}",
+                        symbol, duration_nano, range, e
+                    );
+                }
+            }
+        }
+        Ok(dedup_sort_klines_by_id(result))
+    }
+
+    /// 获取指定时间窗口的历史 K 线快照（不随行情更新）。
+    ///
+    /// 语义为 `[start_dt, end_dt)`，即包含 `start_dt`，不包含 `end_dt`。
+    /// 缓存命中时直接从磁盘读取；缓存缺失时按时间焦点增量下载并回填缓存。
+    pub async fn kline_data_series(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<Kline>> {
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+        }
+        let duration_nano = normalize_kline_duration(duration)?;
+        let start_nano = start_dt
+            .timestamp_nanos_opt()
+            .ok_or_else(|| TqError::InvalidParameter("start_dt 超出可表示范围".to_string()))?;
+        let end_nano = end_dt
+            .timestamp_nanos_opt()
+            .ok_or_else(|| TqError::InvalidParameter("end_dt 超出可表示范围".to_string()))?;
+        if end_nano <= start_nano {
+            return Err(TqError::InvalidParameter("end_dt 必须晚于 start_dt".to_string()));
+        }
+        let requested_dt_range = Range::new(start_nano, end_nano);
+
+        let mut cached_id_ranges = match self.disk_cache.read_metadata(symbol, duration_nano) {
+            Ok(Some(metadata)) => metadata.ranges,
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                warn!(
+                    "读取磁盘缓存元数据失败，将回退到在线下载: symbol={}, duration={}, error={}",
+                    symbol, duration_nano, e
+                );
+                Vec::new()
+            }
+        };
+        let mut cached_dt_ranges =
+            self.derive_datetime_ranges_from_cached_ids(symbol, duration_nano, &cached_id_ranges)?;
+        trim_last_bar_from_cached_datetime_ranges(&mut cached_dt_ranges, duration_nano);
+
+        let missing_dt_ranges = rangeset_difference(&vec![requested_dt_range.clone()], &cached_dt_ranges);
+        for missing in missing_dt_ranges {
+            if missing.is_empty() {
+                continue;
+            }
+
+            let estimated = estimate_view_width_from_datetime_range(&missing, duration_nano)?;
+            let focus = DateTime::<Utc>::from_timestamp_nanos(missing.start);
+            let fetched = self
+                .fetch_history_chunk_by_focus(symbol, duration, estimated, focus, 0)
+                .await?;
+            let filtered: Vec<Kline> = fetched
+                .into_iter()
+                .filter(|k| missing.start <= k.datetime && k.datetime < missing.end)
+                .collect();
+            if filtered.is_empty() {
+                continue;
+            }
+
+            append_klines_to_disk(
+                Arc::clone(&self.disk_cache),
+                symbol.to_string(),
+                duration_nano,
+                filtered.clone(),
+            )
+            .await?;
+
+            if let Some(id_range) = range_from_klines(&filtered) {
+                cached_id_ranges = rangeset_union(&cached_id_ranges, &vec![id_range]);
+            }
+            if let Some(dt_range) = datetime_range_from_klines(&filtered, duration_nano) {
+                cached_dt_ranges = rangeset_union(&cached_dt_ranges, &vec![dt_range]);
+            }
+        }
+
+        let mut result = Vec::new();
+        let scan_id_ranges = if cached_id_ranges.is_empty() {
+            Vec::new()
+        } else {
+            cached_id_ranges.clone()
+        };
+        for range in scan_id_ranges {
+            match self.disk_cache.read_klines(symbol, duration_nano, &range) {
+                Ok(klines) => {
+                    result.extend(
+                        klines
+                            .into_iter()
+                            .filter(|k| start_nano <= k.datetime && k.datetime < end_nano),
+                    );
+                }
+                Err(e) => warn!(
+                    "按时间窗口读取磁盘缓存失败: symbol={}, duration={}, range={:?}, error={}",
+                    symbol, duration_nano, range, e
+                ),
+            }
+        }
+        Ok(dedup_sort_klines_by_id(result))
+    }
+
+    async fn fetch_history_chunk_by_id(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        left_kline_id: i64,
+        data_length: usize,
+    ) -> Result<Vec<Kline>> {
+        let sub = self.kline_history(symbol, duration, data_length, left_kline_id).await?;
+
+        let (tx, rx) = oneshot::channel::<Vec<Kline>>();
+        let sender = Arc::new(Mutex::new(Some(tx)));
+        let sender_for_cb = Arc::clone(&sender);
+        sub.on_update(move |series_data, update_info| {
+            if !update_info.chart_ready {
+                return;
+            }
+            let Some(single) = &series_data.single else {
+                return;
+            };
+            if let Some(tx) = sender_for_cb.lock().ok().and_then(|mut guard| guard.take()) {
+                let _ = tx.send(single.data.clone());
+            }
+        })
+        .await;
+
+        sub.start().await?;
+        let fetched = match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, rx).await {
+            Ok(Ok(klines)) => Ok(klines),
+            Ok(Err(_)) => Err(TqError::InternalError("历史下载通道提前关闭".to_string())),
+            Err(_) => Err(TqError::Timeout),
+        };
+        let close_res = sub.close().await;
+        if let Err(e) = close_res {
+            warn!("历史下载临时订阅关闭失败: {:?}", e);
+        }
+        fetched
+    }
+
+    async fn fetch_history_chunk_by_focus(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        data_length: usize,
+        focus_time: DateTime<Utc>,
+        focus_position: i32,
+    ) -> Result<Vec<Kline>> {
+        let sub = self
+            .kline_history_with_focus(symbol, duration, data_length, focus_time, focus_position)
+            .await?;
+        self.fetch_history_chunk_with_subscription(sub).await
+    }
+
+    async fn fetch_history_chunk_with_subscription(&self, sub: Arc<SeriesSubscription>) -> Result<Vec<Kline>> {
+        let (tx, rx) = oneshot::channel::<Vec<Kline>>();
+        let sender = Arc::new(Mutex::new(Some(tx)));
+        let sender_for_cb = Arc::clone(&sender);
+        sub.on_update(move |series_data, update_info| {
+            if !update_info.chart_ready {
+                return;
+            }
+            let Some(single) = &series_data.single else {
+                return;
+            };
+            if let Some(tx) = sender_for_cb.lock().ok().and_then(|mut guard| guard.take()) {
+                let _ = tx.send(single.data.clone());
+            }
+        })
+        .await;
+
+        sub.start().await?;
+        let fetched = match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, rx).await {
+            Ok(Ok(klines)) => Ok(klines),
+            Ok(Err(_)) => Err(TqError::InternalError("历史下载通道提前关闭".to_string())),
+            Err(_) => Err(TqError::Timeout),
+        };
+        let close_res = sub.close().await;
+        if let Err(e) = close_res {
+            warn!("历史下载临时订阅关闭失败: {:?}", e);
+        }
+        fetched
+    }
+
+    fn derive_datetime_ranges_from_cached_ids(
+        &self,
+        symbol: &str,
+        duration_nano: i64,
+        id_ranges: &[Range],
+    ) -> Result<Vec<Range>> {
+        let mut ranges = Vec::new();
+        for range in id_ranges {
+            let klines = self.disk_cache.read_klines(symbol, duration_nano, range)?;
+            if let Some(dt_range) = datetime_range_from_klines(&klines, duration_nano) {
+                ranges.push(dt_range);
+            }
+        }
+        Ok(rangeset_union(&Vec::new(), &ranges))
+    }
+
     /// 通用订阅方法
     async fn subscribe(&self, mut options: SeriesOptions) -> Result<Arc<SeriesSubscription>> {
         if options.symbols.is_empty() {
@@ -193,45 +478,20 @@ impl SeriesAPI {
         )?);
 
         // 历史窗口：仅进行本地缓存预热，不发网络请求，保持显式 start() 语义。
-        if let Some(left_kline_id) = options.left_kline_id {
+        if options.left_kline_id.is_some() {
             let symbol = options.symbols[0].clone();
             let duration = options.duration;
-            let view_width = options.view_width as i64;
-            let requested_range = Range::new(left_kline_id, left_kline_id + view_width);
 
             let mut disk_cached_ranges = Vec::new();
-            let mut disk_klines = Vec::new();
             match self.disk_cache.read_metadata(&symbol, duration) {
                 Ok(Some(metadata)) => {
                     disk_cached_ranges = metadata.ranges;
-                    let ranges_to_read = rangeset_intersection(&vec![requested_range.clone()], &disk_cached_ranges);
-                    for range in ranges_to_read {
-                        match self.disk_cache.read_klines(&symbol, duration, &range) {
-                            Ok(klines) => disk_klines.extend(klines),
-                            Err(e) => warn!(
-                                "读取磁盘缓存失败: symbol={}, duration={}, range={:?}, error={}",
-                                symbol, duration, range, e
-                            ),
-                        }
-                    }
                 }
                 Ok(None) => {}
                 Err(e) => warn!(
                     "读取磁盘缓存元数据失败: symbol={}, duration={}, error={}",
                     symbol, duration, e
                 ),
-            }
-
-            if !disk_klines.is_empty()
-                && let Some(payload) = merge_cached_klines_into_datamanager_payload(&symbol, duration, &disk_klines)
-            {
-                self.dm.merge_data(payload, true, false);
-                debug!(
-                    "已从磁盘缓存注入 K线到 DataManager: symbol={}, duration={}, count={}",
-                    symbol,
-                    duration,
-                    disk_klines.len()
-                );
             }
 
             if !disk_cached_ranges.is_empty() {
@@ -244,43 +504,6 @@ impl SeriesAPI {
 
         Ok(sub)
     }
-}
-
-fn merge_cached_klines_into_datamanager_payload(symbol: &str, duration: i64, klines: &[Kline]) -> Option<Value> {
-    let mut by_id = std::collections::BTreeMap::<i64, Kline>::new();
-    for kline in klines {
-        by_id.insert(kline.id, kline.clone());
-    }
-
-    let mut kline_data_map = Map::new();
-    let mut max_id: Option<i64> = None;
-    for (id, kline) in by_id {
-        let Ok(mut value) = serde_json::to_value(kline) else {
-            continue;
-        };
-        if let Value::Object(ref mut obj) = value {
-            obj.remove("id");
-        }
-        kline_data_map.insert(id.to_string(), value);
-        max_id = Some(max_id.map_or(id, |current| current.max(id)));
-    }
-
-    let max_id = max_id?;
-    if kline_data_map.is_empty() {
-        return None;
-    }
-
-    let duration_key = duration.to_string();
-    Some(json!({
-        "klines": {
-            symbol: {
-                duration_key: {
-                    "last_id": max_id + 1,
-                    "data": Value::Object(kline_data_map)
-                }
-            }
-        }
-    }))
 }
 
 fn normalize_data_length(data_length: usize) -> Result<usize> {
@@ -349,4 +572,63 @@ fn generate_chart_id(options: &SeriesOptions) -> String {
     } else {
         format!("TQRS_kline_{}", uid)
     }
+}
+
+fn range_from_klines(klines: &[Kline]) -> Option<Range> {
+    let min_id = klines.iter().map(|k| k.id).min()?;
+    let max_id = klines.iter().map(|k| k.id).max()?;
+    max_id.checked_add(1).map(|end| Range::new(min_id, end))
+}
+
+fn dedup_sort_klines_by_id(klines: Vec<Kline>) -> Vec<Kline> {
+    let mut by_id = BTreeMap::new();
+    for k in klines {
+        by_id.insert(k.id, k);
+    }
+    by_id.into_values().collect()
+}
+
+fn datetime_range_from_klines(klines: &[Kline], duration_nano: i64) -> Option<Range> {
+    let first_dt = klines.iter().map(|k| k.datetime).min()?;
+    let last_dt = klines.iter().map(|k| k.datetime).max()?;
+    let end = last_dt.checked_add(duration_nano)?;
+    Some(Range::new(first_dt, end))
+}
+
+fn trim_last_bar_from_cached_datetime_ranges(ranges: &mut Vec<Range>, duration_nano: i64) {
+    let Some(last) = ranges.last_mut() else {
+        return;
+    };
+    let new_end = last.end.saturating_sub(duration_nano);
+    last.end = new_end.max(last.start);
+    if last.is_empty() {
+        let _ = ranges.pop();
+    }
+}
+
+fn estimate_view_width_from_datetime_range(range: &Range, duration_nano: i64) -> Result<usize> {
+    let len = i128::from(range.end) - i128::from(range.start);
+    if len <= 0 {
+        return Ok(1);
+    }
+    let dur = i128::from(duration_nano.max(1));
+    let mut bars = (len + dur - 1) / dur;
+    bars += 2; // 容纳边界 bar 与服务端对齐误差
+    if bars > 10_000 {
+        return Err(TqError::InvalidParameter(
+            "时间窗口过大，预计超过 10000 根 K 线，请缩小区间".to_string(),
+        ));
+    }
+    usize::try_from(bars).map_err(|_| TqError::InvalidParameter("时间窗口估算失败".to_string()))
+}
+
+async fn append_klines_to_disk(
+    disk_cache: Arc<DiskKlineCache>,
+    symbol: String,
+    duration: i64,
+    klines: Vec<Kline>,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || disk_cache.append_klines(&symbol, duration, &klines))
+        .await
+        .map_err(|e| TqError::Other(format!("历史磁盘缓存写入任务失败: {e}")))?
 }

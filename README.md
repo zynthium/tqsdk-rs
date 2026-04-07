@@ -331,6 +331,26 @@ sub_with_focus.start().await?;
 
 - `kline_history(..., left_kline_id)`：按已知 K 线 ID 精确回溯。
 - `kline_history_with_focus(..., focus_datetime, focus_position)`：按时间定位，便于围绕某个时间点取窗口。
+- `kline_data_series_by_id(..., left_kline_id)`：一次性获取固定窗口快照，优先命中磁盘缓存，仅下载缺失区间。
+- `kline_data_series(..., start_dt, end_dt)`：按时间区间获取一次性快照，语义为 `[start_dt, end_dt)`。
+
+```rust
+let snapshot = series_api
+    .kline_data_series_by_id("SHFE.au2602", Duration::from_secs(60), 500, 105761)
+    .await?;
+println!("快照条数: {}", snapshot.len());
+```
+
+```rust
+use chrono::Utc;
+
+let end_dt = Utc::now();
+let start_dt = end_dt - chrono::Duration::hours(2);
+let snapshot_by_dt = series_api
+    .kline_data_series("SHFE.au2602", Duration::from_secs(60), start_dt, end_dt)
+    .await?;
+println!("时间窗口快照条数: {}", snapshot_by_dt.len());
+```
 
 ### 2. 交易功能
 

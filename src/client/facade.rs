@@ -5,12 +5,13 @@ use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
-use crate::types::{EdbIndexData, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
+use crate::types::{EdbIndexData, Kline, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use crate::websocket::WebSocketConfig;
 use async_channel::Receiver;
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
 
 impl Client {
@@ -249,6 +250,32 @@ impl Client {
 
     pub async fn get_trading_status(&self, symbol: &str) -> Result<Receiver<TradingStatus>> {
         self.ins()?.get_trading_status(symbol).await
+    }
+
+    /// 一次性获取按 ID 窗口的历史 K 线快照（不随行情更新）。
+    pub async fn get_kline_data_series_by_id(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        data_length: usize,
+        left_kline_id: i64,
+    ) -> Result<Vec<Kline>> {
+        self.series()?
+            .kline_data_series_by_id(symbol, duration, data_length, left_kline_id)
+            .await
+    }
+
+    /// 一次性获取按时间窗口的历史 K 线快照（不随行情更新），语义为 `[start_dt, end_dt)`。
+    pub async fn get_kline_data_series(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<Kline>> {
+        self.series()?
+            .kline_data_series(symbol, duration, start_dt, end_dt)
+            .await
     }
 
     /// 订阅 Quote。

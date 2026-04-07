@@ -307,7 +307,7 @@ impl SeriesSubscription {
                                                 let duration = options.duration;
 
                                                 if options.left_kline_id.is_some()
-                                                    && !history_cache_persisted.swap(true, Ordering::SeqCst)
+                                                    && !history_cache_persisted.load(Ordering::SeqCst)
                                                     && let Some(single_data) = &series_data.single
                                                     && !single_data.data.is_empty()
                                                 {
@@ -327,13 +327,11 @@ impl SeriesSubscription {
                                                             .or_insert_with(Vec::new);
                                                         *cached_ranges =
                                                             crate::types::rangeset_union(cached_ranges, &vec![range]);
+                                                        history_cache_persisted.store(true, Ordering::SeqCst);
                                                     }
                                                 }
 
-                                                if update_info.has_new_bar
-                                                    && let Some(callback) = on_new_bar.read().await.as_ref()
-                                                {
-                                                    callback(Arc::clone(&series_data));
+                                                if update_info.has_new_bar {
                                                     if options.left_kline_id.is_none()
                                                         && let Some(single_data) = &series_data.single
                                                         && let Some(completed_kline) = single_data
@@ -361,6 +359,10 @@ impl SeriesSubscription {
                                                                 &vec![Range::new(completed_kline.id, end)],
                                                             );
                                                         }
+                                                    }
+
+                                                    if let Some(callback) = on_new_bar.read().await.as_ref() {
+                                                        callback(Arc::clone(&series_data));
                                                     }
                                                 }
                                             } else if update_info.has_new_bar

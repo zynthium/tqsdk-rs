@@ -2,11 +2,13 @@ use super::*;
 use crate::cache::kline::DiskKlineCache;
 use crate::datamanager::DataManagerConfig;
 use crate::errors::{Result, TqError};
-use crate::types::{SeriesData, UpdateInfo};
+use crate::types::{Kline, SeriesData, UpdateInfo};
 use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use futures::{StreamExt, pin_mut};
 use reqwest::header::HeaderMap;
+use serde_json::json;
 use std::collections::HashMap;
 use std::env;
 use std::future::Future;
@@ -14,6 +16,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration as StdDuration;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, timeout};
 
 #[test]
@@ -80,6 +83,29 @@ impl Authenticator for TestAuth {
     }
 }
 
+fn unique_test_cache_dir(name: &str) -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_nanos();
+    env::temp_dir().join(format!("tqsdk_rs_series_{name}_{nanos}"))
+}
+
+fn sample_kline(id: i64, close: f64) -> Kline {
+    Kline {
+        id,
+        datetime: id * 1_000_000_000,
+        open: close - 1.0,
+        close,
+        high: close + 1.0,
+        low: close - 2.0,
+        open_oi: id * 10,
+        close_oi: id * 10 + 1,
+        volume: id * 100,
+        epoch: None,
+    }
+}
+
 fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscription {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
@@ -134,6 +160,45 @@ async fn kline_returns_unstarted_subscription() {
 }
 
 #[tokio::test]
+async fn kline_history_should_not_merge_disk_cache_into_global_datamanager() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let mut api = SeriesAPI::new(Arc::clone(&dm), ws, auth);
+
+    let symbol = "SHFE.au2602";
+    let duration = 60_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("history_preheat_no_merge");
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir.clone())));
+    disk_cache
+        .append_klines(symbol, duration, &[sample_kline(100, 510.0), sample_kline(101, 511.0)])
+        .expect("prepare disk cache should succeed");
+    api.disk_cache = Arc::clone(&disk_cache);
+
+    let epoch_before = dm.get_epoch();
+    let _sub = api
+        .kline_history(symbol, StdDuration::from_secs(60), 8, 100)
+        .await
+        .expect("kline_history subscribe should succeed");
+
+    assert_eq!(
+        dm.get_epoch(),
+        epoch_before,
+        "subscribe 阶段不应因缓存预热修改全局 DataManager epoch"
+    );
+    assert!(
+        dm.get_by_path(&["klines", symbol, &duration.to_string()]).is_none(),
+        "subscribe 阶段不应把磁盘缓存注入全局 DataManager"
+    );
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
 async fn start_failure_rolls_back_series_callback_registration() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
@@ -169,6 +234,225 @@ async fn start_failure_rolls_back_series_callback_registration() {
     assert!(sub.start().await.is_err());
     assert!(!*sub.running.read().await);
     assert!(sub.data_cb_id.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn realtime_kline_should_persist_without_on_new_bar_callback() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+
+    let symbol = "SHFE.au2602";
+    let duration = 60_000_000_000i64;
+    let chart_id = "chart_no_callback_persist";
+    let test_cache_dir = unique_test_cache_dir("realtime_no_on_new_bar");
+    let kline_cache = Arc::new(RwLock::new(HashMap::new()));
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir.clone())));
+    let sub = SeriesSubscription::new(
+        Arc::clone(&dm),
+        ws,
+        SeriesOptions {
+            symbols: vec![symbol.to_string()],
+            duration,
+            view_width: 16,
+            chart_id: Some(chart_id.to_string()),
+            left_kline_id: None,
+            focus_datetime: None,
+            focus_position: None,
+        },
+        kline_cache,
+        Arc::clone(&disk_cache),
+    )
+    .expect("create subscription should succeed");
+
+    sub.start().await.expect("start should succeed");
+
+    dm.merge_data(
+        json!({
+            "charts": {
+                (chart_id): {
+                    "left_id": 100,
+                    "right_id": 100,
+                    "more_data": false,
+                    "ready": true
+                }
+            },
+            "klines": {
+                (symbol): {
+                    (duration.to_string()): {
+                        "last_id": 101,
+                        "data": {
+                            "100": {
+                                "datetime": 100_000_000_000i64,
+                                "open": 510.0,
+                                "high": 512.0,
+                                "low": 509.0,
+                                "close": 511.0,
+                                "volume": 1000,
+                                "open_oi": 2000,
+                                "close_oi": 2001
+                            }
+                        }
+                    }
+                }
+            }
+        }),
+        true,
+        false,
+    );
+
+    let mut persisted = false;
+    for _ in 0..50 {
+        if let Ok(Some(metadata)) = disk_cache.read_metadata(symbol, duration)
+            && metadata.ranges.iter().any(|r| r.start == 100 && r.end == 101)
+        {
+            persisted = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let _ = sub.close().await;
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+
+    assert!(persisted, "即使没有 on_new_bar 回调，也应该写入闭合 K 线到磁盘缓存");
+}
+
+#[tokio::test]
+async fn kline_data_series_by_id_returns_cached_data_without_network() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let mut api = SeriesAPI::new(dm, ws, auth);
+
+    let symbol = "SHFE.au2602";
+    let duration = 60_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("data_series_cache_hit");
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir.clone())));
+    disk_cache
+        .append_klines(
+            symbol,
+            duration,
+            &[
+                sample_kline(200, 700.0),
+                sample_kline(201, 701.0),
+                sample_kline(202, 702.0),
+                sample_kline(203, 703.0),
+            ],
+        )
+        .expect("prepare disk cache should succeed");
+    api.disk_cache = Arc::clone(&disk_cache);
+
+    let out = api
+        .kline_data_series_by_id(symbol, StdDuration::from_secs(60), 4, 200)
+        .await
+        .expect("cache hit should not require websocket fetch");
+
+    assert_eq!(out.len(), 4);
+    assert_eq!(out[0].id, 200);
+    assert_eq!(out[3].id, 203);
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
+async fn kline_data_series_by_id_cache_miss_should_trigger_fetch_path() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let api = SeriesAPI::new(dm, ws, auth);
+
+    let err = api
+        .kline_data_series_by_id("SHFE.au2602", StdDuration::from_secs(60), 3, 300)
+        .await
+        .expect_err("cache miss should attempt fetch and fail when websocket send fails");
+
+    assert!(
+        matches!(err, TqError::WebSocketError(_)),
+        "expected websocket error for fetch path, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn kline_data_series_by_datetime_returns_cached_data_without_network() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let mut api = SeriesAPI::new(dm, ws, auth);
+
+    let symbol = "SHFE.au2602";
+    let duration = 1_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("data_series_datetime_cache_hit");
+    let disk_cache = Arc::new(DiskKlineCache::new(Some(test_cache_dir.clone())));
+    disk_cache
+        .append_klines(
+            symbol,
+            duration,
+            &[
+                sample_kline(1000, 10.0),
+                sample_kline(1001, 11.0),
+                sample_kline(1002, 12.0),
+                sample_kline(1003, 13.0),
+            ],
+        )
+        .expect("prepare disk cache should succeed");
+    api.disk_cache = Arc::clone(&disk_cache);
+
+    let start_dt = DateTime::<Utc>::from_timestamp_nanos(1001 * 1_000_000_000);
+    let end_dt = DateTime::<Utc>::from_timestamp_nanos(1003 * 1_000_000_000);
+    let out = api
+        .kline_data_series(symbol, StdDuration::from_secs(1), start_dt, end_dt)
+        .await
+        .expect("datetime cache hit should not require websocket fetch");
+
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].id, 1001);
+    assert_eq!(out[1].id, 1002);
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
+async fn kline_data_series_by_datetime_cache_miss_should_trigger_fetch_path() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let api = SeriesAPI::new(dm, ws, auth);
+
+    let start_dt = DateTime::<Utc>::from_timestamp_nanos(2_000_000_000);
+    let end_dt = DateTime::<Utc>::from_timestamp_nanos(4_000_000_000);
+    let err = api
+        .kline_data_series("SHFE.au2602", StdDuration::from_secs(1), start_dt, end_dt)
+        .await
+        .expect_err("datetime cache miss should attempt fetch and fail when websocket send fails");
+
+    assert!(
+        matches!(err, TqError::WebSocketError(_)),
+        "expected websocket error for fetch path, got: {err:?}"
+    );
 }
 
 #[tokio::test]
