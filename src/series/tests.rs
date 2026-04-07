@@ -138,7 +138,10 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
         },
         kline_cache,
         disk_cache,
-        SeriesCachePolicy::default(),
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
     )
     .unwrap()
 }
@@ -229,7 +232,10 @@ async fn start_failure_rolls_back_series_callback_registration() {
         },
         kline_cache,
         disk_cache,
-        SeriesCachePolicy::default(),
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
     )
     .unwrap();
 
@@ -267,7 +273,10 @@ async fn realtime_kline_should_persist_without_on_new_bar_callback() {
         },
         kline_cache,
         Arc::clone(&disk_cache),
-        SeriesCachePolicy::default(),
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
     )
     .expect("create subscription should succeed");
 
@@ -334,7 +343,15 @@ async fn kline_data_series_by_id_returns_cached_data_without_network() {
     ));
     ws.force_send_failure_for_test();
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
-    let mut api = SeriesAPI::new(dm, ws, auth);
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
 
     let symbol = "SHFE.au2602";
     let duration = 60_000_000_000i64;
@@ -450,7 +467,15 @@ async fn kline_data_series_by_datetime_returns_cached_data_without_network() {
     ));
     ws.force_send_failure_for_test();
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
-    let mut api = SeriesAPI::new(dm, ws, auth);
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
 
     let symbol = "SHFE.au2602";
     let duration = 1_000_000_000i64;

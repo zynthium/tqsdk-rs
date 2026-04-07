@@ -51,7 +51,7 @@ impl Default for ClientConfig {
             message_queue_capacity: 2048,
             message_backlog_warn_step: 1024,
             message_batch_max: 32,
-            series_disk_cache_enabled: true,
+            series_disk_cache_enabled: false,
             series_disk_cache_max_bytes: None,
             series_disk_cache_retention_days: None,
         }

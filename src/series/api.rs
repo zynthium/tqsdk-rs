@@ -181,7 +181,7 @@ impl SeriesAPI {
     ///
     /// 与 `kline_history` 的区别是：
     /// - 本接口返回一次性 `Vec<Kline>`，而不是订阅句柄。
-    /// - 优先复用磁盘缓存，仅下载缺失区间。
+    /// - 启用磁盘缓存时优先复用缓存，仅下载缺失区间（默认关闭，可由 `ClientBuilder` 配置开启）。
     pub async fn kline_data_series_by_id(
         &self,
         symbol: &str,
@@ -271,7 +271,7 @@ impl SeriesAPI {
     /// 获取指定时间窗口的历史 K 线快照（不随行情更新）。
     ///
     /// 语义为 `[start_dt, end_dt)`，即包含 `start_dt`，不包含 `end_dt`。
-    /// 缓存命中时直接从磁盘读取；缓存缺失时按时间焦点增量下载并回填缓存。
+    /// 启用磁盘缓存时命中后直接从磁盘读取；缓存缺失时按时间焦点增量下载并回填缓存。
     pub async fn kline_data_series(
         &self,
         symbol: &str,

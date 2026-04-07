@@ -32,21 +32,11 @@ type SeriesErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sy
 type SeriesStreamSubscribers = Arc<RwLock<Vec<tokio::sync::mpsc::Sender<Arc<SeriesData>>>>>;
 
 /// Series 磁盘缓存策略。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SeriesCachePolicy {
     pub enabled: bool,
     pub max_bytes: Option<u64>,
     pub retention_days: Option<u64>,
-}
-
-impl Default for SeriesCachePolicy {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            max_bytes: None,
-            retention_days: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

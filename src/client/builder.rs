@@ -103,6 +103,8 @@ impl ClientBuilder {
     }
 
     /// 是否启用 Series 磁盘缓存。
+    ///
+    /// 默认值为 `false`（关闭）。
     pub fn series_disk_cache_enabled(mut self, enabled: bool) -> Self {
         self.config.series_disk_cache_enabled = enabled;
         self
