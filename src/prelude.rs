@@ -1,9 +1,9 @@
 pub use crate::{
-    Authenticator, BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime, Client, ClientConfig, ClientOption,
-    DataManager, DataManagerConfig, EndpointConfig, InsAPI, OffsetPriority, OrderDirection, PriceMode,
-    QuoteSubscription, Result, RuntimeError, RuntimeResult, SeriesAPI, SeriesCachePolicy, SeriesSubscription,
-    TargetPosConfig, TqError, TqWebsocket, TradeSession, TradeSessionOptions, VolumeSplitPolicy,
-    create_logger_layer, init_logger,
+    AccountHandle, Authenticator, BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime, Client, ClientConfig,
+    ClientOption, DataManager, DataManagerConfig, EndpointConfig, InsAPI, OffsetPriority, OrderDirection, PriceMode,
+    QuoteSubscription, Result, RuntimeError, RuntimeMode, RuntimeResult, SeriesAPI, SeriesCachePolicy,
+    SeriesSubscription, TargetPosConfig, TqError, TqRuntime, TqWebsocket, TradeSession, TradeSessionOptions,
+    VolumeSplitPolicy, create_logger_layer, init_logger,
 };
 
 pub use crate::types::{SeriesData, SeriesOptions, UpdateInfo};

@@ -10,8 +10,9 @@ pub enum OrderDirection {
 
 pub type PriceResolver = Arc<dyn Fn(OrderDirection, &Quote) -> TqResult<f64> + Send + Sync>;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub enum PriceMode {
+    #[default]
     Active,
     Passive,
     Custom(PriceResolver),
@@ -27,24 +28,13 @@ impl fmt::Debug for PriceMode {
     }
 }
 
-impl Default for PriceMode {
-    fn default() -> Self {
-        Self::Active
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum OffsetPriority {
+    #[default]
     TodayYesterdayThenOpenWait,
     TodayYesterdayThenOpen,
     YesterdayThenOpen,
     OpenOnly,
-}
-
-impl Default for OffsetPriority {
-    fn default() -> Self {
-        Self::TodayYesterdayThenOpenWait
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -3,6 +3,7 @@ use crate::auth::Authenticator;
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
+use crate::runtime::{LiveExecutionAdapter, LiveMarketAdapter, RuntimeMode, TqRuntime};
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
 use crate::types::{EdbIndexData, Kline, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
@@ -355,6 +356,12 @@ impl Client {
     pub async fn get_trade_session(&self, key: &str) -> Option<Arc<TradeSession>> {
         let sessions = self.trade_sessions.read().await;
         sessions.get(key).cloned()
+    }
+
+    pub fn into_runtime(self) -> Arc<TqRuntime> {
+        let market = Arc::new(LiveMarketAdapter::new(Arc::clone(&self.dm)));
+        let execution = Arc::new(LiveExecutionAdapter::new(Arc::clone(&self.trade_sessions)));
+        Arc::new(TqRuntime::new(RuntimeMode::Live, market, execution))
     }
 
     /// 关闭客户端

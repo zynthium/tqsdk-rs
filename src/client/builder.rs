@@ -2,6 +2,7 @@ use super::{Client, ClientBuilder, ClientConfig, EndpointConfig};
 use crate::auth::{Authenticator, TqAuth};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::Result;
+use crate::runtime::TqRuntime;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -191,5 +192,9 @@ impl ClientBuilder {
             market_active: AtomicBool::new(false),
             trade_sessions: Arc::new(RwLock::new(HashMap::new())),
         })
+    }
+
+    pub async fn build_runtime(self) -> Result<Arc<TqRuntime>> {
+        Ok(self.build().await?.into_runtime())
     }
 }
