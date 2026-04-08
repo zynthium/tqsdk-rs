@@ -60,6 +60,8 @@ pub mod quote;
 // Series API
 pub mod series;
 
+pub mod runtime;
+
 // 合约查询
 pub mod ins;
 
@@ -84,6 +86,7 @@ pub use errors::{Result, TqError};
 pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};
 pub use quote::QuoteSubscription;
+pub use runtime::{OffsetPriority, OrderDirection, PriceMode, PriceResolver, RuntimeError, RuntimeResult, TargetPosConfig, VolumeSplitPolicy};
 pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 pub use trade_session::TradeSession;
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
