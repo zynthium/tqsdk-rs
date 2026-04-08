@@ -251,6 +251,34 @@ fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
             .unwrap_or_else(|| json!(0)),
     );
     quote.insert(
+        "open_max_limit_order_volume".to_string(),
+        source
+            .get("open_max_limit_order_volume")
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+    );
+    quote.insert(
+        "open_max_market_order_volume".to_string(),
+        source
+            .get("open_max_market_order_volume")
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+    );
+    quote.insert(
+        "open_min_limit_order_volume".to_string(),
+        source
+            .get("open_min_limit_order_volume")
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+    );
+    quote.insert(
+        "open_min_market_order_volume".to_string(),
+        source
+            .get("open_min_market_order_volume")
+            .cloned()
+            .unwrap_or_else(|| json!(0)),
+    );
+    quote.insert(
         "underlying_symbol".to_string(),
         source_string(source, "underlying_symbol"),
     );

@@ -221,7 +221,9 @@ fn parse_symbol_info_maps_fields() {
                     "delivery_month": 5,
                     "expire_datetime": expire_ts,
                     "max_limit_order_volume": 100,
-                    "max_market_order_volume": 50
+                    "max_market_order_volume": 50,
+                    "min_limit_order_volume": 2,
+                    "min_market_order_volume": 1
                 },
                 {
                     "instrument_id": "SHFE.cu2405C3000",
@@ -229,6 +231,10 @@ fn parse_symbol_info_maps_fields() {
                     "exchange_id": "SHFE",
                     "call_or_put": "CALL",
                     "strike_price": 3000.0,
+                    "open_min_market_order_volume": 3,
+                    "open_min_limit_order_volume": 5,
+                    "open_max_market_order_volume": 9,
+                    "open_max_limit_order_volume": 11,
                     "expired": false,
                     "last_exercise_datetime": exercise_ts,
                     "expire_datetime": expire_ts,
@@ -269,6 +275,12 @@ fn parse_symbol_info_maps_fields() {
     assert_eq!(option.get("delivery_month").unwrap(), 5);
     assert_eq!(option.get("exercise_year").unwrap(), 2024);
     assert_eq!(option.get("exercise_month").unwrap(), 5);
+    assert_eq!(option.get("open_min_market_order_volume").unwrap(), 3);
+    assert_eq!(option.get("open_min_limit_order_volume").unwrap(), 5);
+    assert_eq!(option.get("open_max_market_order_volume").unwrap(), 9);
+    assert_eq!(option.get("open_max_limit_order_volume").unwrap(), 11);
+    assert_eq!(option.get("min_limit_order_volume").unwrap(), &serde_json::Value::Null);
+    assert_eq!(option.get("min_market_order_volume").unwrap(), &serde_json::Value::Null);
 
     let combine = list[1].as_object().unwrap();
     assert_eq!(combine.get("ins_class").unwrap(), "COMBINE");

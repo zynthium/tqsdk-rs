@@ -381,6 +381,24 @@ fn update_symbol_info_map(info: &mut Map<String, Value>, symbol: &Map<String, Va
     if let Some(v) = symbol.get("max_market_order_volume") {
         info.insert("max_market_order_volume".to_string(), v.clone());
     }
+    if let Some(v) = symbol.get("min_limit_order_volume") {
+        info.insert("min_limit_order_volume".to_string(), v.clone());
+    }
+    if let Some(v) = symbol.get("min_market_order_volume") {
+        info.insert("min_market_order_volume".to_string(), v.clone());
+    }
+    if let Some(v) = symbol.get("open_max_limit_order_volume") {
+        info.insert("open_max_limit_order_volume".to_string(), v.clone());
+    }
+    if let Some(v) = symbol.get("open_max_market_order_volume") {
+        info.insert("open_max_market_order_volume".to_string(), v.clone());
+    }
+    if let Some(v) = symbol.get("open_min_limit_order_volume") {
+        info.insert("open_min_limit_order_volume".to_string(), v.clone());
+    }
+    if let Some(v) = symbol.get("open_min_market_order_volume") {
+        info.insert("open_min_market_order_volume".to_string(), v.clone());
+    }
     if let Some(v) = symbol.get("strike_price") {
         info.insert("strike_price".to_string(), v.clone());
     }
@@ -441,6 +459,12 @@ fn normalize_symbol_info(info: &mut Map<String, Value>) {
         "volume_multiple",
         "max_limit_order_volume",
         "max_market_order_volume",
+        "min_limit_order_volume",
+        "min_market_order_volume",
+        "open_max_limit_order_volume",
+        "open_max_market_order_volume",
+        "open_min_limit_order_volume",
+        "open_min_market_order_volume",
         "underlying_symbol",
         "strike_price",
         "exchange_id",

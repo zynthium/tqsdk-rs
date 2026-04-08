@@ -179,17 +179,29 @@ pub struct Quote {
     #[serde(default)]
     pub price_decs: i32,
     /// 市价单最大下单量
-    #[serde(default)]
+    #[serde(default, alias = "max_market_order_volume")]
     pub max_market_order_vol: i32,
     /// 市价单最小下单量
-    #[serde(default)]
+    #[serde(default, alias = "min_market_order_volume")]
     pub min_market_order_vol: i32,
     /// 限价单最大下单量
-    #[serde(default)]
+    #[serde(default, alias = "max_limit_order_volume")]
     pub max_limit_order_vol: i32,
     /// 限价单最小下单量
-    #[serde(default)]
+    #[serde(default, alias = "min_limit_order_volume")]
     pub min_limit_order_vol: i32,
+    /// 开仓市价单最大下单量
+    #[serde(default)]
+    pub open_max_market_order_volume: i32,
+    /// 开仓限价单最大下单量
+    #[serde(default)]
+    pub open_max_limit_order_volume: i32,
+    /// 开仓市价单最小下单量
+    #[serde(default)]
+    pub open_min_market_order_volume: i32,
+    /// 开仓限价单最小下单量
+    #[serde(default)]
+    pub open_min_limit_order_volume: i32,
     /// 是否已下市
     #[serde(default)]
     pub expired: bool,
@@ -264,6 +276,10 @@ impl Default for Quote {
             min_market_order_vol: 0,
             max_limit_order_vol: 0,
             min_limit_order_vol: 0,
+            open_max_market_order_volume: 0,
+            open_max_limit_order_volume: 0,
+            open_min_market_order_volume: 0,
+            open_min_limit_order_volume: 0,
             expired: false,
             py: String::new(),
             epoch: None,

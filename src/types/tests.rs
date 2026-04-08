@@ -44,6 +44,25 @@ fn test_quote_deserialize_with_nulls() {
 }
 
 #[test]
+fn quote_parses_open_min_order_volume_fields() {
+    let json_data = r#"{
+        "instrument_id":"SHFE.au2602",
+        "datetime":"2025-11-24 09:00:00.000000",
+        "open_min_market_order_volume":3,
+        "open_min_limit_order_volume":5,
+        "open_max_market_order_volume":9,
+        "open_max_limit_order_volume":11
+    }"#;
+
+    let quote = serde_json::from_str::<Quote>(json_data).expect("Quote 解析失败");
+
+    assert_eq!(quote.open_min_market_order_volume, 3);
+    assert_eq!(quote.open_min_limit_order_volume, 5);
+    assert_eq!(quote.open_max_market_order_volume, 9);
+    assert_eq!(quote.open_max_limit_order_volume, 11);
+}
+
+#[test]
 fn test_insert_order_request_parses_symbol_when_fields_missing() {
     let req = InsertOrderRequest {
         symbol: "SHFE.au2602".to_string(),
