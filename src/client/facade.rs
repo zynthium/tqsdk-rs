@@ -252,19 +252,6 @@ impl Client {
         self.ins()?.get_trading_status(symbol).await
     }
 
-    /// 一次性获取按 ID 窗口的历史 K 线快照（不随行情更新）。
-    pub async fn get_kline_data_series_by_id(
-        &self,
-        symbol: &str,
-        duration: StdDuration,
-        data_length: usize,
-        left_kline_id: i64,
-    ) -> Result<Vec<Kline>> {
-        self.series()?
-            .kline_data_series_by_id(symbol, duration, data_length, left_kline_id)
-            .await
-    }
-
     /// 一次性获取按时间窗口的历史 K 线快照（不随行情更新），语义为 `[start_dt, end_dt)`。
     pub async fn get_kline_data_series(
         &self,
@@ -276,6 +263,16 @@ impl Client {
         self.series()?
             .kline_data_series(symbol, duration, start_dt, end_dt)
             .await
+    }
+
+    /// 一次性获取按时间窗口的历史 Tick 快照（不随行情更新），语义为 `[start_dt, end_dt)`。
+    pub async fn get_tick_data_series(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<crate::types::Tick>> {
+        self.series()?.tick_data_series(symbol, start_dt, end_dt).await
     }
 
     /// 订阅 Quote。

@@ -33,7 +33,6 @@ futures = "0.3.32"
 async-trait = "0.1.89"
 
 # JSON
-bincode = "1.3"
 dirs = "5.0"
 fs2 = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }

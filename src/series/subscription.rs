@@ -1,15 +1,12 @@
 use super::processing::process_series_update;
-use super::{SeriesCachePolicy, SeriesStreamSubscribers, SeriesSubscription};
-use crate::cache::kline::DiskKlineCache;
+use super::{SeriesStreamSubscribers, SeriesSubscription};
 use crate::errors::Result;
-use crate::types::{ChartInfo, Range, RangeSet, SeriesData, UpdateInfo};
+use crate::types::{ChartInfo, SeriesData, UpdateInfo};
 use async_stream::stream;
 use chrono::{DateTime, Utc};
 use futures::Stream;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::RwLock;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, info, warn};
 
@@ -19,9 +16,6 @@ impl SeriesSubscription {
         dm: Arc<crate::datamanager::DataManager>,
         ws: Arc<crate::websocket::TqQuoteWebsocket>,
         options: crate::types::SeriesOptions,
-        kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
-        disk_cache: Arc<DiskKlineCache>,
-        cache_policy: SeriesCachePolicy,
     ) -> Result<Self> {
         let mut last_ids = std::collections::HashMap::new();
         for symbol in &options.symbols {
@@ -32,9 +26,6 @@ impl SeriesSubscription {
             dm,
             ws,
             options,
-            kline_cache,
-            disk_cache,
-            cache_policy,
             last_ids: Arc::new(tokio::sync::RwLock::new(last_ids)),
             last_left_id: Arc::new(tokio::sync::RwLock::new(-1)),
             last_right_id: Arc::new(tokio::sync::RwLock::new(-1)),
@@ -47,7 +38,6 @@ impl SeriesSubscription {
             stream_subscribers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             running: Arc::new(tokio::sync::RwLock::new(false)),
             unsubscribe_sent: Arc::new(AtomicBool::new(false)),
-            history_cache_persisted: Arc::new(AtomicBool::new(false)),
             data_cb_id: Arc::new(std::sync::Mutex::new(None)),
         })
     }
@@ -111,7 +101,6 @@ impl SeriesSubscription {
         *running = true;
         drop(running);
         self.unsubscribe_sent.store(false, Ordering::SeqCst);
-        self.history_cache_persisted.store(false, Ordering::SeqCst);
 
         debug!("启动 Series 订阅: {}", self.options.chart_id.as_deref().unwrap_or(""));
 
@@ -148,7 +137,6 @@ impl SeriesSubscription {
         *self.has_chart_sync.write().await = false;
         *self.running.write().await = true;
         self.unsubscribe_sent.store(false, Ordering::SeqCst);
-        self.history_cache_persisted.store(false, Ordering::SeqCst);
         self.send_set_chart().await
     }
 
@@ -180,11 +168,6 @@ impl SeriesSubscription {
         let last_right_id = Arc::clone(&self.last_right_id);
         let chart_ready = Arc::clone(&self.chart_ready);
         let has_chart_sync = Arc::clone(&self.has_chart_sync);
-        let kline_cache = Arc::clone(&self.kline_cache);
-        let disk_cache = Arc::clone(&self.disk_cache);
-        let cache_policy = self.cache_policy;
-        let history_cache_persisted = Arc::clone(&self.history_cache_persisted);
-
         let on_update = Arc::clone(&self.on_update);
         let on_new_bar = Arc::clone(&self.on_new_bar);
         let on_bar_update = Arc::clone(&self.on_bar_update);
@@ -239,14 +222,10 @@ impl SeriesSubscription {
             let on_error = Arc::clone(&on_error);
             let stream_subscribers = Arc::clone(&stream_subscribers);
             let running = Arc::clone(&running);
-            let kline_cache = Arc::clone(&kline_cache);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
             let ws = Arc::clone(&ws);
             let view_width_adjusted = Arc::clone(&view_width_adjusted);
-            let disk_cache = Arc::clone(&disk_cache);
-            let cache_policy = cache_policy;
-            let history_cache_persisted = Arc::clone(&history_cache_persisted);
             let last_processed_epoch = Arc::clone(&last_processed_epoch);
             tokio::spawn(async move {
                 loop {
@@ -306,75 +285,7 @@ impl SeriesSubscription {
                                             )
                                             .await;
 
-                                            if cache_policy.enabled
-                                                && options.duration != 0
-                                                && options.symbols.len() == 1
-                                            {
-                                                let symbol = options.symbols[0].clone();
-                                                let duration = options.duration;
-
-                                                if options.left_kline_id.is_some()
-                                                    && !history_cache_persisted.load(Ordering::SeqCst)
-                                                    && let Some(single_data) = &series_data.single
-                                                    && !single_data.data.is_empty()
-                                                {
-                                                    if let Err(e) = append_klines_to_disk(
-                                                        Arc::clone(&disk_cache),
-                                                        symbol.clone(),
-                                                        duration,
-                                                        single_data.data.clone(),
-                                                        cache_policy,
-                                                    )
-                                                    .await
-                                                    {
-                                                        warn!("历史K线写入磁盘缓存失败: {:?}", e);
-                                                    } else if let Some(range) = range_from_klines(&single_data.data) {
-                                                        let mut cache = kline_cache.write().await;
-                                                        let cached_ranges = cache
-                                                            .entry((symbol.clone(), duration))
-                                                            .or_insert_with(Vec::new);
-                                                        *cached_ranges =
-                                                            crate::types::rangeset_union(cached_ranges, &vec![range]);
-                                                        history_cache_persisted.store(true, Ordering::SeqCst);
-                                                    }
-                                                }
-
-                                                if update_info.has_new_bar {
-                                                    if options.left_kline_id.is_none()
-                                                        && let Some(single_data) = &series_data.single
-                                                        && let Some(completed_kline) = single_data
-                                                            .data
-                                                            .iter()
-                                                            .find(|k| k.id == single_data.last_id - 1)
-                                                    {
-                                                        debug!("发现已完成K线，写入磁盘缓存: {:?}", completed_kline);
-                                                        if let Err(e) = append_klines_to_disk(
-                                                            Arc::clone(&disk_cache),
-                                                            symbol.clone(),
-                                                            duration,
-                                                            vec![completed_kline.clone()],
-                                                            cache_policy,
-                                                        )
-                                                        .await
-                                                        {
-                                                            warn!("写入磁盘缓存失败: {:?}", e);
-                                                        } else if let Some(end) = completed_kline.id.checked_add(1) {
-                                                            let mut cache = kline_cache.write().await;
-                                                            let cached_ranges = cache
-                                                                .entry((symbol.clone(), duration))
-                                                                .or_insert_with(Vec::new);
-                                                            *cached_ranges = crate::types::rangeset_union(
-                                                                cached_ranges,
-                                                                &vec![Range::new(completed_kline.id, end)],
-                                                            );
-                                                        }
-                                                    }
-
-                                                    if let Some(callback) = on_new_bar.read().await.as_ref() {
-                                                        callback(Arc::clone(&series_data));
-                                                    }
-                                                }
-                                            } else if update_info.has_new_bar
+                                            if update_info.has_new_bar
                                                 && let Some(callback) = on_new_bar.read().await.as_ref()
                                             {
                                                 callback(Arc::clone(&series_data));
@@ -588,25 +499,4 @@ fn build_set_chart_request(options: &crate::types::SeriesOptions, view_width: us
     }
 
     chart_req
-}
-
-fn range_from_klines(klines: &[crate::types::Kline]) -> Option<Range> {
-    let min_id = klines.iter().map(|k| k.id).min()?;
-    let max_id = klines.iter().map(|k| k.id).max()?;
-    max_id.checked_add(1).map(|end| Range::new(min_id, end))
-}
-
-async fn append_klines_to_disk(
-    disk_cache: Arc<DiskKlineCache>,
-    symbol: String,
-    duration: i64,
-    klines: Vec<crate::types::Kline>,
-    cache_policy: SeriesCachePolicy,
-) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
-        disk_cache.append_klines(&symbol, duration, &klines)?;
-        disk_cache.enforce_limits(cache_policy.max_bytes, cache_policy.retention_days)
-    })
-    .await
-    .map_err(|e| crate::errors::TqError::Other(format!("磁盘缓存写入任务失败: {e}")))?
 }

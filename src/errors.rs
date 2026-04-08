@@ -103,10 +103,6 @@ pub enum TqError {
     #[error("错误: {0}")]
     Other(String),
 
-    /// bincode 序列化/反序列化错误
-    #[error("bincode 序列化/反序列化错误: {0}")]
-    Bincode(#[from] Box<bincode::ErrorKind>),
-
     /// URL 解析错误（保留 source）
     #[error("URL 解析错误")]
     UrlParse(#[from] url::ParseError),

@@ -15,13 +15,12 @@ mod subscription;
 mod tests;
 
 use crate::auth::Authenticator;
-use crate::cache::kline::DiskKlineCache;
+use crate::cache::data_series::DataSeriesCache;
 use crate::datamanager::DataManager;
-use crate::types::{RangeSet, SeriesData, UpdateInfo};
+use crate::types::{SeriesData, UpdateInfo};
 use crate::websocket::TqQuoteWebsocket;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock;
 
 pub use crate::types::SeriesOptions;
@@ -31,7 +30,7 @@ type SeriesCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<SeriesData>) + Send + Syn
 type SeriesErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(Arc<String>) + Send + Sync>>>>;
 type SeriesStreamSubscribers = Arc<RwLock<Vec<tokio::sync::mpsc::Sender<Arc<SeriesData>>>>>;
 
-/// Series 磁盘缓存策略。
+/// Series 磁盘缓存策略（作用于 Python-compatible DataSeries 缓存）。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SeriesCachePolicy {
     pub enabled: bool,
@@ -57,8 +56,7 @@ pub struct SeriesAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     auth: Arc<RwLock<dyn Authenticator>>,
-    kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
-    disk_cache: Arc<DiskKlineCache>,
+    data_series_cache: Arc<DataSeriesCache>,
     cache_policy: SeriesCachePolicy,
 }
 
@@ -74,9 +72,6 @@ pub struct SeriesSubscription {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     options: SeriesOptions,
-    kline_cache: Arc<RwLock<HashMap<(String, i64), RangeSet>>>,
-    disk_cache: Arc<DiskKlineCache>,
-    cache_policy: SeriesCachePolicy,
 
     // 状态跟踪
     last_ids: Arc<RwLock<HashMap<String, i64>>>,
@@ -93,7 +88,6 @@ pub struct SeriesSubscription {
     stream_subscribers: SeriesStreamSubscribers,
 
     running: Arc<RwLock<bool>>,
-    unsubscribe_sent: Arc<AtomicBool>,
-    history_cache_persisted: Arc<AtomicBool>,
+    unsubscribe_sent: Arc<std::sync::atomic::AtomicBool>,
     data_cb_id: Arc<std::sync::Mutex<Option<i64>>>,
 }

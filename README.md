@@ -338,15 +338,9 @@ sub_with_focus.start().await?;
 
 - `kline_history(..., left_kline_id)`：按已知 K 线 ID 精确回溯。
 - `kline_history_with_focus(..., focus_datetime, focus_position)`：按时间定位，便于围绕某个时间点取窗口。
-- `kline_data_series_by_id(..., left_kline_id)`：一次性获取固定窗口快照；启用磁盘缓存时优先命中缓存，仅下载缺失区间。
-- `kline_data_series(..., start_dt, end_dt)`：按时间区间获取一次性快照，语义为 `[start_dt, end_dt)`。
-
-```rust
-let snapshot = series_api
-    .kline_data_series_by_id("SHFE.au2602", Duration::from_secs(60), 500, 105761)
-    .await?;
-println!("快照条数: {}", snapshot.len());
-```
+- `kline_data_series(..., start_dt, end_dt)`：按时间区间获取 K 线快照，语义为 `[start_dt, end_dt)`。
+- `tick_data_series(..., start_dt, end_dt)`：按时间区间获取 Tick 快照，语义为 `[start_dt, end_dt)`。
+- 当启用 Series 磁盘缓存时，Rust SDK 会使用与官方 Python SDK 兼容的 `~/.tqsdk/data_series_1` 缓存目录，可直接共用缓存文件。
 
 ```rust
 use chrono::Utc;
@@ -357,6 +351,11 @@ let snapshot_by_dt = series_api
     .kline_data_series("SHFE.au2602", Duration::from_secs(60), start_dt, end_dt)
     .await?;
 println!("时间窗口快照条数: {}", snapshot_by_dt.len());
+
+let tick_snapshot = series_api
+    .tick_data_series("SHFE.au2602", start_dt, end_dt)
+    .await?;
+println!("Tick 快照条数: {}", tick_snapshot.len());
 ```
 
 ### 2. 交易功能
@@ -860,9 +859,9 @@ let layer = create_logger_layer("info", false);
 
 - `view_width` 决定本地维护的序列窗口大小。
 - `message_queue_capacity` 决定 Quote / Series stream / 离线发送等缓冲上限。
-- `series_disk_cache_enabled` 默认 `false`（默认关闭 Series 磁盘缓存）；需要时可显式开启。
-- `series_disk_cache_max_bytes` 可限制缓存总大小（字节），超限时会按文件修改时间优先清理旧段。
-- `series_disk_cache_retention_days` 可按保留天数清理历史缓存段。
+- `series_disk_cache_enabled` 默认 `false`；开启后会启用与官方 Python SDK 兼容的 `DataSeries` 历史快照缓存。
+- `series_disk_cache_max_bytes` 可限制 `~/.tqsdk/data_series_1` 下缓存总大小（字节），超限时会按文件修改时间优先清理旧文件。
+- `series_disk_cache_retention_days` 可按保留天数清理 `DataSeries` 历史缓存文件。
 - 实时策略通常不需要盲目拉大这两个值，先按默认值运行，再按吞吐瓶颈调优。
 
 ## 与 Go 版本对比

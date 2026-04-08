@@ -67,7 +67,7 @@ Client (facade + builder + market)
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
-| `cache` | `DiskKlineCache` | K线本地持久化、按区间读取、段压缩与并发写保护 |
+| `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
 | `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
 | `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
@@ -86,13 +86,13 @@ Client (facade + builder + market)
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 回测生命周期：`BacktestHandle` 释放时会注销内部 DataManager 回调，避免长会话回调累积。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
-- 缓存治理：Series 磁盘缓存默认关闭，支持按需开启、按总容量上限清理、按保留天数清理。
+- 缓存治理：Series 磁盘缓存默认关闭；开启后写入 `~/.tqsdk/data_series_1`，并支持按总容量上限清理、按保留天数清理。
 
 ## 阅读建议
 
 - 想理解外部 API：先看 `src/lib.rs`、`src/client.rs`、`src/client/`
 - 想理解状态模型：看 `src/datamanager/`
-- 想理解历史 K 线磁盘复用：看 `src/cache/kline.rs` 与 `src/series/api.rs`
+- 想理解历史 K 线 / Tick 磁盘复用：看 `src/cache/data_series.rs` 与 `src/series/api.rs`
 - 想理解实时链路：看 `src/websocket/`、`src/quote/`、`src/series/`
 - 想理解查询接口：看 `src/ins/`
 - 想理解交易链路：看 `src/trade_session/`
