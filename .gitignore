@@ -10,6 +10,7 @@ Cargo.lock
 .vscode/
 .DS_Store
 .cargo/
+.worktrees/
 
 ### Logs and local run outputs
 logs/
