@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use super::TqRuntime;
+use super::{TargetPosBuilder, TqRuntime};
 
 #[derive(Clone)]
 pub struct AccountHandle {
@@ -26,5 +26,9 @@ impl AccountHandle {
 
     pub fn runtime(&self) -> Arc<TqRuntime> {
         Arc::clone(&self.runtime)
+    }
+
+    pub fn target_pos(&self, symbol: impl Into<String>) -> TargetPosBuilder {
+        TargetPosBuilder::new(self.clone(), symbol)
     }
 }

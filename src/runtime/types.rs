@@ -37,6 +37,17 @@ pub enum OffsetPriority {
     OpenOnly,
 }
 
+impl OffsetPriority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TodayYesterdayThenOpenWait => "今昨,开",
+            Self::TodayYesterdayThenOpen => "今昨开",
+            Self::YesterdayThenOpen => "昨开",
+            Self::OpenOnly => "开",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VolumeSplitPolicy {
     pub min_volume: i64,

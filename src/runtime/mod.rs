@@ -6,6 +6,7 @@ mod execution;
 mod market;
 pub mod modes;
 mod registry;
+pub mod tasks;
 mod types;
 
 pub use account::AccountHandle;
@@ -16,6 +17,10 @@ pub use execution::{ExecutionAdapter, LiveExecutionAdapter};
 pub use market::{LiveMarketAdapter, MarketAdapter};
 pub use modes::{LiveRuntimeMode, RuntimeMode};
 pub use registry::{RegisteredTask, TaskId, TaskRegistry};
+pub use tasks::{
+    OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder, TargetPosBuilder, TargetPosHandle, compute_plan,
+    parse_offset_priority, validate_quote_constraints,
+};
 pub use types::{OffsetPriority, OrderDirection, PriceMode, PriceResolver, TargetPosConfig, VolumeSplitPolicy};
 
 #[cfg(test)]

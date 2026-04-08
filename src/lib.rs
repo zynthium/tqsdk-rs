@@ -88,7 +88,7 @@ pub use logger::{create_logger_layer, init_logger};
 pub use quote::QuoteSubscription;
 pub use runtime::{
     AccountHandle, OffsetPriority, OrderDirection, PriceMode, PriceResolver, RuntimeError, RuntimeMode, RuntimeResult,
-    TargetPosConfig, TqRuntime, VolumeSplitPolicy,
+    TargetPosBuilder, TargetPosConfig, TargetPosHandle, TqRuntime, VolumeSplitPolicy,
 };
 pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 pub use trade_session::TradeSession;
