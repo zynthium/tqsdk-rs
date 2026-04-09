@@ -30,6 +30,7 @@
 ### 交易功能
 
 - `TradeSession` 实盘/模拟交易会话。
+- `TqRuntime` + `TargetPosTask` 目标持仓运行时与 Python 风格兼容 facade。
 - 账户、持仓、委托、成交实时更新与主动查询。
 - 下单、撤单、登录就绪检测与自动重连。
 
@@ -158,6 +159,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     client.init_market().await?;
+    Ok(())
+}
+```
+
+### 目标持仓任务（compat facade）
+
+```rust
+use std::sync::Arc;
+use tqsdk_rs::prelude::*;
+
+async fn demo(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
+    let task = TargetPosTask::new(
+        runtime,
+        "SIM",
+        "SHFE.rb2601",
+        TargetPosTaskOptions::default(),
+    )
+    .await?;
+
+    task.set_target_volume(1)?;
+    task.wait_target_reached().await?;
+    task.cancel().await?;
+    task.wait_finished().await?;
     Ok(())
 }
 ```

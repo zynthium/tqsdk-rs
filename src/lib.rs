@@ -60,6 +60,7 @@ pub mod quote;
 // Series API
 pub mod series;
 
+pub mod compat;
 pub mod runtime;
 
 // 合约查询
@@ -81,6 +82,7 @@ pub mod polars_ext;
 pub use auth::Authenticator;
 pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
 pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
+pub use compat::{TargetPosTask, TargetPosTaskOptions};
 pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;

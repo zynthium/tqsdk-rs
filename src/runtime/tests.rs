@@ -131,6 +131,28 @@ async fn manual_insert_order_is_blocked_while_target_task_owns_symbol() {
     ));
 }
 
+#[tokio::test]
+async fn compat_target_pos_task_wraps_runtime_handle() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let market = Arc::new(FakeMarketAdapter { dm: Arc::clone(&dm) });
+    let execution = Arc::new(FakeExecutionAdapter {
+        accounts: vec!["SIM".to_string()],
+    });
+    let runtime = Arc::new(TqRuntime::with_id("runtime-1", RuntimeMode::Live, market, execution));
+
+    let task = crate::compat::TargetPosTask::new(
+        runtime,
+        "SIM",
+        "SHFE.rb2601",
+        crate::compat::TargetPosTaskOptions::default(),
+    )
+    .await
+    .expect("compat target task should build");
+
+    assert_eq!(task.account_key(), "SIM");
+    assert_eq!(task.symbol(), "SHFE.rb2601");
+}
+
 struct FakeMarketAdapter {
     dm: Arc<DataManager>,
 }
