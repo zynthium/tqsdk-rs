@@ -10,7 +10,8 @@ use tokio::time::{Duration, sleep, timeout};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::runtime::{
     ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection, PlannedOffset, PriceMode,
-    RuntimeError, RuntimeResult, compute_plan, parse_offset_priority, validate_quote_constraints,
+    RuntimeError, RuntimeMode, RuntimeResult, TqRuntime, compute_plan, parse_offset_priority,
+    validate_quote_constraints,
 };
 use crate::types::{
     DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, Position, Quote,
@@ -197,6 +198,90 @@ async fn child_order_runner_waits_for_trade_aggregation_after_finished_order() {
         .expect("runner should succeed");
 }
 
+#[tokio::test]
+async fn target_pos_handle_latest_target_overrides_previous_target() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        true,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .build()
+        .expect("target task should build");
+
+    task.set_target_volume(-1).expect("first target should be accepted");
+    task.set_target_volume(1)
+        .expect("latest target should replace the previous one");
+    task.wait_target_reached()
+        .await
+        .expect("latest target should eventually be reached");
+
+    let position = execution
+        .position("SIM", "SHFE.rb2601")
+        .await
+        .expect("position should be readable");
+    assert_eq!(net_position(&position), 1);
+    assert_eq!(execution.inserted_prices().await, vec![101.0]);
+}
+
+#[tokio::test]
+async fn target_pos_cancel_transitions_to_finished_after_owned_orders_are_closed() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        false,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .build()
+        .expect("target task should build");
+
+    task.set_target_volume(1).expect("target should be accepted");
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(1))
+        .await
+        .expect("first child order should be submitted promptly");
+    assert!(!task.is_finished(), "task should remain active before cancel");
+
+    task.cancel().await.expect("cancel should be accepted");
+    timeout(Duration::from_secs(1), execution.wait_for_cancel_count(1))
+        .await
+        .expect("owned order should be canceled promptly");
+    timeout(Duration::from_secs(1), task.wait_finished())
+        .await
+        .expect("task should transition to finished promptly")
+        .expect("task should finish after owned orders are canceled");
+    assert!(task.is_finished(), "task should report finished after cleanup");
+}
+
 struct FakeMarketAdapter {
     dm: Arc<DataManager>,
     quote: RwLock<Quote>,
@@ -250,27 +335,40 @@ struct FakeExecutionAdapter {
     updates_tx: Sender<String>,
 }
 
-#[derive(Default)]
 struct FakeExecutionState {
     next_order_seq: usize,
     orders: HashMap<String, Order>,
     trades_by_order: HashMap<String, Vec<Trade>>,
     inserted_prices: Vec<f64>,
     cancelled_order_ids: Vec<String>,
+    position: Position,
+    autofill_on_insert: bool,
 }
 
 impl Default for FakeExecutionAdapter {
     fn default() -> Self {
-        let (updates_tx, updates_rx) = bounded(64);
-        Self {
-            state: Mutex::new(FakeExecutionState::default()),
-            updates_rx: Mutex::new(updates_rx),
-            updates_tx,
-        }
+        Self::with_position(make_position("", ""), false)
     }
 }
 
 impl FakeExecutionAdapter {
+    fn with_position(position: Position, autofill_on_insert: bool) -> Self {
+        let (updates_tx, updates_rx) = bounded(64);
+        Self {
+            state: Mutex::new(FakeExecutionState {
+                next_order_seq: 0,
+                orders: HashMap::new(),
+                trades_by_order: HashMap::new(),
+                inserted_prices: Vec::new(),
+                cancelled_order_ids: Vec::new(),
+                position,
+                autofill_on_insert,
+            }),
+            updates_rx: Mutex::new(updates_rx),
+            updates_tx,
+        }
+    }
+
     async fn wait_for_insert_count(&self, expected: usize) {
         loop {
             if self.state.lock().await.inserted_prices.len() >= expected {
@@ -297,8 +395,13 @@ impl FakeExecutionAdapter {
     async fn finish_order(&self, order_id: &str, volume_left: i64, trades: Vec<Trade>) {
         let mut state = self.state.lock().await;
         if let Some(order) = state.orders.get_mut(order_id) {
+            let filled_delta = (order.volume_orign - volume_left) - (order.volume_orign - order.volume_left);
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.volume_left = volume_left;
+            if filled_delta > 0 {
+                let order_snapshot = order.clone();
+                apply_position_fill(&mut state.position, &order_snapshot, filled_delta);
+            }
         }
         state.trades_by_order.insert(order_id.to_string(), trades);
         drop(state);
@@ -335,11 +438,26 @@ impl ExecutionAdapter for FakeExecutionAdapter {
         let mut state = self.state.lock().await;
         state.next_order_seq += 1;
         let order_id = format!("order-{}", state.next_order_seq);
+        let trade_id = format!("trade-{}", state.next_order_seq);
         state.inserted_prices.push(req.limit_price);
-        state.orders.insert(
-            order_id.clone(),
-            make_order(&order_id, req.volume, req.limit_price, ORDER_STATUS_ALIVE, req.volume),
-        );
+        let mut order = make_order(&order_id, req.volume, req.limit_price, ORDER_STATUS_ALIVE, req.volume);
+        order.direction = req.direction.clone();
+        order.offset = req.offset.clone();
+        state.orders.insert(order_id.clone(), order);
+        if state.autofill_on_insert {
+            let order = state
+                .orders
+                .get_mut(&order_id)
+                .expect("inserted order should still exist");
+            order.status = ORDER_STATUS_FINISHED.to_string();
+            order.volume_left = 0;
+            let order_snapshot = order.clone();
+            let trade = make_trade(&order_id, &trade_id, req.volume, req.limit_price);
+            apply_position_fill(&mut state.position, &order_snapshot, req.volume);
+            state.trades_by_order.insert(order_id.clone(), vec![trade]);
+        }
+        drop(state);
+        let _ = self.updates_tx.send(order_id.clone()).await;
         Ok(order_id)
     }
 
@@ -378,6 +496,10 @@ impl ExecutionAdapter for FakeExecutionAdapter {
             .unwrap_or_default())
     }
 
+    async fn position(&self, _account_key: &str, _symbol: &str) -> RuntimeResult<Position> {
+        Ok(self.state.lock().await.position.clone())
+    }
+
     async fn wait_order_update(&self, _account_key: &str, order_id: &str) -> RuntimeResult<()> {
         loop {
             let updated =
@@ -394,6 +516,92 @@ impl ExecutionAdapter for FakeExecutionAdapter {
             }
         }
     }
+}
+
+fn apply_position_fill(position: &mut Position, order: &Order, filled: i64) {
+    match (order.direction.as_str(), order.offset.as_str()) {
+        (DIRECTION_BUY, OFFSET_OPEN) => {
+            position.pos_long_today += filled;
+            position.volume_long_today += filled;
+            position.volume_long = position.volume_long_today + position.volume_long_his;
+        }
+        ("SELL", OFFSET_OPEN) => {
+            position.pos_short_today += filled;
+            position.volume_short_today += filled;
+            position.volume_short = position.volume_short_today + position.volume_short_his;
+        }
+        (DIRECTION_BUY, _) => {
+            let close_today = filled.min(position.pos_short_today);
+            position.pos_short_today -= close_today;
+            position.volume_short_today -= close_today;
+            let close_his = filled - close_today;
+            position.pos_short_his -= close_his;
+            position.volume_short_his -= close_his;
+            position.volume_short = position.volume_short_today + position.volume_short_his;
+        }
+        ("SELL", _) => {
+            let close_today = filled.min(position.pos_long_today);
+            position.pos_long_today -= close_today;
+            position.volume_long_today -= close_today;
+            let close_his = filled - close_today;
+            position.pos_long_his -= close_his;
+            position.volume_long_his -= close_his;
+            position.volume_long = position.volume_long_today + position.volume_long_his;
+        }
+        _ => {}
+    }
+}
+
+fn make_position(exchange_id: &str, instrument_id: &str) -> Position {
+    Position {
+        exchange_id: exchange_id.to_string(),
+        instrument_id: instrument_id.to_string(),
+        user_id: "SIM".to_string(),
+        volume_long_today: 0,
+        volume_long_his: 0,
+        volume_long: 0,
+        volume_long_frozen_today: 0,
+        volume_long_frozen_his: 0,
+        volume_long_frozen: 0,
+        volume_short_today: 0,
+        volume_short_his: 0,
+        volume_short: 0,
+        volume_short_frozen_today: 0,
+        volume_short_frozen_his: 0,
+        volume_short_frozen: 0,
+        volume_long_yd: 0,
+        volume_short_yd: 0,
+        pos_long_his: 0,
+        pos_long_today: 0,
+        pos_short_his: 0,
+        pos_short_today: 0,
+        open_price_long: 0.0,
+        open_price_short: 0.0,
+        open_cost_long: 0.0,
+        open_cost_short: 0.0,
+        position_price_long: 0.0,
+        position_price_short: 0.0,
+        position_cost_long: 0.0,
+        position_cost_short: 0.0,
+        last_price: 0.0,
+        float_profit_long: 0.0,
+        float_profit_short: 0.0,
+        float_profit: 0.0,
+        position_profit_long: 0.0,
+        position_profit_short: 0.0,
+        position_profit: 0.0,
+        margin_long: 0.0,
+        margin_short: 0.0,
+        margin: 0.0,
+        market_value_long: 0.0,
+        market_value_short: 0.0,
+        market_value: 0.0,
+        epoch: None,
+    }
+}
+
+fn net_position(position: &Position) -> i64 {
+    (position.pos_long_today + position.pos_long_his) - (position.pos_short_today + position.pos_short_his)
 }
 
 fn make_order(order_id: &str, volume: i64, limit_price: f64, status: &str, volume_left: i64) -> Order {

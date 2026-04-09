@@ -1,12 +1,14 @@
 use std::sync::Arc;
 
 use crate::runtime::{
-    ExecutionAdapter, MarketAdapter, OrderDirection, PriceMode, RuntimeError, RuntimeResult, VolumeSplitPolicy,
+    ExecutionAdapter, MarketAdapter, OrderDirection, PriceMode, RuntimeError, RuntimeResult, TaskId, TaskRegistry,
+    VolumeSplitPolicy,
 };
 use crate::types::{
     DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, OFFSET_CLOSE, OFFSET_CLOSETODAY, OFFSET_OPEN,
     ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, PRICE_TYPE_LIMIT, Quote, Trade,
 };
+use tokio::sync::watch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OffsetAction {
@@ -32,6 +34,24 @@ pub struct PlannedOrder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedBatch {
     pub orders: Vec<PlannedOrder>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildOrderStatus {
+    Completed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildOrderControl {
+    Run,
+    Stop,
+}
+
+#[derive(Clone)]
+struct ChildOrderOwner {
+    registry: Arc<TaskRegistry>,
+    task_id: TaskId,
 }
 
 impl PlannedOffset {
@@ -63,6 +83,8 @@ pub struct ChildOrderRunner {
     volume: i64,
     split_policy: Option<VolumeSplitPolicy>,
     price_mode: PriceMode,
+    owner: Option<ChildOrderOwner>,
+    control: Option<watch::Receiver<ChildOrderControl>>,
 }
 
 impl ChildOrderRunner {
@@ -91,13 +113,37 @@ impl ChildOrderRunner {
             volume,
             split_policy,
             price_mode,
+            owner: None,
+            control: None,
         }
     }
 
+    pub fn with_owner(mut self, registry: Arc<TaskRegistry>, task_id: TaskId) -> Self {
+        self.owner = Some(ChildOrderOwner { registry, task_id });
+        self
+    }
+
+    pub(crate) fn with_control(mut self, control: watch::Receiver<ChildOrderControl>) -> Self {
+        self.control = Some(control);
+        self
+    }
+
     pub async fn run_until_all_traded(&self) -> RuntimeResult<()> {
+        match self.run().await? {
+            ChildOrderStatus::Completed => Ok(()),
+            ChildOrderStatus::Interrupted => Ok(()),
+        }
+    }
+
+    pub(crate) async fn run(&self) -> RuntimeResult<ChildOrderStatus> {
         let mut remaining = self.volume;
+        let mut control = self.control.clone();
 
         while remaining > 0 {
+            if stop_requested(control.as_ref()) {
+                return Ok(ChildOrderStatus::Interrupted);
+            }
+
             let quote = self.market.latest_quote(&self.symbol).await?;
             let order_price = resolve_order_price(&self.symbol, self.direction, &self.price_mode, &quote)?;
             let order_volume = split_order_volume(remaining, self.split_policy);
@@ -112,7 +158,11 @@ impl ChildOrderRunner {
                 volume: order_volume,
             };
             let order_id = self.execution.insert_order(&self.account_key, &req).await?;
+            if let Some(owner) = &self.owner {
+                owner.registry.bind_order_owner(&order_id, owner.task_id);
+            }
             let mut repriced_or_cancelled = false;
+            let mut interrupted = false;
 
             loop {
                 let order = self.execution.order(&self.account_key, &order_id).await?;
@@ -124,7 +174,18 @@ impl ChildOrderRunner {
                         return Err(RuntimeError::OrderCompletionInvariant { order_id });
                     }
                     remaining -= filled;
+                    if interrupted {
+                        return Ok(ChildOrderStatus::Interrupted);
+                    }
                     break;
+                }
+
+                if stop_requested(control.as_ref()) {
+                    interrupted = true;
+                    if order.status == ORDER_STATUS_ALIVE {
+                        self.execution.cancel_order(&self.account_key, &order_id).await?;
+                        repriced_or_cancelled = true;
+                    }
                 }
 
                 tokio::select! {
@@ -143,11 +204,14 @@ impl ChildOrderRunner {
                             }
                         }
                     }
+                    control_update = wait_control_change(control.as_mut()), if control.is_some() => {
+                        control_update?;
+                    }
                 }
             }
         }
 
-        Ok(())
+        Ok(ChildOrderStatus::Completed)
     }
 }
 
@@ -219,5 +283,21 @@ fn is_price_worse(direction: OrderDirection, old_price: f64, new_price: f64) -> 
     match direction {
         OrderDirection::Buy => new_price > old_price,
         OrderDirection::Sell => new_price < old_price,
+    }
+}
+
+fn stop_requested(control: Option<&watch::Receiver<ChildOrderControl>>) -> bool {
+    control
+        .map(|rx| matches!(*rx.borrow(), ChildOrderControl::Stop))
+        .unwrap_or(false)
+}
+
+async fn wait_control_change(control: Option<&mut watch::Receiver<ChildOrderControl>>) -> RuntimeResult<()> {
+    let Some(control) = control else {
+        return Ok(());
+    };
+
+    match control.changed().await {
+        Ok(()) | Err(_) => Ok(()),
     }
 }

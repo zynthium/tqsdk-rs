@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::types::InsertOrderRequest;
+
 use super::{TargetPosBuilder, TqRuntime};
 
 #[derive(Clone)]
@@ -30,5 +32,12 @@ impl AccountHandle {
 
     pub fn target_pos(&self, symbol: impl Into<String>) -> TargetPosBuilder {
         TargetPosBuilder::new(self.clone(), symbol)
+    }
+
+    pub async fn insert_order(&self, req: &InsertOrderRequest) -> super::RuntimeResult<String> {
+        self.runtime
+            .engine()
+            .insert_manual_order(&self.runtime, &self.account_key, req)
+            .await
     }
 }

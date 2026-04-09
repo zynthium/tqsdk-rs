@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::trade_session::TradeSession;
-use crate::types::{InsertOrderRequest, Order, Trade};
+use crate::types::{InsertOrderRequest, Order, Position, Trade};
 
 use super::{RuntimeError, RuntimeResult};
 
@@ -27,6 +27,10 @@ pub trait ExecutionAdapter: Send + Sync {
 
     async fn trades_by_order(&self, _account_key: &str, _order_id: &str) -> RuntimeResult<Vec<Trade>> {
         Err(RuntimeError::Unsupported("trades_by_order"))
+    }
+
+    async fn position(&self, _account_key: &str, _symbol: &str) -> RuntimeResult<Position> {
+        Err(RuntimeError::Unsupported("position"))
     }
 
     async fn wait_order_update(&self, _account_key: &str, _order_id: &str) -> RuntimeResult<()> {
@@ -93,6 +97,11 @@ impl ExecutionAdapter for LiveExecutionAdapter {
             .into_values()
             .filter(|trade| trade.order_id == order_id)
             .collect())
+    }
+
+    async fn position(&self, account_key: &str, symbol: &str) -> RuntimeResult<Position> {
+        let session = self.session(account_key).await?;
+        Ok(session.get_position(symbol).await?)
     }
 
     async fn wait_order_update(&self, account_key: &str, order_id: &str) -> RuntimeResult<()> {

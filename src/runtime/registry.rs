@@ -133,6 +133,35 @@ impl TaskRegistry {
         let state = self.state.lock().expect("task registry lock poisoned");
         state.order_owners.get(order_id).copied()
     }
+
+    pub fn task_for_symbol(&self, runtime_id: &str, account_key: &str, symbol: &str) -> Option<TaskId> {
+        let key = TaskKey {
+            runtime_id: runtime_id.to_string(),
+            account_key: account_key.to_string(),
+            symbol: symbol.to_string(),
+        };
+        let state = self.state.lock().expect("task registry lock poisoned");
+        state.tasks_by_key.get(&key).map(|registration| registration.task_id)
+    }
+
+    pub fn task_orders(&self, task_id: TaskId) -> Vec<String> {
+        let state = self.state.lock().expect("task registry lock poisoned");
+        state
+            .task_orders
+            .get(&task_id)
+            .map(|order_ids| order_ids.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn unbind_order_owner(&self, order_id: &str) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        let order_id = order_id.to_string();
+        if let Some(task_id) = state.order_owners.remove(&order_id)
+            && let Some(order_ids) = state.task_orders.get_mut(&task_id)
+        {
+            order_ids.remove(&order_id);
+        }
+    }
 }
 
 impl From<&TargetPosConfig> for ConfigFingerprint {

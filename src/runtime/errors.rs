@@ -21,10 +21,18 @@ pub enum RuntimeError {
     AdapterChannelClosed { resource: &'static str },
     #[error("execution adapter could not find order {order_id} for account {account_key}")]
     OrderNotFound { account_key: String, order_id: String },
+    #[error("runtime algorithm task already owns {account_key} {symbol}, manual order is blocked")]
+    ManualOrderConflict { account_key: String, symbol: String },
     #[error("price resolver returned NaN for {symbol} {direction}")]
     InvalidOrderPrice { symbol: String, direction: String },
     #[error("order {order_id} finished with remaining volume but was not repriced or cancelled by the runner")]
     OrderCompletionInvariant { order_id: String },
+    #[error("operation {operation} requires an active tokio runtime")]
+    TokioRuntimeRequired { operation: &'static str },
+    #[error("target position task for {symbol} is already finished")]
+    TargetTaskFinished { symbol: String },
+    #[error("target position task for {symbol} failed: {reason}")]
+    TargetTaskFailed { symbol: String, reason: String },
     #[error(
         "交易所规定 {symbol} 最小市价开仓手数 ({open_min_market_order_volume}) 或最小限价开仓手数 ({open_min_limit_order_volume}) 大于 1，当前 TargetPosTask 规划器暂不支持该规则"
     )]
