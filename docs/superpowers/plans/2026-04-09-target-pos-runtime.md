@@ -166,7 +166,7 @@ git commit -m "feat: add runtime task registry"
 - Modify: `src/runtime/mod.rs`
 - Modify: `src/runtime/tests.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[tokio::test]
@@ -175,13 +175,13 @@ async fn runtime_exposes_account_handle_for_registered_account() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test runtime_exposes_account_handle_for_registered_account --lib`
 
 Expected: FAIL because `TqRuntime` and `AccountHandle` do not exist
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 ```rust
 pub struct TqRuntime {
@@ -197,19 +197,19 @@ pub struct AccountHandle {
 }
 ```
 
-- [ ] **Step 4: Add builder/facade wiring**
+- [x] **Step 4: Add builder/facade wiring**
 
 Run: make `ClientBuilder::build_runtime()` and `Client::into_runtime()` or equivalent compile
 
 Expected: `cargo test` compiles the new entry points without touching networked tests
 
-- [ ] **Step 5: Run tests to verify they pass**
+- [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test runtime_exposes_account_handle_for_registered_account --lib`
 
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/runtime/core.rs src/runtime/account.rs src/runtime/engine.rs src/runtime/market.rs src/runtime/execution.rs src/runtime/modes/mod.rs src/runtime/modes/live.rs src/runtime/mod.rs src/runtime/tests.rs src/client/builder.rs src/client/facade.rs src/client/mod.rs src/lib.rs
@@ -226,7 +226,7 @@ git commit -m "feat: add runtime core and live bridge"
 - Modify: `src/ins/parse.rs`
 - Modify: `src/ins/tests.rs`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -235,13 +235,13 @@ fn quote_parses_open_min_order_volume_fields() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test quote_parses_open_min_order_volume_fields --lib`
 
 Expected: FAIL because the fields are missing from `Quote`
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 ```rust
 pub struct Quote {
@@ -252,7 +252,7 @@ pub struct Quote {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test quote_parses_open_min_order_volume_fields --lib`
 
@@ -275,7 +275,7 @@ git commit -m "feat: expose quote open order volume fields"
 - Modify: `src/runtime/mod.rs`
 - Modify: `src/runtime/account.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
@@ -294,13 +294,13 @@ fn planning_respects_shfe_close_today_vs_close_yesterday() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test offset_priority_parser_accepts_python_compatible_forms --lib`
 
 Expected: FAIL because task parser/planner does not exist
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 ```rust
 pub struct TargetPosBuilder { ... }
@@ -317,7 +317,7 @@ Run: `cargo test planning_ --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/tasks/mod.rs src/runtime/tasks/common.rs src/runtime/tasks/target_pos.rs src/runtime/tasks/tests.rs src/runtime/mod.rs src/runtime/account.rs
@@ -331,7 +331,7 @@ git commit -m "feat: add target position planning primitives"
 - Modify: `src/runtime/tasks/target_pos.rs`
 - Modify: `src/runtime/tasks/tests.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test]
@@ -345,13 +345,13 @@ async fn child_order_runner_waits_for_trade_aggregation_after_finished_order() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test child_order_runner_ --lib`
 
 Expected: FAIL because repricing/completion logic is not implemented
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 ```rust
 struct ChildOrderRunner { ... }
@@ -362,13 +362,13 @@ impl ChildOrderRunner {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test child_order_runner_ --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/tasks/common.rs src/runtime/tasks/target_pos.rs src/runtime/tasks/tests.rs
@@ -385,7 +385,7 @@ git commit -m "feat: add target position child order runner"
 - Modify: `src/runtime/tests.rs`
 - Modify: `src/runtime/tasks/tests.rs`
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test]
@@ -404,13 +404,13 @@ async fn target_pos_cancel_transitions_to_finished_after_owned_orders_are_closed
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test target_pos_handle_ --lib`
 
 Expected: FAIL because lifecycle/conflict rules are incomplete
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 ```rust
 impl TargetPosHandle {
@@ -421,13 +421,13 @@ impl TargetPosHandle {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test target_pos_handle_ --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/engine.rs src/runtime/account.rs src/runtime/registry.rs src/runtime/tasks/target_pos.rs src/runtime/tests.rs src/runtime/tasks/tests.rs
@@ -445,7 +445,7 @@ git commit -m "feat: finalize target position lifecycle and conflicts"
 - Modify: `src/prelude.rs`
 - Modify: `README.md`
 
-- [ ] **Step 1: Write the failing compile test**
+- [x] **Step 1: Write the failing compile test**
 
 ```rust
 #[tokio::test]
@@ -454,13 +454,13 @@ async fn compat_target_pos_task_wraps_runtime_handle() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test compat_target_pos_task_wraps_runtime_handle --lib`
 
 Expected: FAIL because `compat::TargetPosTask` does not exist
 
-- [ ] **Step 3: Write the minimal implementation**
+- [x] **Step 3: Write the minimal implementation**
 
 ```rust
 pub struct TargetPosTask {
@@ -468,13 +468,13 @@ pub struct TargetPosTask {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test compat_target_pos_task_wraps_runtime_handle --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/compat/mod.rs src/compat/target_pos_task.rs src/lib.rs src/prelude.rs README.md
@@ -527,7 +527,7 @@ Run: `cargo test scheduler_ --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/tasks/scheduler.rs src/compat/target_pos_scheduler.rs src/runtime/tasks/mod.rs src/compat/mod.rs src/runtime/tasks/tests.rs README.md
@@ -573,7 +573,7 @@ Run: `cargo test runtime_can_be_constructed_with_backtest_execution_mode --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/modes/backtest.rs src/runtime/modes/mod.rs src/runtime/core.rs src/client/market.rs src/backtest/core.rs src/runtime/tests.rs
@@ -621,7 +621,7 @@ Run: `cargo test backtest_execution --lib`
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/runtime/tasks/target_pos.rs src/runtime/tasks/scheduler.rs src/runtime/tasks/tests.rs examples/backtest.rs README.md
