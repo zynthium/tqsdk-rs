@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use async_channel::{Receiver, Sender, bounded};
 use async_trait::async_trait;
 use serde_json::json;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::time::{Duration, sleep, timeout};
 
 use crate::datamanager::{DataManager, DataManagerConfig};
@@ -282,28 +281,134 @@ async fn target_pos_cancel_transitions_to_finished_after_owned_orders_are_closed
     assert!(task.is_finished(), "task should report finished after cleanup");
 }
 
+#[tokio::test]
+async fn target_pos_handle_runs_same_batch_orders_concurrently() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position_with_long("SHFE", "rb2601", 1, 1),
+        false,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .config(crate::runtime::TargetPosConfig {
+            offset_priority: crate::runtime::OffsetPriority::TodayYesterdayThenOpen,
+            ..crate::runtime::TargetPosConfig::default()
+        })
+        .build()
+        .expect("target task should build");
+
+    task.set_target_volume(-1).expect("target should be accepted");
+
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(3))
+        .await
+        .expect("all same-batch child orders should be submitted without waiting for fills");
+
+    task.cancel().await.expect("cancel should be accepted");
+    timeout(Duration::from_secs(1), task.wait_finished())
+        .await
+        .expect("task should finish after cancel")
+        .expect("task should finish cleanly");
+}
+
+#[tokio::test]
+async fn target_pos_handle_waits_for_prior_batch_before_submitting_next_batch() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position_with_long("SHFE", "rb2601", 1, 1),
+        false,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .config(crate::runtime::TargetPosConfig {
+            offset_priority: crate::runtime::OffsetPriority::TodayYesterdayThenOpenWait,
+            ..crate::runtime::TargetPosConfig::default()
+        })
+        .build()
+        .expect("target task should build");
+
+    task.set_target_volume(-1).expect("target should be accepted");
+
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(2))
+        .await
+        .expect("first batch should submit both close orders");
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        execution.inserted_prices().await.len(),
+        2,
+        "open batch should not start before close batch finishes"
+    );
+
+    let alive_orders = execution.alive_order_ids().await;
+    assert_eq!(alive_orders.len(), 2, "close batch should have two live orders");
+    for (idx, order_id) in alive_orders.iter().enumerate() {
+        execution
+            .finish_order(
+                order_id,
+                0,
+                vec![make_trade(order_id, &format!("trade-{idx}"), 1, 100.0)],
+            )
+            .await;
+    }
+
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(3))
+        .await
+        .expect("open batch should start after close batch finishes");
+
+    task.cancel().await.expect("cancel should be accepted");
+    timeout(Duration::from_secs(1), task.wait_finished())
+        .await
+        .expect("task should finish after cancel")
+        .expect("task should finish cleanly");
+}
+
 struct FakeMarketAdapter {
     dm: Arc<DataManager>,
     quote: RwLock<Quote>,
-    updates_rx: Mutex<Receiver<()>>,
-    updates_tx: Sender<()>,
+    updates_tx: broadcast::Sender<()>,
 }
 
 impl FakeMarketAdapter {
     fn new(initial_quote: Quote) -> Self {
         let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
-        let (updates_tx, updates_rx) = bounded(32);
+        let (updates_tx, _) = broadcast::channel(32);
         Self {
             dm,
             quote: RwLock::new(initial_quote),
-            updates_rx: Mutex::new(updates_rx),
             updates_tx,
         }
     }
 
     async fn update_quote(&self, quote: Quote) {
         *self.quote.write().await = quote;
-        let _ = self.updates_tx.send(()).await;
+        let _ = self.updates_tx.send(());
     }
 }
 
@@ -318,21 +423,16 @@ impl MarketAdapter for FakeMarketAdapter {
     }
 
     async fn wait_quote_update(&self, _symbol: &str) -> RuntimeResult<()> {
-        self.updates_rx
-            .lock()
-            .await
-            .recv()
-            .await
-            .map_err(|_| RuntimeError::AdapterChannelClosed {
-                resource: "fake market updates",
-            })
+        let mut rx = self.updates_tx.subscribe();
+        rx.recv().await.map_err(|_| RuntimeError::AdapterChannelClosed {
+            resource: "fake market updates",
+        })
     }
 }
 
 struct FakeExecutionAdapter {
     state: Mutex<FakeExecutionState>,
-    updates_rx: Mutex<Receiver<String>>,
-    updates_tx: Sender<String>,
+    updates_tx: broadcast::Sender<String>,
 }
 
 struct FakeExecutionState {
@@ -353,7 +453,7 @@ impl Default for FakeExecutionAdapter {
 
 impl FakeExecutionAdapter {
     fn with_position(position: Position, autofill_on_insert: bool) -> Self {
-        let (updates_tx, updates_rx) = bounded(64);
+        let (updates_tx, _) = broadcast::channel(64);
         Self {
             state: Mutex::new(FakeExecutionState {
                 next_order_seq: 0,
@@ -364,7 +464,6 @@ impl FakeExecutionAdapter {
                 position,
                 autofill_on_insert,
             }),
-            updates_rx: Mutex::new(updates_rx),
             updates_tx,
         }
     }
@@ -392,6 +491,21 @@ impl FakeExecutionAdapter {
         state.orders.keys().cloned().max()
     }
 
+    async fn alive_order_ids(&self) -> Vec<String> {
+        let state = self.state.lock().await;
+        state
+            .orders
+            .iter()
+            .filter_map(|(order_id, order)| {
+                if order.status == ORDER_STATUS_ALIVE {
+                    Some(order_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     async fn finish_order(&self, order_id: &str, volume_left: i64, trades: Vec<Trade>) {
         let mut state = self.state.lock().await;
         if let Some(order) = state.orders.get_mut(order_id) {
@@ -405,7 +519,7 @@ impl FakeExecutionAdapter {
         }
         state.trades_by_order.insert(order_id.to_string(), trades);
         drop(state);
-        let _ = self.updates_tx.send(order_id.to_string()).await;
+        let _ = self.updates_tx.send(order_id.to_string());
     }
 
     async fn append_trade(&self, order_id: &str, trade: Trade) {
@@ -416,7 +530,7 @@ impl FakeExecutionAdapter {
             .or_default()
             .push(trade);
         drop(state);
-        let _ = self.updates_tx.send(order_id.to_string()).await;
+        let _ = self.updates_tx.send(order_id.to_string());
     }
 
     async fn inserted_prices(&self) -> Vec<f64> {
@@ -457,7 +571,7 @@ impl ExecutionAdapter for FakeExecutionAdapter {
             state.trades_by_order.insert(order_id.clone(), vec![trade]);
         }
         drop(state);
-        let _ = self.updates_tx.send(order_id.clone()).await;
+        let _ = self.updates_tx.send(order_id.clone());
         Ok(order_id)
     }
 
@@ -468,7 +582,7 @@ impl ExecutionAdapter for FakeExecutionAdapter {
             order.status = ORDER_STATUS_FINISHED.to_string();
         }
         drop(state);
-        let _ = self.updates_tx.send(order_id.to_string()).await;
+        let _ = self.updates_tx.send(order_id.to_string());
         Ok(())
     }
 
@@ -501,16 +615,11 @@ impl ExecutionAdapter for FakeExecutionAdapter {
     }
 
     async fn wait_order_update(&self, _account_key: &str, order_id: &str) -> RuntimeResult<()> {
+        let mut rx = self.updates_tx.subscribe();
         loop {
-            let updated =
-                self.updates_rx
-                    .lock()
-                    .await
-                    .recv()
-                    .await
-                    .map_err(|_| RuntimeError::AdapterChannelClosed {
-                        resource: "fake execution updates",
-                    })?;
+            let updated = rx.recv().await.map_err(|_| RuntimeError::AdapterChannelClosed {
+                resource: "fake execution updates",
+            })?;
             if updated == order_id {
                 return Ok(());
             }
@@ -598,6 +707,16 @@ fn make_position(exchange_id: &str, instrument_id: &str) -> Position {
         market_value: 0.0,
         epoch: None,
     }
+}
+
+fn make_position_with_long(exchange_id: &str, instrument_id: &str, today: i64, his: i64) -> Position {
+    let mut position = make_position(exchange_id, instrument_id);
+    position.pos_long_today = today;
+    position.pos_long_his = his;
+    position.volume_long_today = today;
+    position.volume_long_his = his;
+    position.volume_long = today + his;
+    position
 }
 
 fn net_position(position: &Position) -> i64 {

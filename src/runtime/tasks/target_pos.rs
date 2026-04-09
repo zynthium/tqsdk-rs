@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 use crate::runtime::{AccountHandle, OrderDirection, RuntimeError, RuntimeResult, TargetPosConfig};
 use crate::types::{ORDER_STATUS_ALIVE, Position, Quote};
@@ -278,49 +279,73 @@ impl TargetPosTaskInner {
             }
 
             for batch in plan {
-                for order in batch.orders {
-                    if self.command_changed(command_rx, request.seq) {
-                        return Ok(());
-                    }
-
-                    let (control_tx, control_rx) = watch::channel(ChildOrderControl::Run);
-                    let mut control_commands = command_rx.clone();
-                    let forward = tokio::spawn(async move {
-                        loop {
-                            if child_order_should_stop(&control_commands, request.seq) {
-                                let _ = control_tx.send(ChildOrderControl::Stop);
-                                break;
-                            }
-                            if control_commands.changed().await.is_err() {
-                                let _ = control_tx.send(ChildOrderControl::Stop);
-                                break;
-                            }
-                        }
-                    });
-
-                    let runner = ChildOrderRunner::new(
-                        runtime.market(),
-                        runtime.execution(),
-                        self.account.account_key(),
-                        &self.symbol,
-                        order.direction,
-                        order.offset,
-                        order.volume,
-                        self.config.split_policy,
-                        self.config.price_mode.clone(),
-                    )
-                    .with_owner(runtime.registry(), self.task_id)
-                    .with_control(control_rx);
-
-                    let outcome = runner.run().await?;
-                    forward.abort();
-
-                    if matches!(outcome, ChildOrderStatus::Interrupted) {
-                        return Ok(());
-                    }
+                let interrupted = self.run_batch(request, batch, command_rx).await?;
+                if interrupted {
+                    return Ok(());
                 }
             }
         }
+    }
+
+    async fn run_batch(
+        &self,
+        request: TargetRequest,
+        batch: PlannedBatch,
+        command_rx: &watch::Receiver<TaskCommand>,
+    ) -> RuntimeResult<bool> {
+        if self.command_changed(command_rx, request.seq) {
+            return Ok(true);
+        }
+
+        let runtime = self.account.runtime();
+        let (control_tx, control_rx) = watch::channel(ChildOrderControl::Run);
+        let mut control_commands = command_rx.clone();
+        let forward = tokio::spawn(async move {
+            loop {
+                if child_order_should_stop(&control_commands, request.seq) {
+                    let _ = control_tx.send(ChildOrderControl::Stop);
+                    break;
+                }
+                if control_commands.changed().await.is_err() {
+                    let _ = control_tx.send(ChildOrderControl::Stop);
+                    break;
+                }
+            }
+        });
+
+        let mut runners = JoinSet::new();
+        for order in batch.orders {
+            let runner = ChildOrderRunner::new(
+                runtime.market(),
+                runtime.execution(),
+                self.account.account_key(),
+                &self.symbol,
+                order.direction,
+                order.offset,
+                order.volume,
+                self.config.split_policy,
+                self.config.price_mode.clone(),
+            )
+            .with_owner(runtime.registry(), self.task_id)
+            .with_control(control_rx.clone());
+
+            runners.spawn(async move { runner.run().await });
+        }
+
+        let mut interrupted = false;
+        while let Some(joined) = runners.join_next().await {
+            let outcome = joined.map_err(|err| RuntimeError::TargetTaskFailed {
+                symbol: self.symbol.clone(),
+                reason: format!("child order runner join failed: {err}"),
+            })??;
+
+            if matches!(outcome, ChildOrderStatus::Interrupted) {
+                interrupted = true;
+            }
+        }
+
+        forward.abort();
+        Ok(interrupted)
     }
 
     fn command_changed(&self, command_rx: &watch::Receiver<TaskCommand>, request_seq: u64) -> bool {
