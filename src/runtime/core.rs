@@ -2,8 +2,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::datamanager::DataManager;
-
 use super::{
     AccountHandle, ExecutionAdapter, ExecutionEngine, MarketAdapter, RuntimeError, RuntimeMode, RuntimeResult,
     TaskRegistry,
@@ -14,7 +12,6 @@ static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 pub struct TqRuntime {
     id: String,
     mode: RuntimeMode,
-    dm: Arc<DataManager>,
     registry: Arc<TaskRegistry>,
     market: Arc<dyn MarketAdapter>,
     execution: Arc<dyn ExecutionAdapter>,
@@ -34,13 +31,11 @@ impl TqRuntime {
         market: Arc<dyn MarketAdapter>,
         execution: Arc<dyn ExecutionAdapter>,
     ) -> Self {
-        let dm = market.dm();
         let accounts = execution.known_accounts().into_iter().collect();
 
         Self {
             id: id.into(),
             mode,
-            dm,
             registry: Arc::new(TaskRegistry::default()),
             market,
             execution,
@@ -55,10 +50,6 @@ impl TqRuntime {
 
     pub fn mode(&self) -> RuntimeMode {
         self.mode
-    }
-
-    pub fn dm(&self) -> Arc<DataManager> {
-        Arc::clone(&self.dm)
     }
 
     pub fn registry(&self) -> Arc<TaskRegistry> {

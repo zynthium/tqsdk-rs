@@ -7,7 +7,6 @@ use serde_json::json;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::time::{Duration, sleep, timeout};
 
-use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::runtime::{
     BacktestExecutionAdapter, ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection,
     PlannedOffset, PriceMode, RuntimeError, RuntimeMode, RuntimeResult, TargetPosScheduleStep, TqRuntime, compute_plan,
@@ -756,7 +755,6 @@ async fn scheduler_runs_under_backtest_execution() {
 }
 
 struct FakeMarketAdapter {
-    dm: Arc<DataManager>,
     quote: RwLock<Quote>,
     trading_time: RwLock<Option<serde_json::Value>>,
     updates_tx: broadcast::Sender<()>,
@@ -772,10 +770,8 @@ impl FakeMarketAdapter {
     }
 
     fn with_optional_trading_time(initial_quote: Quote, trading_time: Option<serde_json::Value>) -> Self {
-        let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
         let (updates_tx, _) = broadcast::channel(32);
         Self {
-            dm,
             quote: RwLock::new(initial_quote),
             trading_time: RwLock::new(trading_time),
             updates_tx,
@@ -790,10 +786,6 @@ impl FakeMarketAdapter {
 
 #[async_trait]
 impl MarketAdapter for FakeMarketAdapter {
-    fn dm(&self) -> Arc<DataManager> {
-        Arc::clone(&self.dm)
-    }
-
     async fn latest_quote(&self, _symbol: &str) -> RuntimeResult<Quote> {
         Ok(self.quote.read().await.clone())
     }

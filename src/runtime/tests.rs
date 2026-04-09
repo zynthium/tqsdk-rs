@@ -2,12 +2,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::Value;
+
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::runtime::{
     BacktestExecutionAdapter, ExecutionAdapter, MarketAdapter, OffsetPriority, PriceMode, RuntimeError, RuntimeMode,
     TargetPosConfig, TargetPosScheduleStep, TaskRegistry, TqRuntime,
 };
-use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT};
+use crate::types::{DIRECTION_BUY, InsertOrderRequest, Quote, OFFSET_OPEN, PRICE_TYPE_LIMIT};
 use async_trait::async_trait;
 
 #[test]
@@ -80,6 +82,18 @@ fn task_registry_tracks_order_owner() {
     registry.bind_order_owner("order-1", task.task_id);
 
     assert_eq!(registry.order_owner("order-1"), Some(task.task_id));
+}
+
+#[test]
+fn runtime_accepts_market_adapter_without_datamanager() {
+    let runtime = TqRuntime::new(
+        RuntimeMode::Backtest,
+        Arc::new(StubMarket::default()),
+        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
+    );
+
+    assert_eq!(runtime.mode(), RuntimeMode::Backtest);
+    assert!(runtime.id().starts_with("runtime-"));
 }
 
 #[tokio::test]
@@ -264,8 +278,43 @@ struct FakeMarketAdapter {
 
 #[async_trait]
 impl MarketAdapter for FakeMarketAdapter {
-    fn dm(&self) -> Arc<DataManager> {
-        Arc::clone(&self.dm)
+    async fn latest_quote(&self, symbol: &str) -> crate::runtime::RuntimeResult<Quote> {
+        Ok(self.dm.get_quote_data(symbol)?)
+    }
+
+    async fn wait_quote_update(&self, symbol: &str) -> crate::runtime::RuntimeResult<()> {
+        let rx = self.dm.watch(vec!["quotes".to_string(), symbol.to_string()]);
+        rx.recv()
+            .await
+            .map(|_| ())
+            .map_err(|_| RuntimeError::AdapterChannelClosed {
+                resource: "market quote updates",
+            })
+    }
+
+    async fn trading_time(&self, symbol: &str) -> crate::runtime::RuntimeResult<Option<Value>> {
+        Ok(self.dm.get_by_path(&["quotes", symbol, "trading_time"]))
+    }
+}
+
+#[derive(Default)]
+struct StubMarket;
+
+#[async_trait]
+impl MarketAdapter for StubMarket {
+    async fn latest_quote(&self, symbol: &str) -> crate::runtime::RuntimeResult<Quote> {
+        Ok(Quote {
+            instrument_id: symbol.to_string(),
+            ..Quote::default()
+        })
+    }
+
+    async fn wait_quote_update(&self, _symbol: &str) -> crate::runtime::RuntimeResult<()> {
+        Ok(())
+    }
+
+    async fn trading_time(&self, _symbol: &str) -> crate::runtime::RuntimeResult<Option<Value>> {
+        Ok(None)
     }
 }
 

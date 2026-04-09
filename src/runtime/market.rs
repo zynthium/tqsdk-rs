@@ -9,25 +9,11 @@ use super::{RuntimeError, RuntimeResult};
 
 #[async_trait]
 pub trait MarketAdapter: Send + Sync {
-    fn dm(&self) -> Arc<DataManager>;
+    async fn latest_quote(&self, symbol: &str) -> RuntimeResult<Quote>;
 
-    async fn latest_quote(&self, symbol: &str) -> RuntimeResult<Quote> {
-        Ok(self.dm().get_quote_data(symbol)?)
-    }
+    async fn wait_quote_update(&self, symbol: &str) -> RuntimeResult<()>;
 
-    async fn wait_quote_update(&self, symbol: &str) -> RuntimeResult<()> {
-        let rx = self.dm().watch(vec!["quotes".to_string(), symbol.to_string()]);
-        rx.recv()
-            .await
-            .map(|_| ())
-            .map_err(|_| RuntimeError::AdapterChannelClosed {
-                resource: "market quote updates",
-            })
-    }
-
-    async fn trading_time(&self, symbol: &str) -> RuntimeResult<Option<Value>> {
-        Ok(self.dm().get_by_path(&["quotes", symbol, "trading_time"]))
-    }
+    async fn trading_time(&self, symbol: &str) -> RuntimeResult<Option<Value>>;
 }
 
 pub struct LiveMarketAdapter {
@@ -42,7 +28,21 @@ impl LiveMarketAdapter {
 
 #[async_trait]
 impl MarketAdapter for LiveMarketAdapter {
-    fn dm(&self) -> Arc<DataManager> {
-        Arc::clone(&self.dm)
+    async fn latest_quote(&self, symbol: &str) -> RuntimeResult<Quote> {
+        Ok(self.dm.get_quote_data(symbol)?)
+    }
+
+    async fn wait_quote_update(&self, symbol: &str) -> RuntimeResult<()> {
+        let rx = self.dm.watch(vec!["quotes".to_string(), symbol.to_string()]);
+        rx.recv()
+            .await
+            .map(|_| ())
+            .map_err(|_| RuntimeError::AdapterChannelClosed {
+                resource: "market quote updates",
+            })
+    }
+
+    async fn trading_time(&self, symbol: &str) -> RuntimeResult<Option<Value>> {
+        Ok(self.dm.get_by_path(&["quotes", symbol, "trading_time"]))
     }
 }
