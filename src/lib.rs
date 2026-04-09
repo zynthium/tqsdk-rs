@@ -42,6 +42,7 @@ pub mod utils;
 pub mod types;
 
 pub mod prelude;
+pub mod replay;
 
 // 数据管理器
 pub mod datamanager;
@@ -88,6 +89,10 @@ pub use errors::{Result, TqError};
 pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};
 pub use quote::QuoteSubscription;
+pub use replay::{
+    BacktestResult, BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayHandleId, ReplayQuote,
+    ReplayStep,
+};
 pub use runtime::{
     AccountHandle, BacktestExecutionAdapter, BacktestRuntimeMode, OffsetPriority, OrderDirection, PriceMode,
     PriceResolver, RuntimeError, RuntimeMode, RuntimeResult, TargetPosBuilder, TargetPosConfig,
