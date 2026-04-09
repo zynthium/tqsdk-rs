@@ -6,6 +6,7 @@
 - `init_market_backtest` 和 `init_market` 的区别
 - `BacktestHandle` 怎么推进
 - live 和 backtest 怎么切换
+- 回测下怎么挂 `TqRuntime` 跑 `TargetPosTask` / `TargetPosScheduler`
 
 ## 基本思路
 
@@ -25,6 +26,8 @@ Client::builder
 - `BacktestHandle::next`
 - `BacktestHandle::peek`
 - `BacktestHandle::current_dt`
+- `BacktestExecutionAdapter`
+- `TqRuntime::with_id(..., RuntimeMode::Backtest, ...)`
 
 ## 用户提问时的回答重点
 
@@ -35,6 +38,30 @@ Client::builder
 ### “回测下还能不能用 quote / series / ins？”
 
 可以，但前提是已经通过回测初始化行情链路。
+
+### “回测下能不能跑 TargetPosTask / TargetPosScheduler？”
+
+可以，但要区分两层：
+
+- `BacktestHandle` 负责推进市场时间
+- `TqRuntime + BacktestExecutionAdapter` 负责任务执行
+
+常用 wiring：
+
+```rust
+use std::sync::Arc;
+use tqsdk_rs::prelude::*;
+use tqsdk_rs::runtime::LiveMarketAdapter;
+
+fn build_backtest_runtime(backtest: &BacktestHandle) -> Arc<TqRuntime> {
+    Arc::new(TqRuntime::with_id(
+        "backtest-runtime",
+        RuntimeMode::Backtest,
+        Arc::new(LiveMarketAdapter::new(backtest.dm())),
+        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
+    ))
+}
+```
 
 ### “怎么在 live 和 backtest 间切换？”
 
@@ -62,3 +89,7 @@ Client::builder
 - 数据推进方式不同
 - 时间语义不同
 - 交易链路和权限语义也可能不同
+
+对于 target-pos 任务，还要补一句：
+
+- `BacktestExecutionAdapter` 当前是内存内立即成交模型，不是完整交易所撮合模拟器

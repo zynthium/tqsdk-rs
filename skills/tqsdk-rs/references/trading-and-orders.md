@@ -7,6 +7,8 @@
 - `TradeSessionOptions` / `TQ_TD_URL` 怎么覆盖交易地址
 - 为什么交易回调没有触发
 
+如果用户问的是“目标净持仓”“Python `TargetPosTask` 对齐”“分时调仓 scheduler”，不要停在本文件，改读 `runtime-and-target-pos.md`。
+
 ## 交易链路
 
 ```text
@@ -17,6 +19,8 @@ Client::builder
   -> connect
   -> insert_order / cancel_order / get_*
 ```
+
+这条链路讲的是手工交易，不是 target-pos 任务运行时。
 
 ## 创建交易会话
 
@@ -130,3 +134,7 @@ session.cancel_order(&order_id).await?;
 ### “交易是不是依赖 `init_market()`”
 
 不要混答。`TradeSession` 和行情初始化是相关但独立的两条链路。
+
+### “我想用目标持仓，不想手动算开平今昨”
+
+不要继续堆 `TradeSession::insert_order` 示例。直接切到 `TqRuntime` + `TargetPosTask` / `TargetPosScheduler`。

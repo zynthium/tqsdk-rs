@@ -22,11 +22,24 @@
   - 下单、撤单、查询
   - `TQ_TD_URL` / `TradeSessionOptions` 风格
 
+## TargetPos / Runtime
+
+- `README.md`
+  - `TargetPosTask` compat facade
+  - `TargetPosScheduler` compat facade
+  - backtest runtime wiring 片段
+- `src/runtime/`
+  - `TqRuntime`
+  - `AccountHandle`
+  - `TargetPosTask` / `TargetPosScheduler`
+  - `BacktestExecutionAdapter`
+
 ## 回测
 
 - `examples/backtest.rs`
   - 回测初始化
   - 回放与推进
+  - build backtest runtime helper
 
 ## 合约与基础数据
 
@@ -47,5 +60,6 @@
 - K线 / Tick：`src/series/`
 - 合约与基础数据：`src/ins/`
 - 交易：`src/trade_session/`
+- 目标持仓运行时：`src/runtime/`
 - 认证：`src/auth/`
 - 回测：`src/backtest/`

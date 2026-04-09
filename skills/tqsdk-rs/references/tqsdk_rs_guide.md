@@ -7,9 +7,11 @@
 最重要的心智是：
 
 - 订阅消费围绕 `QuoteSubscription` / `SeriesSubscription`
-- 交易入口围绕 `TradeSession`
+- 手工交易入口围绕 `TradeSession`
 - 配置入口围绕 `Client::builder + EndpointConfig`
 - 回测推进围绕 `BacktestHandle`
+- 目标持仓任务入口围绕 `TqRuntime` / `AccountHandle`，但这不是大多数问题的默认起点
+- target-pos 回测执行围绕 `BacktestHandle + TqRuntime + BacktestExecutionAdapter`
 
 ## 快速定位
 
@@ -24,6 +26,9 @@
 | K线 / Tick / 历史序列 | `series()` |
 | 合约、结算价、排名、交易日历 | `ins()` |
 | 创建交易会话 | `create_trade_session` / `create_trade_session_with_options` |
+| 创建目标持仓 runtime | `Client::into_runtime`（仅目标持仓相关时展开） / `ClientBuilder::build_runtime`（runtime 外壳） |
+| 创建目标持仓任务 | `runtime.account(...)? .target_pos(...)` / `TargetPosTask::new(...)` |
+| 创建调仓 scheduler | `runtime.account(...)? .target_pos_scheduler(...)` / `TargetPosScheduler::new(...)` |
 | 控制回测推进 | `BacktestHandle` |
 
 ## 推荐初始化模板
@@ -205,6 +210,20 @@ session.cancel_order(&order_id).await?;
 3. `connect()`
 4. 下单 / 撤单 / 主动查询
 
+## Runtime / TargetPos
+
+这是特定能力分支，不是全局默认入口。
+
+如果用户问的是 Python `TargetPosTask` 对齐、目标净持仓、时间分片调仓，不要继续讲 `TradeSession` 主路径，直接切到：
+
+- `Client::into_runtime`
+- `ClientBuilder::build_runtime`（仅在用户明确问这个 API 时解释其当前语义）
+- `runtime.account(account_key)?`
+- `account.target_pos(symbol)`
+- `account.target_pos_scheduler(symbol)`
+- `TargetPosTask::new(...)`
+- `TargetPosScheduler::new(...)`
+
 ## 回测
 
 入口：
@@ -220,6 +239,13 @@ session.cancel_order(&order_id).await?;
 
 ```text
 builder -> build -> init_market_backtest -> series/quote/ins -> BacktestHandle
+```
+
+如果用户要“回测 + 目标持仓任务”，要补一句：
+
+```text
+BacktestHandle 推进市场时间
++ TqRuntime::with_id(..., RuntimeMode::Backtest, LiveMarketAdapter, BacktestExecutionAdapter)
 ```
 
 ## 常见坑
@@ -238,3 +264,6 @@ builder -> build -> init_market_backtest -> series/quote/ins -> BacktestHandle
 
 ### 5. 想做 DataFrame 分析
 提醒用户需要启用 `polars` feature。
+
+### 6. 用户问 Python `TargetPosTask` 在 Rust 里的对应物
+直接回答 `TqRuntime` + `TargetPosTask` / `TargetPosScheduler`，不要再说“Rust 暂时没有”。
