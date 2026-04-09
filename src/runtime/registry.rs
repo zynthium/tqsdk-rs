@@ -45,6 +45,8 @@ struct RegistryState {
     next_task_id: u64,
     tasks_by_key: HashMap<TaskKey, TaskRegistration>,
     tasks_by_id: HashMap<TaskId, TaskRegistration>,
+    manual_guards_by_key: HashMap<TaskKey, TaskId>,
+    manual_guard_keys_by_id: HashMap<TaskId, TaskKey>,
     order_owners: HashMap<String, TaskId>,
     task_orders: HashMap<TaskId, HashSet<String>>,
 }
@@ -74,6 +76,14 @@ impl TaskRegistry {
         let fingerprint = ConfigFingerprint::from(config);
         let mut state = self.state.lock().expect("task registry lock poisoned");
 
+        if state.manual_guards_by_key.contains_key(&key) {
+            return Err(RuntimeError::TaskConflict {
+                runtime_id: key.runtime_id,
+                account_key: key.account_key,
+                symbol: key.symbol,
+            });
+        }
+
         if let Some(existing) = state.tasks_by_key.get(&key) {
             if existing.fingerprint == fingerprint {
                 return Ok(RegisteredTask {
@@ -102,11 +112,49 @@ impl TaskRegistry {
         Ok(RegisteredTask { task_id, created: true })
     }
 
+    pub fn register_manual_order_guard(
+        &self,
+        runtime_id: &str,
+        account_key: &str,
+        symbol: &str,
+    ) -> RuntimeResult<TaskId> {
+        let key = TaskKey {
+            runtime_id: runtime_id.to_string(),
+            account_key: account_key.to_string(),
+            symbol: symbol.to_string(),
+        };
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+
+        if state.tasks_by_key.contains_key(&key) || state.manual_guards_by_key.contains_key(&key) {
+            return Err(RuntimeError::TaskConflict {
+                runtime_id: key.runtime_id,
+                account_key: key.account_key,
+                symbol: key.symbol,
+            });
+        }
+
+        state.next_task_id += 1;
+        let task_id = TaskId(state.next_task_id);
+        state.manual_guards_by_key.insert(key.clone(), task_id);
+        state.manual_guard_keys_by_id.insert(task_id, key);
+        Ok(task_id)
+    }
+
+    pub fn allocate_task_id(&self) -> TaskId {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        state.next_task_id += 1;
+        TaskId(state.next_task_id)
+    }
+
     pub fn unregister_task(&self, task_id: TaskId) {
         let mut state = self.state.lock().expect("task registry lock poisoned");
 
         if let Some(registration) = state.tasks_by_id.remove(&task_id) {
             state.tasks_by_key.remove(&registration.key);
+        }
+
+        if let Some(key) = state.manual_guard_keys_by_id.remove(&task_id) {
+            state.manual_guards_by_key.remove(&key);
         }
 
         if let Some(order_ids) = state.task_orders.remove(&task_id) {
@@ -141,7 +189,11 @@ impl TaskRegistry {
             symbol: symbol.to_string(),
         };
         let state = self.state.lock().expect("task registry lock poisoned");
-        state.tasks_by_key.get(&key).map(|registration| registration.task_id)
+        state
+            .tasks_by_key
+            .get(&key)
+            .map(|registration| registration.task_id)
+            .or_else(|| state.manual_guards_by_key.get(&key).copied())
     }
 
     pub fn task_orders(&self, task_id: TaskId) -> Vec<String> {

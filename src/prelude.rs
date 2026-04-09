@@ -1,8 +1,10 @@
 pub use crate::{
-    AccountHandle, Authenticator, BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime, Client, ClientConfig,
-    ClientOption, DataManager, DataManagerConfig, EndpointConfig, InsAPI, OffsetPriority, OrderDirection, PriceMode,
-    QuoteSubscription, Result, RuntimeError, RuntimeMode, RuntimeResult, SeriesAPI, SeriesCachePolicy,
-    SeriesSubscription, TargetPosBuilder, TargetPosConfig, TargetPosHandle, TargetPosTask, TargetPosTaskOptions,
+    AccountHandle, Authenticator, BacktestConfig, BacktestEvent, BacktestExecutionAdapter, BacktestHandle,
+    BacktestRuntimeMode, BacktestTime, Client, ClientConfig, ClientOption, DataManager, DataManagerConfig,
+    EndpointConfig, InsAPI, OffsetPriority, OrderDirection, PriceMode, QuoteSubscription, Result, RuntimeError,
+    RuntimeMode, RuntimeResult, SeriesAPI, SeriesCachePolicy, SeriesSubscription, TargetPosBuilder, TargetPosConfig,
+    TargetPosExecutionReport, TargetPosHandle, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
+    TargetPosSchedulerConfig, TargetPosSchedulerHandle, TargetPosSchedulerOptions, TargetPosTask, TargetPosTaskOptions,
     TqError, TqRuntime, TqWebsocket, TradeSession, TradeSessionOptions, VolumeSplitPolicy, create_logger_layer,
     init_logger,
 };

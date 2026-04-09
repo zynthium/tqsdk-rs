@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -8,9 +9,9 @@ use tokio::time::{Duration, sleep, timeout};
 
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::runtime::{
-    ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection, PlannedOffset, PriceMode,
-    RuntimeError, RuntimeMode, RuntimeResult, TqRuntime, compute_plan, parse_offset_priority,
-    validate_quote_constraints,
+    BacktestExecutionAdapter, ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection,
+    PlannedOffset, PriceMode, RuntimeError, RuntimeMode, RuntimeResult, TargetPosScheduleStep, TqRuntime, compute_plan,
+    parse_offset_priority, validate_quote_constraints,
 };
 use crate::types::{
     DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, Position, Quote,
@@ -389,19 +390,394 @@ async fn target_pos_handle_waits_for_prior_batch_before_submitting_next_batch() 
         .expect("task should finish cleanly");
 }
 
+#[tokio::test]
+async fn scheduler_runs_deadline_bounded_steps_then_finishes_last_step_on_target() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        false,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let scheduler = account
+        .target_pos_scheduler("SHFE.rb2601")
+        .steps(vec![
+            TargetPosScheduleStep {
+                interval: StdDuration::from_millis(50),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Passive),
+            },
+            TargetPosScheduleStep {
+                interval: StdDuration::from_millis(50),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Active),
+            },
+        ])
+        .build()
+        .expect("scheduler should build");
+
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(1))
+        .await
+        .expect("first step should submit an order");
+    timeout(Duration::from_secs(1), execution.wait_for_cancel_count(1))
+        .await
+        .expect("first step should stop at deadline and cancel outstanding work");
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(2))
+        .await
+        .expect("last step should continue with a new target task");
+
+    let last_order_id = execution.latest_order_id().await.expect("last order should exist");
+    execution
+        .finish_order(
+            &last_order_id,
+            0,
+            vec![make_trade(&last_order_id, "trade-final", 1, 101.0)],
+        )
+        .await;
+
+    timeout(Duration::from_secs(1), scheduler.wait_finished())
+        .await
+        .expect("scheduler should finish once last step reaches target")
+        .expect("scheduler should finish cleanly");
+    assert!(scheduler.is_finished(), "scheduler should report finished");
+
+    let position = execution
+        .position("SIM", "SHFE.rb2601")
+        .await
+        .expect("position should be readable");
+    assert_eq!(net_position(&position), 1);
+}
+
+#[tokio::test]
+async fn scheduler_deadline_uses_trading_time_ranges_instead_of_counting_breaks() {
+    let market = Arc::new(FakeMarketAdapter::with_trading_time(
+        Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            datetime: "2026-04-09 11:29:30.000000".to_string(),
+            ask_price1: 101.0,
+            bid_price1: 100.0,
+            last_price: 100.0,
+            ..Quote::default()
+        },
+        json!({
+            "day": [["09:00:00", "11:30:00"], ["13:30:00", "15:00:00"]],
+            "night": []
+        }),
+    ));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        false,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market.clone(),
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let scheduler = account
+        .target_pos_scheduler("SHFE.rb2601")
+        .steps(vec![
+            TargetPosScheduleStep {
+                interval: StdDuration::from_secs(60),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Passive),
+            },
+            TargetPosScheduleStep {
+                interval: StdDuration::from_secs(1),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Active),
+            },
+        ])
+        .build()
+        .expect("scheduler should build");
+
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(1))
+        .await
+        .expect("first step should submit an order");
+
+    market
+        .update_quote(Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            datetime: "2026-04-09 13:30:01.000000".to_string(),
+            ask_price1: 101.0,
+            bid_price1: 100.0,
+            last_price: 100.0,
+            ..Quote::default()
+        })
+        .await;
+
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        execution.cancelled_order_ids().await.len(),
+        0,
+        "crossing a non-trading break must not consume the full scheduler interval"
+    );
+    assert_eq!(
+        execution.inserted_prices().await.len(),
+        1,
+        "next step should not start until enough trading time has elapsed"
+    );
+
+    market
+        .update_quote(Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            datetime: "2026-04-09 13:30:30.000000".to_string(),
+            ask_price1: 101.0,
+            bid_price1: 100.0,
+            last_price: 100.0,
+            ..Quote::default()
+        })
+        .await;
+
+    timeout(Duration::from_secs(1), execution.wait_for_cancel_count(1))
+        .await
+        .expect("deadline should elapse once sixty trading seconds accumulate");
+    timeout(Duration::from_secs(1), execution.wait_for_insert_count(2))
+        .await
+        .expect("second step should begin after the deadline");
+
+    let last_order_id = execution.latest_order_id().await.expect("last order should exist");
+    execution
+        .finish_order(
+            &last_order_id,
+            0,
+            vec![make_trade(&last_order_id, "trade-after-break", 1, 101.0)],
+        )
+        .await;
+
+    timeout(Duration::from_secs(1), scheduler.wait_finished())
+        .await
+        .expect("scheduler should finish once final step reaches target")
+        .expect("scheduler should finish cleanly");
+}
+
+#[tokio::test]
+async fn scheduler_collects_trade_records_into_execution_report() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        true,
+    ));
+    let runtime = Arc::new(TqRuntime::with_id("runtime-1", RuntimeMode::Live, market, execution));
+    let account = runtime.account("SIM").expect("account should exist");
+    let scheduler = account
+        .target_pos_scheduler("SHFE.rb2601")
+        .steps(vec![
+            TargetPosScheduleStep {
+                interval: StdDuration::from_millis(30),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Active),
+            },
+            TargetPosScheduleStep {
+                interval: StdDuration::from_millis(30),
+                target_volume: 2,
+                price_mode: Some(PriceMode::Active),
+            },
+        ])
+        .build()
+        .expect("scheduler should build");
+
+    timeout(Duration::from_secs(1), scheduler.wait_finished())
+        .await
+        .expect("scheduler should finish")
+        .expect("scheduler should finish cleanly");
+
+    let report = scheduler.execution_report();
+    assert_eq!(report.trades.len(), 2, "two steps should contribute two trades");
+    assert_eq!(
+        report.trades.iter().map(|trade| trade.volume).sum::<i64>(),
+        2,
+        "execution report should aggregate traded volume across steps"
+    );
+}
+
+#[tokio::test]
+async fn target_pos_task_runs_under_backtest_execution() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        datetime: "2026-04-09 09:00:00.000000".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Backtest,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .build()
+        .expect("target task should build");
+
+    task.set_target_volume(1).expect("target should be accepted");
+    task.wait_target_reached()
+        .await
+        .expect("backtest execution should reach target");
+
+    let position = execution
+        .position("SIM", "SHFE.rb2601")
+        .await
+        .expect("position should be readable");
+    assert_eq!(net_position(&position), 1);
+}
+
+#[tokio::test]
+async fn wait_target_reached_returns_failure_when_task_exits_with_error() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        datetime: "2026-04-09 09:00:00.000000".to_string(),
+        open_min_market_order_volume: 2,
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Backtest,
+        market,
+        execution,
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .build()
+        .expect("target task should build");
+
+    task.set_target_volume(1).expect("target should be accepted");
+    let err = timeout(Duration::from_secs(1), task.wait_target_reached())
+        .await
+        .expect("wait_target_reached should not hang on task failure")
+        .expect_err("task should fail because quote constraint is unsupported");
+    assert!(matches!(err, RuntimeError::TargetTaskFailed { .. }));
+}
+
+#[tokio::test]
+async fn scheduler_runs_under_backtest_execution() {
+    let market = Arc::new(FakeMarketAdapter::with_trading_time(
+        Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            datetime: "2026-04-09 11:29:30.000000".to_string(),
+            ask_price1: 101.0,
+            bid_price1: 100.0,
+            last_price: 100.0,
+            ..Quote::default()
+        },
+        json!({
+            "day": [["09:00:00", "11:30:00"], ["13:30:00", "15:00:00"]],
+            "night": []
+        }),
+    ));
+    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Backtest,
+        market.clone(),
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let scheduler = account
+        .target_pos_scheduler("SHFE.rb2601")
+        .steps(vec![
+            TargetPosScheduleStep {
+                interval: StdDuration::from_secs(60),
+                target_volume: 0,
+                price_mode: None,
+            },
+            TargetPosScheduleStep {
+                interval: StdDuration::from_secs(1),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Active),
+            },
+        ])
+        .build()
+        .expect("scheduler should build");
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !scheduler.is_finished(),
+        "scheduler should still be waiting during the midday break"
+    );
+
+    market
+        .update_quote(Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            datetime: "2026-04-09 13:30:30.000000".to_string(),
+            ask_price1: 101.0,
+            bid_price1: 100.0,
+            last_price: 100.0,
+            ..Quote::default()
+        })
+        .await;
+
+    timeout(Duration::from_secs(1), scheduler.wait_finished())
+        .await
+        .expect("scheduler should finish under backtest execution")
+        .expect("scheduler should finish cleanly");
+
+    let position = execution
+        .position("SIM", "SHFE.rb2601")
+        .await
+        .expect("position should be readable");
+    assert_eq!(net_position(&position), 1);
+}
+
 struct FakeMarketAdapter {
     dm: Arc<DataManager>,
     quote: RwLock<Quote>,
+    trading_time: RwLock<Option<serde_json::Value>>,
     updates_tx: broadcast::Sender<()>,
 }
 
 impl FakeMarketAdapter {
     fn new(initial_quote: Quote) -> Self {
+        Self::with_optional_trading_time(initial_quote, None)
+    }
+
+    fn with_trading_time(initial_quote: Quote, trading_time: serde_json::Value) -> Self {
+        Self::with_optional_trading_time(initial_quote, Some(trading_time))
+    }
+
+    fn with_optional_trading_time(initial_quote: Quote, trading_time: Option<serde_json::Value>) -> Self {
         let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
         let (updates_tx, _) = broadcast::channel(32);
         Self {
             dm,
             quote: RwLock::new(initial_quote),
+            trading_time: RwLock::new(trading_time),
             updates_tx,
         }
     }
@@ -420,6 +796,10 @@ impl MarketAdapter for FakeMarketAdapter {
 
     async fn latest_quote(&self, _symbol: &str) -> RuntimeResult<Quote> {
         Ok(self.quote.read().await.clone())
+    }
+
+    async fn trading_time(&self, _symbol: &str) -> RuntimeResult<Option<serde_json::Value>> {
+        Ok(self.trading_time.read().await.clone())
     }
 
     async fn wait_quote_update(&self, _symbol: &str) -> RuntimeResult<()> {

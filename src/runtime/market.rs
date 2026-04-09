@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde_json::Value;
 use std::sync::Arc;
 
 use crate::datamanager::DataManager;
@@ -22,6 +23,10 @@ pub trait MarketAdapter: Send + Sync {
             .map_err(|_| RuntimeError::AdapterChannelClosed {
                 resource: "market quote updates",
             })
+    }
+
+    async fn trading_time(&self, symbol: &str) -> RuntimeResult<Option<Value>> {
+        Ok(self.dm().get_by_path(&["quotes", symbol, "trading_time"]))
     }
 }
 

@@ -13,13 +13,15 @@ pub use account::AccountHandle;
 pub use core::TqRuntime;
 pub use engine::ExecutionEngine;
 pub use errors::{RuntimeError, RuntimeResult};
-pub use execution::{ExecutionAdapter, LiveExecutionAdapter};
+pub use execution::{BacktestExecutionAdapter, ExecutionAdapter, LiveExecutionAdapter};
 pub use market::{LiveMarketAdapter, MarketAdapter};
-pub use modes::{LiveRuntimeMode, RuntimeMode};
+pub use modes::{BacktestRuntimeMode, LiveRuntimeMode, RuntimeMode};
 pub use registry::{RegisteredTask, TaskId, TaskRegistry};
 pub use tasks::{
-    ChildOrderRunner, OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder, TargetPosBuilder, TargetPosHandle,
-    compute_plan, parse_offset_priority, resolve_order_price, validate_quote_constraints,
+    ChildOrderRunner, OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder, TargetPosBuilder,
+    TargetPosExecutionReport, TargetPosHandle, TargetPosScheduleStep, TargetPosSchedulerBuilder,
+    TargetPosSchedulerConfig, TargetPosSchedulerHandle, compute_plan, parse_offset_priority, resolve_order_price,
+    validate_quote_constraints,
 };
 pub use types::{OffsetPriority, OrderDirection, PriceMode, PriceResolver, TargetPosConfig, VolumeSplitPolicy};
 

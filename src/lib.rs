@@ -82,15 +82,17 @@ pub mod polars_ext;
 pub use auth::Authenticator;
 pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
 pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
-pub use compat::{TargetPosTask, TargetPosTaskOptions};
+pub use compat::{TargetPosScheduler, TargetPosSchedulerOptions, TargetPosTask, TargetPosTaskOptions};
 pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};
 pub use quote::QuoteSubscription;
 pub use runtime::{
-    AccountHandle, OffsetPriority, OrderDirection, PriceMode, PriceResolver, RuntimeError, RuntimeMode, RuntimeResult,
-    TargetPosBuilder, TargetPosConfig, TargetPosHandle, TqRuntime, VolumeSplitPolicy,
+    AccountHandle, BacktestExecutionAdapter, BacktestRuntimeMode, OffsetPriority, OrderDirection, PriceMode,
+    PriceResolver, RuntimeError, RuntimeMode, RuntimeResult, TargetPosBuilder, TargetPosConfig,
+    TargetPosExecutionReport, TargetPosHandle, TargetPosScheduleStep, TargetPosSchedulerBuilder,
+    TargetPosSchedulerConfig, TargetPosSchedulerHandle, TqRuntime, VolumeSplitPolicy,
 };
 pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 pub use trade_session::TradeSession;

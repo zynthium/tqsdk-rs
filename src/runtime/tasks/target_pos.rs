@@ -6,7 +6,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::runtime::{AccountHandle, OrderDirection, RuntimeError, RuntimeResult, TargetPosConfig};
-use crate::types::{ORDER_STATUS_ALIVE, Position, Quote};
+use crate::types::{ORDER_STATUS_ALIVE, Position, Quote, Trade};
 
 use super::{
     ChildOrderControl, ChildOrderRunner, ChildOrderStatus, OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder,
@@ -49,6 +49,7 @@ struct TargetPosTaskInner {
     command_tx: watch::Sender<TaskCommand>,
     reached_seq_tx: watch::Sender<u64>,
     finished_tx: watch::Sender<bool>,
+    trades: Mutex<Vec<Trade>>,
     failure: Mutex<Option<String>>,
 }
 
@@ -76,6 +77,20 @@ impl TargetPosBuilder {
             &self.config,
         )?;
 
+        self.build_with_task_id(registered.task_id, offset_priority)
+    }
+
+    pub(crate) fn build_internal(self) -> RuntimeResult<TargetPosHandle> {
+        let offset_priority = parse_offset_priority(self.config.offset_priority.as_str())?;
+        let task_id = self.account.runtime().registry().allocate_task_id();
+        self.build_with_task_id(task_id, offset_priority)
+    }
+
+    fn build_with_task_id(
+        self,
+        task_id: crate::runtime::TaskId,
+        offset_priority: Vec<Vec<OffsetAction>>,
+    ) -> RuntimeResult<TargetPosHandle> {
         let (command_tx, _) = watch::channel(TaskCommand::Idle);
         let (reached_seq_tx, _) = watch::channel(0_u64);
         let (finished_tx, _) = watch::channel(false);
@@ -85,7 +100,7 @@ impl TargetPosBuilder {
                 account: self.account,
                 symbol: self.symbol,
                 config: self.config,
-                task_id: registered.task_id,
+                task_id,
                 offset_priority,
                 next_request_seq: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
@@ -93,6 +108,7 @@ impl TargetPosBuilder {
                 command_tx,
                 reached_seq_tx,
                 finished_tx,
+                trades: Mutex::new(Vec::new()),
                 failure: Mutex::new(None),
             }),
         })
@@ -165,6 +181,14 @@ impl TargetPosHandle {
         self.inner.failure_result()
     }
 
+    pub fn trades(&self) -> Vec<Trade> {
+        self.inner
+            .trades
+            .lock()
+            .expect("target task trades lock poisoned")
+            .clone()
+    }
+
     pub async fn wait_target_reached(&self) -> RuntimeResult<()> {
         self.inner.ensure_started("wait_target_reached")?;
         let target_seq = match self.inner.command_tx.borrow().clone() {
@@ -178,16 +202,26 @@ impl TargetPosHandle {
         };
 
         let mut rx = self.inner.reached_seq_tx.subscribe();
+        let mut finished_rx = self.inner.finished_tx.subscribe();
         loop {
             if *rx.borrow() >= target_seq {
                 return self.inner.failure_result();
             }
-            if *self.inner.finished_tx.borrow() {
+            if *finished_rx.borrow() {
                 return self.inner.failure_result();
             }
-            rx.changed().await.map_err(|_| RuntimeError::AdapterChannelClosed {
-                resource: "target task reached",
-            })?;
+            tokio::select! {
+                changed = rx.changed() => {
+                    changed.map_err(|_| RuntimeError::AdapterChannelClosed {
+                        resource: "target task reached",
+                    })?;
+                }
+                changed = finished_rx.changed() => {
+                    changed.map_err(|_| RuntimeError::AdapterChannelClosed {
+                        resource: "target task finished",
+                    })?;
+                }
+            }
         }
     }
 }
@@ -209,8 +243,9 @@ impl TargetPosTaskInner {
     }
 
     async fn run(self: Arc<Self>) {
-        let result = self.run_loop().await;
-        if let Err(err) = result {
+        let run_result = self.run_loop().await;
+        let capture_result = self.capture_owned_trades().await;
+        if let Some(err) = run_result.err().or_else(|| capture_result.err()) {
             *self.failure.lock().expect("target task failure lock poisoned") = Some(err.to_string());
         }
         self.account.runtime().registry().unregister_task(self.task_id);
@@ -393,6 +428,31 @@ impl TargetPosTaskInner {
                 reason,
             });
         }
+        Ok(())
+    }
+
+    async fn capture_owned_trades(&self) -> RuntimeResult<()> {
+        let runtime = self.account.runtime();
+        let mut order_ids = runtime.registry().task_orders(self.task_id);
+        order_ids.sort();
+
+        let mut trades = Vec::new();
+        for order_id in order_ids {
+            let mut order_trades = runtime
+                .execution()
+                .trades_by_order(self.account.account_key(), &order_id)
+                .await?;
+            trades.append(&mut order_trades);
+        }
+
+        trades.sort_by(|left, right| {
+            left.trade_date_time
+                .cmp(&right.trade_date_time)
+                .then_with(|| left.order_id.cmp(&right.order_id))
+                .then_with(|| left.trade_id.cmp(&right.trade_id))
+        });
+
+        *self.trades.lock().expect("target task trades lock poisoned") = trades;
         Ok(())
     }
 }
