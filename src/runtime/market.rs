@@ -7,6 +7,8 @@ use crate::types::Quote;
 
 use super::{RuntimeError, RuntimeResult};
 
+/// Runtime market adapters are no longer derived from `DataManager`.
+/// Implementations must provide the async market access methods directly.
 #[async_trait]
 pub trait MarketAdapter: Send + Sync {
     async fn latest_quote(&self, symbol: &str) -> RuntimeResult<Quote>;

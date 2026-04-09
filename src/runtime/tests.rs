@@ -85,15 +85,25 @@ fn task_registry_tracks_order_owner() {
 }
 
 #[test]
-fn runtime_accepts_market_adapter_without_datamanager() {
-    let runtime = TqRuntime::new(
+fn runtime_flows_with_market_adapter_without_datamanager() {
+    let runtime = Arc::new(TqRuntime::new(
         RuntimeMode::Backtest,
         Arc::new(StubMarket::default()),
         Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
-    );
+    ));
+
+    let account = runtime
+        .account("TQSIM")
+        .expect("runtime should expose configured account without datamanager-backed market");
+    let task = account
+        .target_pos("SHFE.rb2601")
+        .build()
+        .expect("target task should build without datamanager-backed market");
 
     assert_eq!(runtime.mode(), RuntimeMode::Backtest);
     assert!(runtime.id().starts_with("runtime-"));
+    assert_eq!(account.account_key(), "TQSIM");
+    assert_eq!(task.symbol(), "SHFE.rb2601");
 }
 
 #[tokio::test]
