@@ -30,7 +30,7 @@
 ### 交易功能
 
 - `TradeSession` 实盘/模拟交易会话。
-- `TqRuntime` + `TargetPosTask` 目标持仓运行时与 Python 风格兼容 facade。
+- `TqRuntime` + `TargetPosTask` / `TargetPosScheduler` 目标持仓运行时与 Python 风格兼容 facade。
 - 账户、持仓、委托、成交实时更新与主动查询。
 - 下单、撤单、登录就绪检测与自动重连。
 
@@ -185,6 +185,59 @@ async fn demo(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
     Ok(())
 }
 ```
+
+### 时间分片调仓（compat facade）
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use tqsdk_rs::prelude::*;
+
+async fn demo_scheduler(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
+    let scheduler = TargetPosScheduler::new(
+        runtime,
+        "SIM",
+        "SHFE.rb2601",
+        vec![
+            TargetPosScheduleStep {
+                interval: Duration::from_secs(10),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Passive),
+            },
+            TargetPosScheduleStep {
+                interval: Duration::from_secs(5),
+                target_volume: 1,
+                price_mode: Some(PriceMode::Active),
+            },
+        ],
+        TargetPosSchedulerOptions::default(),
+    )
+    .await?;
+
+    scheduler.wait_finished().await?;
+    println!("aggregated trades: {}", scheduler.execution_report().trades.len());
+    Ok(())
+}
+```
+
+### 回测 Runtime 调仓
+
+```rust
+use std::sync::Arc;
+use tqsdk_rs::prelude::*;
+use tqsdk_rs::runtime::LiveMarketAdapter;
+
+fn build_backtest_runtime(backtest: &BacktestHandle) -> Arc<TqRuntime> {
+    Arc::new(TqRuntime::with_id(
+        "backtest-runtime",
+        RuntimeMode::Backtest,
+        Arc::new(LiveMarketAdapter::new(backtest.dm())),
+        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
+    ))
+}
+```
+
+`BacktestExecutionAdapter` 当前提供的是 runtime 任务可复用的内存内成交模型，可用于 `TargetPosTask` / `TargetPosScheduler` 回测驱动，不是完整交易所撮合模拟器。
 
 ### 覆盖服务端点
 

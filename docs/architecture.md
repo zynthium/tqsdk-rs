@@ -8,6 +8,15 @@
 
 ```text
 Client (facade + builder + market)
+├── runtime/       统一任务运行时
+│   ├── core       `TqRuntime`（账户句柄、模式、adapter 装配）
+│   ├── account    `AccountHandle`（按账户派生任务入口）
+│   ├── market     `MarketAdapter`（Quote / trading_time 读取）
+│   ├── execution  `ExecutionAdapter`（live/backtest 下单执行）
+│   ├── registry   `TaskRegistry`（symbol 所有权、手工下单保护、order owner）
+│   ├── tasks      `TargetPosTask` / `TargetPosScheduler` / child order runner
+│   ├── modes      live/backtest 模式装配
+│   └── types      运行时配置与错误
 ├── auth/          认证 (Authenticator trait → TqAuth)
 │   ├── core       TqAuth 实现 (登录/token 获取)
 │   ├── token      JWT 解析 + claims 校验
@@ -67,6 +76,7 @@ Client (facade + builder + market)
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
+| `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosHandle`, `TargetPosSchedulerHandle` | 统一任务运行时、目标持仓调度、任务所有权与执行 adapter |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
 | `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
 | `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
@@ -83,6 +93,8 @@ Client (facade + builder + market)
 - 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
+- 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
+- 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 backtest 行为。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 回测生命周期：`BacktestHandle` 释放时会注销内部 DataManager 回调，避免长会话回调累积。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
@@ -92,6 +104,7 @@ Client (facade + builder + market)
 
 - 想理解外部 API：先看 `src/lib.rs`、`src/client.rs`、`src/client/`
 - 想理解状态模型：看 `src/datamanager/`
+- 想理解目标持仓与新任务运行时：看 `src/runtime/`
 - 想理解历史 K 线 / Tick 磁盘复用：看 `src/cache/data_series.rs` 与 `src/series/api.rs`
 - 想理解实时链路：看 `src/websocket/`、`src/quote/`、`src/series/`
 - 想理解查询接口：看 `src/ins/`

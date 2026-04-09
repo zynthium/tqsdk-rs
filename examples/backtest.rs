@@ -1,8 +1,10 @@
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Utc, Weekday};
 use serde_json::json;
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tqsdk_rs::{BacktestConfig, Client};
+use tqsdk_rs::runtime::LiveMarketAdapter;
+use tqsdk_rs::{BacktestConfig, BacktestExecutionAdapter, BacktestHandle, Client, RuntimeMode, TqRuntime};
 
 const BACKTEST_VIEW_WIDTH: usize = 500;
 
@@ -12,6 +14,17 @@ fn nanos_to_cst_naive_date(nanos: i64) -> NaiveDate {
     let dt = DateTime::<Utc>::from_timestamp(secs, nsecs).unwrap_or_else(Utc::now);
     let tz = FixedOffset::east_opt(8 * 3600).unwrap();
     dt.with_timezone(&tz).date_naive()
+}
+
+fn build_backtest_runtime(backtest: &BacktestHandle) -> Arc<TqRuntime> {
+    // Build the unified runtime so TargetPosTask / TargetPosScheduler can run
+    // against backtest market time with the in-memory execution adapter.
+    Arc::new(TqRuntime::with_id(
+        "backtest-runtime",
+        RuntimeMode::Backtest,
+        Arc::new(LiveMarketAdapter::new(backtest.dm())),
+        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
+    ))
 }
 
 #[tokio::main]
@@ -60,6 +73,7 @@ async fn main() -> tqsdk_rs::Result<()> {
     let backtest = client
         .init_market_backtest(BacktestConfig::new(start_dt, end_dt))
         .await?;
+    let _target_pos_runtime = build_backtest_runtime(&backtest);
 
     let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.au2606".to_string());
     let duration = Duration::from_secs(60);

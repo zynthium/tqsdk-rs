@@ -4,6 +4,11 @@
 //! - 实盘交易（回调模式）
 //! - 实盘交易（Channel 流式模式）
 //! - 混合模式（回调 + Channel）
+//!
+//! 说明：
+//! - 本示例聚焦底层 `TradeSession` 交易接口。
+//! - 若需要 Python `TargetPosTask` / `TargetPosScheduler` 对齐能力，请使用 `TqRuntime`
+//!   以及 `compat::TargetPosTask` / `compat::TargetPosScheduler`。
 
 use std::env;
 use std::time::Duration;
