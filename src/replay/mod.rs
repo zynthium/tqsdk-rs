@@ -14,7 +14,5 @@ mod tests;
 pub(crate) use feed::HistoricalSource;
 pub use series::{AlignedKlineHandle, AlignedKlineRow, KlineSeriesRow, ReplayKlineHandle, TickSeriesRow};
 pub use session::{ReplayQuoteHandle, ReplaySeriesSession, ReplaySession};
-pub use types::{
-    BacktestResult, BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayHandleId, ReplayQuote,
-    ReplayStep,
-};
+pub(crate) use types::InstrumentMetadata;
+pub use types::{BacktestResult, BarState, DailySettlementLog, ReplayConfig, ReplayHandleId, ReplayQuote, ReplayStep};

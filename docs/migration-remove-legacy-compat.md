@@ -26,6 +26,7 @@
 | `Client::switch_to_backtest` | `Client::close()` 后重建 `ReplaySession` | 行情订阅控制与回测 session 分离 |
 | `BacktestHandle` | `ReplaySession` | `step()` / `finish()` / `runtime()` 是唯一推荐回测入口 |
 | `replay::HistoricalSource` / `ReplaySession::from_source` | `Client::create_backtest_session` | 自定义 replay source 装配退回 crate 内部；公开回测入口统一收敛到 `Client` facade |
+| `InstrumentMetadata` root/prelude export | 无 direct replacement | 该类型不再作为顶层公开 replay API 暴露；它属于内部回放装配细节 |
 | `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()` |
 | `runtime::{ExecutionAdapter, MarketAdapter, LiveExecutionAdapter, LiveMarketAdapter, TaskRegistry, TaskId, ChildOrderRunner, ...}` | `ClientBuilder::build_runtime()` / `Client::into_runtime()` / `ReplaySession::runtime()` | runtime 装配层收口为内部实现，公开 API 聚焦 ready-to-use `TqRuntime` 与 Builder task |
 | `websocket::*` 和 raw constructor（`QuoteSubscription::new`、`SeriesAPI::new`、`InsAPI::new`、`TradeSession::new`） | `Client` / `ClientBuilder` / `TradeSession` factory methods | transport wiring 收回 crate 内部；公开连接入口统一走高层 facade |
