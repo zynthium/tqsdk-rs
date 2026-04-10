@@ -3,7 +3,7 @@ use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::replay::{HistoricalSource, InstrumentMetadata};
 use crate::series::{SeriesAPI, SeriesCachePolicy};
-use crate::types::{Kline, Tick};
+use crate::types::Kline;
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -49,10 +49,6 @@ impl HistoricalSource for SdkHistoricalSource {
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
         self.series.kline_data_series(symbol, duration, start_dt, end_dt).await
-    }
-
-    async fn load_ticks(&self, symbol: &str, start_dt: DateTime<Utc>, end_dt: DateTime<Utc>) -> Result<Vec<Tick>> {
-        self.series.tick_data_series(symbol, start_dt, end_dt).await
     }
 }
 

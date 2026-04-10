@@ -39,15 +39,6 @@ impl HistoricalSource for FakeHistoricalSource {
             .cloned()
             .unwrap_or_default())
     }
-
-    async fn load_ticks(
-        &self,
-        _symbol: &str,
-        _start_dt: DateTime<Utc>,
-        _end_dt: DateTime<Utc>,
-    ) -> crate::Result<Vec<Tick>> {
-        Ok(Vec::new())
-    }
 }
 
 #[tokio::test]

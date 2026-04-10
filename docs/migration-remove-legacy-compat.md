@@ -25,6 +25,7 @@
 | `Client::init_market_backtest` | `Client::create_backtest_session` | 直接创建 `ReplaySession`，不再经过 `BacktestHandle` |
 | `Client::switch_to_backtest` | `Client::close()` 后重建 `ReplaySession` | 行情订阅控制与回测 session 分离 |
 | `BacktestHandle` | `ReplaySession` | `step()` / `finish()` / `runtime()` 是唯一推荐回测入口 |
+| `replay::HistoricalSource` / `ReplaySession::from_source` | `Client::create_backtest_session` | 自定义 replay source 装配退回 crate 内部；公开回测入口统一收敛到 `Client` facade |
 | `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()` |
 | `runtime::{ExecutionAdapter, MarketAdapter, LiveExecutionAdapter, LiveMarketAdapter, TaskRegistry, TaskId, ChildOrderRunner, ...}` | `ClientBuilder::build_runtime()` / `Client::into_runtime()` / `ReplaySession::runtime()` | runtime 装配层收口为内部实现，公开 API 聚焦 ready-to-use `TqRuntime` 与 Builder task |
 | `websocket::*` 和 raw constructor（`QuoteSubscription::new`、`SeriesAPI::new`、`InsAPI::new`、`TradeSession::new`） | `Client` / `ClientBuilder` / `TradeSession` factory methods | transport wiring 收回 crate 内部；公开连接入口统一走高层 facade |
@@ -123,6 +124,7 @@ let scheduler = account
 - 已删除：legacy `BacktestHandle` 路径、`compat/` facade、Quote callback/channel fan-out、Series callback/stream fan-out、`DataManager` callback plumbing、`BacktestExecutionAdapter` public surface。
 - 已收口：`ReplayExecutionAdapter` / `ReplayMarketAdapter` 只保留为 replay 内部实现，不再作为 public replacement 暴露。
 - 已收口：`ReplayKernel`、`QuoteSynthesizer`、`SeriesStore`、`SimBroker` 等 replay 拼装件不再作为根级 public replay API 暴露。
+- 已收口：`HistoricalSource` 与 `ReplaySession::from_source` 只保留为 crate 内部回放装配点，不再作为公开扩展入口暴露。
 - 已收口：`TqRuntime::new/with_id`、runtime adapter/registry/planning types、以及 `TqRuntime::{market,execution,registry,engine}` 等装配接口都退回 crate 内部。
 - 已收口：`websocket` transport 模块与 raw constructor 不再作为公开装配入口，连接生命周期统一走 `Client` / `TradeSession` / `ReplaySession`。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

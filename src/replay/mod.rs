@@ -11,7 +11,7 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub use feed::HistoricalSource;
+pub(crate) use feed::HistoricalSource;
 pub use series::{AlignedKlineHandle, AlignedKlineRow, KlineSeriesRow, ReplayKlineHandle, TickSeriesRow};
 pub use session::{ReplayQuoteHandle, ReplaySeriesSession, ReplaySession};
 pub use types::{

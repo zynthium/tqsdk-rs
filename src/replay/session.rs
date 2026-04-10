@@ -65,7 +65,7 @@ pub struct ReplaySession {
 }
 
 impl ReplaySession {
-    pub async fn from_source(config: ReplayConfig, source: Arc<dyn HistoricalSource>) -> Result<Self> {
+    pub(crate) async fn from_source(config: ReplayConfig, source: Arc<dyn HistoricalSource>) -> Result<Self> {
         Ok(Self {
             config,
             source,

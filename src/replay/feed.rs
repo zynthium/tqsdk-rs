@@ -9,7 +9,7 @@ use crate::replay::InstrumentMetadata;
 use crate::types::{Kline, Tick};
 
 #[async_trait(?Send)]
-pub trait HistoricalSource: Send + Sync {
+pub(crate) trait HistoricalSource: Send + Sync {
     async fn instrument_metadata(&self, symbol: &str) -> Result<InstrumentMetadata>;
 
     async fn load_klines(
@@ -19,8 +19,6 @@ pub trait HistoricalSource: Send + Sync {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>>;
-
-    async fn load_ticks(&self, symbol: &str, start_dt: DateTime<Utc>, end_dt: DateTime<Utc>) -> Result<Vec<Tick>>;
 }
 
 #[derive(Debug, Clone)]
