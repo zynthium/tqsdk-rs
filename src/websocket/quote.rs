@@ -82,6 +82,10 @@ impl TqQuoteWebsocket {
         self.base.init(is_reconnection).await
     }
 
+    pub(crate) fn auto_peek_enabled(&self) -> bool {
+        self.base.auto_peek_enabled()
+    }
+
     pub async fn update_quote_subscription(&self, subscription_id: &str, symbols: HashSet<String>) -> Result<()> {
         {
             let mut guard = self.runtime.quote_subscriptions.write().unwrap();

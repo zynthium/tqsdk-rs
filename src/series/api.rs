@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 use tokio::sync::{RwLock, oneshot};
+use tokio::time::Instant;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
@@ -15,6 +16,7 @@ use uuid::Uuid;
 const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 #[cfg(test)]
 const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
+const HISTORY_MANUAL_PEEK_RETRY_INTERVAL: StdDuration = StdDuration::from_millis(500);
 
 impl From<&str> for KlineSymbols {
     fn from(value: &str) -> Self {
@@ -411,8 +413,9 @@ impl SeriesAPI {
         duration: StdDuration,
         focus_time: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
+        let focus_position = history_focus_position(self.ws.auto_peek_enabled(), PAGE_VIEW_WIDTH);
         let sub = self
-            .kline_history_with_focus(symbol, duration, PAGE_VIEW_WIDTH, focus_time, 0)
+            .kline_history_with_focus(symbol, duration, PAGE_VIEW_WIDTH, focus_time, focus_position)
             .await?;
         match self.fetch_history_page_with_subscription(sub).await? {
             HistoryPage::Kline(rows) => Ok(rows),
@@ -429,8 +432,9 @@ impl SeriesAPI {
     }
 
     async fn fetch_tick_page_by_focus(&self, symbol: &str, focus_time: DateTime<Utc>) -> Result<Vec<Tick>> {
+        let focus_position = history_focus_position(self.ws.auto_peek_enabled(), PAGE_VIEW_WIDTH);
         let sub = self
-            .tick_history_with_focus(symbol, PAGE_VIEW_WIDTH, focus_time, 0)
+            .tick_history_with_focus(symbol, PAGE_VIEW_WIDTH, focus_time, focus_position)
             .await?;
         match self.fetch_history_page_with_subscription(sub).await? {
             HistoryPage::Tick(rows) => Ok(rows),
@@ -459,11 +463,31 @@ impl SeriesAPI {
         .await;
 
         sub.start().await?;
-        self.ws.send(&json!({"aid": "peek_message"})).await?;
-        let fetched = match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, rx).await {
-            Ok(Ok(page)) => Ok(page),
-            Ok(Err(_)) => Err(TqError::InternalError("历史下载通道提前关闭".to_string())),
-            Err(_) => Err(TqError::Timeout),
+        let fetched = if self.ws.auto_peek_enabled() {
+            match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, rx).await {
+                Ok(Ok(page)) => Ok(page),
+                Ok(Err(_)) => Err(TqError::InternalError("历史下载通道提前关闭".to_string())),
+                Err(_) => Err(TqError::Timeout),
+            }
+        } else {
+            let deadline = Instant::now() + HISTORY_CHUNK_FETCH_TIMEOUT;
+            let mut rx = rx;
+            loop {
+                self.ws.send(&json!({"aid": "peek_message"})).await?;
+
+                let now = Instant::now();
+                if now >= deadline {
+                    break Err(TqError::Timeout);
+                }
+                let wait_duration = (deadline - now).min(HISTORY_MANUAL_PEEK_RETRY_INTERVAL);
+                match tokio::time::timeout(wait_duration, &mut rx).await {
+                    Ok(Ok(page)) => break Ok(page),
+                    Ok(Err(_)) => {
+                        break Err(TqError::InternalError("历史下载通道提前关闭".to_string()));
+                    }
+                    Err(_) => continue,
+                }
+            }
         };
         if let Err(e) = sub.close().await {
             warn!("历史下载临时订阅关闭失败: {:?}", e);
@@ -579,6 +603,14 @@ fn generate_chart_id(options: &SeriesOptions) -> String {
     }
 }
 
+fn history_focus_position(auto_peek_enabled: bool, view_width: usize) -> i32 {
+    if auto_peek_enabled {
+        0
+    } else {
+        view_width.min(i32::MAX as usize) as i32
+    }
+}
+
 fn extend_klines_until_end(target: &mut Vec<Kline>, page: Vec<Kline>, end_nano: i64) -> Option<i64> {
     let mut next_id = None;
     for row in page {
@@ -622,4 +654,19 @@ fn dedup_sort_ticks_by_id(rows: Vec<Tick>) -> Vec<Tick> {
 enum HistoryPage {
     Kline(Vec<Kline>),
     Tick(Vec<Tick>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_focus_position_uses_zero_in_live_mode() {
+        assert_eq!(history_focus_position(true, PAGE_VIEW_WIDTH), 0);
+    }
+
+    #[test]
+    fn history_focus_position_uses_view_width_in_backtest_mode() {
+        assert_eq!(history_focus_position(false, PAGE_VIEW_WIDTH), PAGE_VIEW_WIDTH as i32);
+    }
 }
