@@ -1,10 +1,11 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::replay::{
-    BarState, ContinuousContractProvider, ContinuousMapping, FeedCursor, FeedEvent, InstrumentMetadata, QuoteSelection,
-    QuoteSynthesizer, ReplayConfig, ReplayKernel, SeriesStore,
+    BarState, ContinuousContractProvider, ContinuousMapping, DailySettlementLog, FeedCursor, FeedEvent,
+    InstrumentMetadata, QuoteSelection, QuoteSynthesizer, ReplayConfig, ReplayKernel, ReplayQuote, SeriesStore,
+    SimBroker,
 };
-use crate::types::{Kline, Tick};
+use crate::types::{DIRECTION_BUY, InsertOrderRequest, Kline, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Tick};
 
 #[test]
 fn replay_config_rejects_inverted_range() {
@@ -576,4 +577,175 @@ async fn replay_kernel_aligns_secondary_symbol_to_main_bar_time() {
     assert_eq!(last.datetime_nanos, 1_000);
     assert!(last.bars["SHFE.rb2605"].is_some());
     assert!(last.bars["SHFE.hc2605"].is_some());
+}
+
+fn limit_buy(symbol: &str, price: f64, volume: i64) -> InsertOrderRequest {
+    InsertOrderRequest {
+        symbol: symbol.to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_LIMIT.to_string(),
+        limit_price: price,
+        volume,
+    }
+}
+
+fn market_buy(symbol: &str, volume: i64) -> InsertOrderRequest {
+    InsertOrderRequest {
+        symbol: symbol.to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_ANY.to_string(),
+        limit_price: 0.0,
+        volume,
+    }
+}
+
+#[test]
+fn sim_broker_fills_limit_buy_when_price_path_crosses() {
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    let order_id = broker
+        .insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2))
+        .unwrap();
+
+    broker
+        .apply_quote_path(
+            "SHFE.rb2605",
+            &[
+                ReplayQuote {
+                    symbol: "SHFE.rb2605".to_string(),
+                    datetime_nanos: 1_000,
+                    last_price: 10.0,
+                    ask_price1: 11.0,
+                    ask_volume1: 1,
+                    bid_price1: 9.0,
+                    bid_volume1: 1,
+                    ..ReplayQuote::default()
+                },
+                ReplayQuote {
+                    symbol: "SHFE.rb2605".to_string(),
+                    datetime_nanos: 2_000,
+                    last_price: 12.0,
+                    ask_price1: 13.0,
+                    ask_volume1: 1,
+                    bid_price1: 11.0,
+                    bid_volume1: 1,
+                    ..ReplayQuote::default()
+                },
+            ],
+        )
+        .unwrap();
+
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    assert_eq!(order.volume_left, 0);
+}
+
+#[test]
+fn sim_broker_cancels_market_order_without_opponent_quote() {
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    let order_id = broker.insert_order("TQSIM", &market_buy("SHFE.rb2605", 1)).unwrap();
+
+    broker
+        .apply_quote_path(
+            "SHFE.rb2605",
+            &[ReplayQuote {
+                symbol: "SHFE.rb2605".to_string(),
+                datetime_nanos: 1_000,
+                last_price: 10.0,
+                ask_price1: f64::NAN,
+                ask_volume1: 0,
+                bid_price1: 9.0,
+                bid_volume1: 1,
+                ..ReplayQuote::default()
+            }],
+        )
+        .unwrap();
+
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    assert_eq!(order.volume_left, 1);
+    assert_eq!(order.status, "FINISHED");
+}
+
+#[test]
+fn sim_broker_records_daily_settlement() {
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    let settlement = broker
+        .settle_day(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
+        .unwrap()
+        .unwrap();
+
+    let DailySettlementLog { trading_day, .. } = settlement;
+    assert_eq!(trading_day, NaiveDate::from_ymd_opt(2026, 4, 9).unwrap());
+}
+
+#[test]
+fn sim_broker_limit_fill_uses_order_price_and_updates_position_once() {
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    let order_id = broker
+        .insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2))
+        .unwrap();
+
+    broker
+        .apply_quote_path(
+            "SHFE.rb2605",
+            &[
+                ReplayQuote {
+                    symbol: "SHFE.rb2605".to_string(),
+                    datetime_nanos: 1_000,
+                    last_price: 10.0,
+                    ask_price1: 10.5,
+                    ask_volume1: 3,
+                    bid_price1: 9.5,
+                    bid_volume1: 1,
+                    ..ReplayQuote::default()
+                },
+                ReplayQuote {
+                    symbol: "SHFE.rb2605".to_string(),
+                    datetime_nanos: 2_000,
+                    last_price: 9.0,
+                    ask_price1: 9.5,
+                    ask_volume1: 3,
+                    bid_price1: 8.5,
+                    bid_volume1: 1,
+                    ..ReplayQuote::default()
+                },
+            ],
+        )
+        .unwrap();
+
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    assert_eq!(order.status, "FINISHED");
+    assert_eq!(order.volume_left, 0);
+
+    let trades = broker.trades_by_order("TQSIM", &order_id).unwrap();
+    assert_eq!(trades.len(), 1);
+    assert_eq!(trades[0].price, 11.0);
+    assert_eq!(trades[0].volume, 2);
+
+    let position = broker.position("TQSIM", "SHFE.rb2605").unwrap();
+    assert_eq!(position.volume_long_today, 2);
+    assert_eq!(position.volume_long, 2);
+
+    broker
+        .apply_quote_path(
+            "SHFE.rb2605",
+            &[ReplayQuote {
+                symbol: "SHFE.rb2605".to_string(),
+                datetime_nanos: 3_000,
+                last_price: 8.0,
+                ask_price1: 8.5,
+                ask_volume1: 5,
+                bid_price1: 7.5,
+                bid_volume1: 1,
+                ..ReplayQuote::default()
+            }],
+        )
+        .unwrap();
+
+    let trades = broker.trades_by_order("TQSIM", &order_id).unwrap();
+    assert_eq!(trades.len(), 1);
 }
