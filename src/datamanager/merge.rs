@@ -109,6 +109,11 @@ impl DataManager {
             }
             drop(callbacks);
 
+            // Callbacks may synchronously trigger nested merges. Publish the latest
+            // completed epoch so watch receivers never observe a regressing value.
+            let completed_epoch = self.epoch.load(Ordering::SeqCst);
+            self.epoch_tx.send_replace(completed_epoch);
+
             true
         } else {
             let current_epoch = self.epoch.load(Ordering::SeqCst);

@@ -19,6 +19,7 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, RwLock};
+use tokio::sync::watch::Sender as WatchSender;
 
 struct DataCallbackEntry {
     id: i64,
@@ -75,6 +76,8 @@ pub struct DataManager {
     data: Arc<RwLock<HashMap<String, Value>>>,
     /// 版本号（使用原子变量以提高性能）
     epoch: AtomicI64,
+    /// merge 完成后的最终 epoch 通知
+    epoch_tx: WatchSender<i64>,
     /// 配置
     config: DataManagerConfig,
     /// 路径监听器

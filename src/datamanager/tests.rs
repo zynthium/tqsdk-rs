@@ -69,6 +69,8 @@ fn test_watch_channel_is_bounded() {
         json!({
             "quotes": {
                 "SHFE.au2602": {
+                    "instrument_id": "SHFE.au2602",
+                    "datetime": "2024-01-01 09:00:00.000000",
                     "last_price": 500.0
                 }
             }
@@ -90,6 +92,170 @@ fn test_watch_channel_is_bounded() {
 
     assert!(rx.try_recv().is_ok());
     assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn subscribe_epoch_observes_completed_merge_state() {
+    let dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
+    let mut rx = dm.subscribe_epoch();
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "instrument_id": "SHFE.au2602",
+                    "datetime": "2024-01-01 09:00:00.000000",
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    rx.changed().await.unwrap();
+
+    assert_eq!(*rx.borrow(), 1);
+    assert_eq!(
+        dm.get_by_path(&["quotes", "SHFE.au2602", "last_price"]),
+        Some(json!(500.0))
+    );
+    assert_eq!(dm.get_path_epoch(&["quotes", "SHFE.au2602"]), 1);
+}
+
+#[tokio::test]
+async fn subscribe_epoch_coalesces_multiple_merges_but_keeps_latest_epoch() {
+    let dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
+    let mut rx = dm.subscribe_epoch();
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "instrument_id": "SHFE.au2602",
+                    "datetime": "2024-01-01 09:00:01.000000",
+                    "last_price": 501.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    rx.changed().await.unwrap();
+
+    assert_eq!(*rx.borrow(), 2);
+    assert_eq!(dm.get_quote_data("SHFE.au2602").unwrap().last_price, 501.0);
+}
+
+#[tokio::test]
+async fn subscribe_epoch_slow_consumer_can_reconcile_with_path_epoch() {
+    let dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
+    let mut rx = dm.subscribe_epoch();
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "accounts": {
+                        "CNY": {
+                            "balance": 1000.0,
+                            "available": 900.0
+                        }
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "accounts": {
+                        "CNY": {
+                            "balance": 1002.0,
+                            "available": 901.0
+                        }
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    rx.changed().await.unwrap();
+
+    let seen_epoch = *rx.borrow();
+    let path_epoch = dm.get_path_epoch(&["trade", "u", "accounts", "CNY"]);
+    let account = dm.get_account_data("u", "CNY").unwrap();
+
+    assert_eq!(seen_epoch, 2);
+    assert_eq!(path_epoch, 2);
+    assert_eq!(account.balance, 1002.0);
+    assert_eq!(account.available, 901.0);
+}
+
+#[tokio::test]
+async fn subscribe_epoch_remains_monotonic_across_nested_callback_merges() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let mut rx = dm.subscribe_epoch();
+    let nested_once = Arc::new(AtomicUsize::new(0));
+
+    {
+        let dm_for_callback = Arc::clone(&dm);
+        let nested_once = Arc::clone(&nested_once);
+        dm.on_data(move || {
+            if nested_once.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
+                dm_for_callback.merge_data(
+                    json!({
+                        "quotes": {
+                            "SHFE.au2602": {
+                                "instrument_id": "SHFE.au2602",
+                                "datetime": "2024-01-01 09:00:01.000000",
+                                "last_price": 501.0
+                            }
+                        }
+                    }),
+                    true,
+                    true,
+                );
+            }
+        });
+    }
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "instrument_id": "SHFE.au2602",
+                    "datetime": "2024-01-01 09:00:00.000000",
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    rx.changed().await.unwrap();
+
+    assert_eq!(*rx.borrow(), 2);
+    assert_eq!(dm.get_epoch(), 2);
+    assert_eq!(dm.get_quote_data("SHFE.au2602").unwrap().last_price, 501.0);
 }
 
 #[test]
