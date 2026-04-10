@@ -12,7 +12,7 @@ Client (facade + builder + market)
 │   ├── core       `TqRuntime`（账户句柄、模式、adapter 装配）
 │   ├── account    `AccountHandle`（按账户派生任务入口）
 │   ├── market     `MarketAdapter`（Quote / trading_time 读取）
-│   ├── execution  `ExecutionAdapter`（live/backtest 下单执行）
+│   ├── execution  `ExecutionAdapter`（live 下单执行抽象；replay runtime 走内部实现）
 │   ├── registry   `TaskRegistry`（symbol 所有权、手工下单保护、order owner）
 │   ├── tasks      `TargetPosTask` / `TargetPosScheduler` / child order runner
 │   ├── modes      live/backtest 模式装配
@@ -30,7 +30,7 @@ Client (facade + builder + market)
 │   ├── reconnect       重连逻辑 + 数据完整性校验
 │   └── message         通知构建 + 日志脱敏
 ├── datamanager/   DIFF 协议数据管理
-│   ├── core       创建 + epoch 订阅 + legacy callback 注册
+│   ├── core       创建 + epoch 订阅
 │   ├── merge      递归合并 (prototype 语义)
 │   ├── query      路径查询 + 数据转换
 │   └── watch      路径监听
@@ -91,7 +91,7 @@ Client (facade + builder + market)
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
-- 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 backtest 行为。
+- 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
 - 回测入口收敛：公开回测路径统一通过 `Client::create_backtest_session` 构造 `ReplaySession`，不再维持独立 `BacktestHandle` facade。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 交易状态分层：`TradeSession` 以 DataManager epoch 驱动内部 watcher，再用 path epoch 区分账户/持仓快照与可靠订单/成交事件。

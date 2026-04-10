@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::runtime::{
-    BacktestExecutionAdapter, ExecutionAdapter, MarketAdapter, OffsetPriority, PriceMode, RuntimeError, RuntimeMode,
-    TargetPosConfig, TargetPosScheduleStep, TargetPosScheduler, TargetPosTask, TaskRegistry, TqRuntime,
+    ExecutionAdapter, MarketAdapter, OffsetPriority, PriceMode, RuntimeError, RuntimeMode, TargetPosConfig,
+    TargetPosScheduleStep, TargetPosScheduler, TargetPosTask, TaskRegistry, TqRuntime,
 };
 use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT, Quote};
 use async_trait::async_trait;
@@ -89,7 +89,9 @@ fn runtime_flows_with_market_adapter_without_datamanager() {
     let runtime = Arc::new(TqRuntime::new(
         RuntimeMode::Backtest,
         Arc::new(StubMarket),
-        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
+        Arc::new(FakeExecutionAdapter {
+            accounts: vec!["TQSIM".to_string()],
+        }),
     ));
 
     let account = runtime
@@ -122,10 +124,12 @@ async fn runtime_exposes_account_handle_for_registered_account() {
 }
 
 #[tokio::test]
-async fn runtime_can_be_constructed_with_backtest_execution_mode() {
+async fn runtime_can_be_constructed_in_backtest_mode() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let market = Arc::new(FakeMarketAdapter { dm: Arc::clone(&dm) });
-    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let execution = Arc::new(FakeExecutionAdapter {
+        accounts: vec!["SIM".to_string()],
+    });
     let runtime = Arc::new(TqRuntime::with_id(
         "runtime-1",
         RuntimeMode::Backtest,

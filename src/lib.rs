@@ -91,10 +91,10 @@ pub use replay::{
     ReplayQuoteHandle, ReplaySession, ReplayStep,
 };
 pub use runtime::{
-    AccountHandle, BacktestExecutionAdapter, BacktestRuntimeMode, OffsetPriority, OrderDirection, PriceMode,
-    PriceResolver, RuntimeError, RuntimeMode, RuntimeResult, TargetPosBuilder, TargetPosConfig,
-    TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
-    TargetPosSchedulerConfig, TargetPosTask, TqRuntime, VolumeSplitPolicy,
+    AccountHandle, BacktestRuntimeMode, OffsetPriority, OrderDirection, PriceMode, PriceResolver, RuntimeError,
+    RuntimeMode, RuntimeResult, TargetPosBuilder, TargetPosConfig, TargetPosExecutionReport, TargetPosScheduleStep,
+    TargetPosScheduler, TargetPosSchedulerBuilder, TargetPosSchedulerConfig, TargetPosTask, TqRuntime,
+    VolumeSplitPolicy,
 };
 pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 pub use trade_session::{

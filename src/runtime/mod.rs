@@ -13,7 +13,7 @@ pub use account::AccountHandle;
 pub use core::TqRuntime;
 pub use engine::ExecutionEngine;
 pub use errors::{RuntimeError, RuntimeResult};
-pub use execution::{BacktestExecutionAdapter, ExecutionAdapter, LiveExecutionAdapter};
+pub use execution::{ExecutionAdapter, LiveExecutionAdapter};
 pub use market::{LiveMarketAdapter, MarketAdapter};
 pub use modes::{BacktestRuntimeMode, LiveRuntimeMode, RuntimeMode};
 pub use registry::{RegisteredTask, TaskId, TaskRegistry};

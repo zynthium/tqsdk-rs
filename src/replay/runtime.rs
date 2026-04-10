@@ -11,14 +11,14 @@ use crate::runtime::{ExecutionAdapter, MarketAdapter, RuntimeError, RuntimeResul
 use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade};
 
 #[derive(Debug)]
-pub struct ReplayMarketState {
+pub(crate) struct ReplayMarketState {
     metadata: RwLock<HashMap<String, InstrumentMetadata>>,
     quotes: RwLock<HashMap<String, ReplayQuote>>,
     updates_tx: broadcast::Sender<String>,
 }
 
 impl ReplayMarketState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (updates_tx, _) = broadcast::channel(64);
         Self {
             metadata: RwLock::new(HashMap::new()),
@@ -27,21 +27,21 @@ impl ReplayMarketState {
         }
     }
 
-    pub async fn register_symbol(&self, metadata: InstrumentMetadata) {
+    pub(crate) async fn register_symbol(&self, metadata: InstrumentMetadata) {
         self.metadata.write().await.insert(metadata.symbol.clone(), metadata);
     }
 
-    pub async fn metadata_for(&self, symbol: &str) -> Option<InstrumentMetadata> {
+    pub(crate) async fn metadata_for(&self, symbol: &str) -> Option<InstrumentMetadata> {
         self.metadata.read().await.get(symbol).cloned()
     }
 
-    pub async fn update_quote(&self, quote: ReplayQuote) {
+    pub(crate) async fn update_quote(&self, quote: ReplayQuote) {
         let symbol = quote.symbol.clone();
         self.quotes.write().await.insert(symbol.clone(), quote);
         let _ = self.updates_tx.send(symbol);
     }
 
-    pub async fn replay_quote(&self, symbol: &str) -> Option<ReplayQuote> {
+    pub(crate) async fn replay_quote(&self, symbol: &str) -> Option<ReplayQuote> {
         self.quotes.read().await.get(symbol).cloned()
     }
 
@@ -72,14 +72,14 @@ impl Default for ReplayMarketState {
 }
 
 #[derive(Debug)]
-pub struct ReplayExecutionState {
+pub(crate) struct ReplayExecutionState {
     broker: Mutex<SimBroker>,
     updates_tx: broadcast::Sender<u64>,
     next_update_seq: AtomicU64,
 }
 
 impl ReplayExecutionState {
-    pub fn new(broker: SimBroker) -> Self {
+    pub(crate) fn new(broker: SimBroker) -> Self {
         let (updates_tx, _) = broadcast::channel(64);
         Self {
             broker: Mutex::new(broker),
@@ -88,12 +88,12 @@ impl ReplayExecutionState {
         }
     }
 
-    pub async fn notify_update(&self) {
+    pub(crate) async fn notify_update(&self) {
         let seq = self.next_update_seq.fetch_add(1, Ordering::Relaxed);
         let _ = self.updates_tx.send(seq);
     }
 
-    pub async fn finish(&self) -> crate::Result<crate::replay::BacktestResult> {
+    pub(crate) async fn finish(&self) -> crate::Result<crate::replay::BacktestResult> {
         self.broker.lock().await.finish()
     }
 
@@ -103,12 +103,12 @@ impl ReplayExecutionState {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReplayMarketAdapter {
+pub(crate) struct ReplayMarketAdapter {
     state: Arc<ReplayMarketState>,
 }
 
 impl ReplayMarketAdapter {
-    pub fn new(state: Arc<ReplayMarketState>) -> Self {
+    pub(crate) fn new(state: Arc<ReplayMarketState>) -> Self {
         Self { state }
     }
 }
@@ -137,13 +137,13 @@ impl MarketAdapter for ReplayMarketAdapter {
 }
 
 #[derive(Debug, Clone)]
-pub struct ReplayExecutionAdapter {
+pub(crate) struct ReplayExecutionAdapter {
     accounts: Vec<String>,
     state: Arc<ReplayExecutionState>,
 }
 
 impl ReplayExecutionAdapter {
-    pub fn new(accounts: Vec<String>, state: Arc<ReplayExecutionState>) -> Self {
+    pub(crate) fn new(accounts: Vec<String>, state: Arc<ReplayExecutionState>) -> Self {
         Self { accounts, state }
     }
 }

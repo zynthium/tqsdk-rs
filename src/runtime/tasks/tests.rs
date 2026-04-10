@@ -8,9 +8,9 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::time::{Duration, sleep, timeout};
 
 use crate::runtime::{
-    BacktestExecutionAdapter, ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection,
-    PlannedOffset, PriceMode, RuntimeError, RuntimeMode, RuntimeResult, TargetPosScheduleStep, TqRuntime, compute_plan,
-    parse_offset_priority, validate_quote_constraints,
+    ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection, PlannedOffset, PriceMode,
+    RuntimeError, RuntimeMode, RuntimeResult, TargetPosScheduleStep, TqRuntime, compute_plan, parse_offset_priority,
+    validate_quote_constraints,
 };
 use crate::types::{
     DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, Position, Quote,
@@ -614,7 +614,7 @@ async fn scheduler_collects_trade_records_into_execution_report() {
 }
 
 #[tokio::test]
-async fn target_pos_task_runs_under_backtest_execution() {
+async fn target_pos_task_runs_under_backtest_mode() {
     let market = Arc::new(FakeMarketAdapter::new(Quote {
         instrument_id: "SHFE.rb2601".to_string(),
         exchange_id: "SHFE".to_string(),
@@ -624,7 +624,10 @@ async fn target_pos_task_runs_under_backtest_execution() {
         last_price: 100.0,
         ..Quote::default()
     }));
-    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        true,
+    ));
     let runtime = Arc::new(TqRuntime::with_id(
         "runtime-1",
         RuntimeMode::Backtest,
@@ -640,7 +643,7 @@ async fn target_pos_task_runs_under_backtest_execution() {
     task.set_target_volume(1).expect("target should be accepted");
     task.wait_target_reached()
         .await
-        .expect("backtest execution should reach target");
+        .expect("backtest mode should reach target");
 
     let position = execution
         .position("SIM", "SHFE.rb2601")
@@ -661,7 +664,10 @@ async fn wait_target_reached_returns_failure_when_task_exits_with_error() {
         last_price: 100.0,
         ..Quote::default()
     }));
-    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        true,
+    ));
     let runtime = Arc::new(TqRuntime::with_id(
         "runtime-1",
         RuntimeMode::Backtest,
@@ -683,7 +689,7 @@ async fn wait_target_reached_returns_failure_when_task_exits_with_error() {
 }
 
 #[tokio::test]
-async fn scheduler_runs_under_backtest_execution() {
+async fn scheduler_runs_under_backtest_mode() {
     let market = Arc::new(FakeMarketAdapter::with_trading_time(
         Quote {
             instrument_id: "SHFE.rb2601".to_string(),
@@ -699,7 +705,10 @@ async fn scheduler_runs_under_backtest_execution() {
             "night": []
         }),
     ));
-    let execution = Arc::new(BacktestExecutionAdapter::new(vec!["SIM".to_string()]));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        true,
+    ));
     let runtime = Arc::new(TqRuntime::with_id(
         "runtime-1",
         RuntimeMode::Backtest,
@@ -744,7 +753,7 @@ async fn scheduler_runs_under_backtest_execution() {
 
     timeout(Duration::from_secs(1), scheduler.wait_finished())
         .await
-        .expect("scheduler should finish under backtest execution")
+        .expect("scheduler should finish under backtest mode")
         .expect("scheduler should finish cleanly");
 
     let position = execution
