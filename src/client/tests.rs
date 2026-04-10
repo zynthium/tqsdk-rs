@@ -5,11 +5,9 @@ use crate::marketdata::MarketDataState;
 use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
-use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tokio::time::{Duration, sleep};
+use std::sync::atomic::AtomicBool;
 
 #[derive(Default)]
 struct TestAuth;
@@ -99,48 +97,15 @@ fn build_client_with_market() -> Client {
 async fn subscribe_quote_requires_explicit_start() {
     let client = build_client_with_market();
     let sub = client.subscribe_quote(&["SHFE.au2602"]).await.unwrap();
+    let ws = client.quotes_ws.as_ref().unwrap();
 
-    let fired = Arc::new(AtomicUsize::new(0));
-    {
-        let fired = Arc::clone(&fired);
-        sub.on_quote(move |_quote| {
-            fired.fetch_add(1, Ordering::SeqCst);
-        })
-        .await;
-    }
-
-    client.dm.merge_data(
-        json!({
-            "quotes": {
-                "SHFE.au2602": {
-                    "instrument_id": "SHFE.au2602",
-                    "datetime": "2024-01-01 09:00:00.000000",
-                    "last_price": 500.0
-                }
-            }
-        }),
-        true,
-        true,
-    );
-    sleep(Duration::from_millis(30)).await;
-    assert_eq!(fired.load(Ordering::SeqCst), 0);
+    assert!(ws.aggregated_quote_subscriptions_for_test().is_empty());
 
     sub.start().await.unwrap();
-    client.dm.merge_data(
-        json!({
-            "quotes": {
-                "SHFE.au2602": {
-                    "instrument_id": "SHFE.au2602",
-                    "datetime": "2024-01-01 09:00:01.000000",
-                    "last_price": 501.0
-                }
-            }
-        }),
-        true,
-        true,
+    assert_eq!(
+        ws.aggregated_quote_subscriptions_for_test(),
+        HashSet::from(["SHFE.au2602".to_string()])
     );
-    sleep(Duration::from_millis(30)).await;
-    assert_eq!(fired.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

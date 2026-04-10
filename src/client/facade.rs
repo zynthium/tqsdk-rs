@@ -288,7 +288,6 @@ impl Client {
         }
         let symbol_list: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
         Ok(Arc::new(QuoteSubscription::new(
-            Arc::clone(&self.dm),
             self.quotes_ws.as_ref().unwrap().clone(),
             symbol_list,
         )))

@@ -36,9 +36,8 @@ Client (facade + builder + market)
 │   └── watch      路径监听
 ├── cache/         本地缓存
 │   └── kline      K线分段磁盘缓存（写锁、去重、区间读取、压缩）
-├── quote/         Quote 订阅 (回调 + channel 双模式)
-│   ├── lifecycle  订阅生命周期 (start/stop)
-│   └── watch      数据变更监听
+├── quote/         Quote 订阅生命周期控制
+│   └── lifecycle  订阅生命周期 (start/stop/add/remove)
 ├── series/        K线/Tick 订阅 (单合约 + 多合约对齐)
 │   ├── api        SeriesAPI (K线/Tick 请求)
 │   ├── subscription 订阅管理
@@ -75,7 +74,7 @@ Client (facade + builder + market)
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
 | `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时、目标持仓调度、任务所有权与执行 adapter |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
-| `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
+| `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；状态读取走 `TqApi::quote()` |
 | `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
 | `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
@@ -87,6 +86,7 @@ Client (facade + builder + market)
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
 - 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
+- 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。

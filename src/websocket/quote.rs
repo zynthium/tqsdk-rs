@@ -572,4 +572,15 @@ impl TqQuoteWebsocket {
     pub(crate) fn force_send_failure_for_test(&self) {
         self.base.force_send_failure_for_test();
     }
+
+    #[cfg(test)]
+    pub(crate) fn aggregated_quote_subscriptions_for_test(&self) -> HashSet<String> {
+        self.runtime
+            .quote_subscriptions
+            .read()
+            .unwrap()
+            .values()
+            .flat_map(|symbols| symbols.iter().cloned())
+            .collect()
+    }
 }

@@ -22,7 +22,7 @@
 |---|---|---|
 | **获取入口** | `Client` | `client.tqapi()` 返回 `TqApi` |
 | **发起订阅** | `client.subscribe_quote(...)`<br>`client.series()?.kline(...)` | 保持不变（仍作为驱动网络下发的入口） |
-| **数据读取** | `rx.recv().await`<br>`sub.on_new_bar(...)` | `api.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load()` 读取快照 |
+| **数据读取** | `rx.recv().await`<br>`sub.on_new_bar(...)` | `api.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
 | **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing()` 检测本地是否过期 |
 | **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `api.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
 | **批量获取** | 无法直接获取本次变更全集 | `api.wait_update_and_drain().await` 直接返回本轮发生变化的 key 集合 |
@@ -52,9 +52,9 @@ let api = client.tqapi();
 
 ### 2. 行情（Quote）订阅迁移
 
-以前你必须监听一个 channel 或者注册回调；现在你只需要拿到 `QuoteRef` 并在主循环中读取。
+以前你必须监听一个 channel 或者注册回调；现在 Quote 已经彻底收敛到 `QuoteSubscription` + `QuoteRef` 二段式模型：前者负责网络订阅，后者负责状态读取。
 
-**旧代码：**
+**旧代码（已删除）：**
 ```rust
 let sub = client.subscribe_quote(&["SHFE.cu2605"]).await?;
 let rx = sub.quote_channel();
@@ -81,7 +81,7 @@ loop {
     api.wait_update().await?; // 阻塞，直到世界发生变化
     
     if cu.is_changing() {     // 判断 cu 是否是本次更新的主角
-        let q = cu.load();    // 无锁读取 O(1)
+        let q = cu.load().await; // 无锁读取 O(1)
         println!("最新价: {}", q.last_price);
     }
 }
@@ -104,7 +104,7 @@ loop {
     for symbol_id in updates.quotes {
         // 直接构造该特定合约的引用并读取
         let q_ref = api.quote(symbol_id.as_str());
-        let q = q_ref.load();
+        let q = q_ref.load().await;
         
         println!("{} 最新价: {}", symbol_id, q.last_price);
     }
@@ -139,7 +139,7 @@ loop {
     api.wait_update().await?;
     
     if cu_kline.is_changing() {
-        let k = cu_kline.load();
+        let k = cu_kline.load().await;
         println!("当前 K线 C: {}, V: {}", k.close, k.volume);
     }
 }
@@ -156,9 +156,9 @@ loop {
     
     // 如果铜价动了
     if cu_ref.is_changing() {
-        let cu_price = cu_ref.load().last_price;
+        let cu_price = cu_ref.load().await.last_price;
         // 直接读取铝价（不会阻塞，O(1) 开销）
-        let al_price = al_ref.load().last_price; 
+        let al_price = al_ref.load().await.last_price; 
         
         let spread = cu_price - al_price;
         if spread > THRESHOLD {
@@ -173,4 +173,4 @@ loop {
 1. **`wait_update` 不返回任何网络包**：它纯粹是一个调度屏障（Barrier）。底层网络线程已经在它返回前，把所有收到的 JSON 数据合并成了强类型的内存结构体（`Quote`/`Kline`）。
 2. **`is_changing()` 会消耗状态**：每次调用 `is_changing()` 如果返回 `true`，内部会推进本地的 `seen_epoch`。在同一个策略循环里，同一个 `QuoteRef` 第二次调用会返回 `false`。
 3. **回测模式 (Backtest)**：无需修改任何策略层代码！底层 `TqApi` 会自动识别，当你在回测中调用 `wait_update().await` 时，它会驱动历史数据流快进。
-4. **兼容期说明**：旧的 `.on_update()` 和 `quote_channel()` 接口目前仍然保留（数据依然会流经它们），但不再推荐在复杂的交易策略中使用。在未来的主版本更新中，它们可能会被彻底移除或移动到底层 `DataManager` 模块中。
+4. **当前边界**：Quote callback/channel 已删除；Series 的 legacy callback/stream 仍处于迁移过程中，但新代码应优先使用状态驱动读取模型。

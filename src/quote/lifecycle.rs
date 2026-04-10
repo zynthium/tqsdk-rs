@@ -1,6 +1,5 @@
 use super::QuoteSubscription;
 use crate::errors::Result;
-use async_channel::{Receiver, bounded};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -8,25 +7,14 @@ use uuid::Uuid;
 
 impl QuoteSubscription {
     /// 创建新的 Quote 订阅
-    pub fn new(
-        dm: Arc<crate::datamanager::DataManager>,
-        ws: Arc<crate::websocket::TqQuoteWebsocket>,
-        initial_symbols: Vec<String>,
-    ) -> Self {
+    pub fn new(ws: Arc<crate::websocket::TqQuoteWebsocket>, initial_symbols: Vec<String>) -> Self {
         let symbols: HashSet<String> = initial_symbols.into_iter().collect();
-        let (quote_tx, quote_rx) = bounded(ws.message_queue_capacity());
 
         QuoteSubscription {
             id: Uuid::new_v4().to_string(),
-            dm,
             ws,
             symbols: Arc::new(tokio::sync::RwLock::new(symbols)),
-            quote_tx,
-            quote_rx,
-            on_quote: Arc::new(tokio::sync::RwLock::new(None)),
-            on_error: Arc::new(tokio::sync::RwLock::new(None)),
             running: Arc::new(tokio::sync::RwLock::new(false)),
-            data_cb_id: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -41,21 +29,13 @@ impl QuoteSubscription {
 
         debug!("启动 Quote 订阅");
 
-        self.start_watching().await;
-
         if let Err(e) = self.send_subscription().await {
             *self.running.write().await = false;
-            self.detach_data_callback();
+            let _ = self.ws.remove_quote_subscription(&self.id).await;
             return Err(e);
         }
 
         Ok(())
-    }
-
-    pub(super) fn detach_data_callback(&self) {
-        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
-            let _ = self.dm.off_data(id);
-        }
     }
 
     /// 添加合约
@@ -70,6 +50,9 @@ impl QuoteSubscription {
         }
         drop(symbol_set);
 
+        if !*self.running.read().await {
+            return Ok(());
+        }
         self.send_subscription().await
     }
 
@@ -85,6 +68,9 @@ impl QuoteSubscription {
         }
         drop(symbol_set);
 
+        if !*self.running.read().await {
+            return Ok(());
+        }
         self.send_subscription().await
     }
 
@@ -98,36 +84,12 @@ impl QuoteSubscription {
         self.ws.update_quote_subscription(&self.id, ins_list).await
     }
 
-    /// 获取 Quote 更新通道（克隆接收端）
-    pub fn quote_channel(&self) -> Receiver<crate::types::Quote> {
-        self.quote_rx.clone()
-    }
-
-    /// 注册回调
-    pub async fn on_quote<F>(&self, handler: F)
-    where
-        F: Fn(Arc<crate::types::Quote>) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_quote.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
-    /// 注册错误回调
-    pub async fn on_error<F>(&self, handler: F)
-    where
-        F: Fn(Arc<String>) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_error.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
     /// 关闭订阅
     pub async fn close(&self) -> Result<()> {
         {
             let mut running = self.running.write().await;
             *running = false;
         }
-        self.detach_data_callback();
 
         info!("关闭 Quote 订阅");
         self.ws.remove_quote_subscription(&self.id).await
@@ -137,9 +99,6 @@ impl QuoteSubscription {
 impl Drop for QuoteSubscription {
     fn drop(&mut self) {
         info!("销毁 Quote 订阅: id={}", self.id);
-        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
-            let _ = self.dm.off_data(id);
-        }
         let ws = Arc::clone(&self.ws);
         let id = self.id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {

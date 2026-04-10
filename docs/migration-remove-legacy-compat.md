@@ -29,6 +29,12 @@
 | `quote_channel` / `on_quote` | `client.tqapi().quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
 | `SeriesSubscription` callback / stream fan-out | `SeriesSubscription` snapshot / window state API | 迁移方向是 pull-model，不再新增 callback/channel 用法 |
 
+## Quote Lifecycle Note
+
+- `QuoteSubscription` 只负责向服务端声明订阅生命周期：`start()` / `add_symbols()` / `remove_symbols()` / `close()`。
+- `QuoteRef` 是 `MarketDataState` 上的快照句柄，不拥有订阅本身。
+- 关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态停止继续推进。
+
 ## Backtest Migration
 
 旧代码：
@@ -100,6 +106,6 @@ let scheduler = account
 ## Current Status
 
 - 已落地：`ReplaySession` 已成为唯一推荐回测路径，`TradeSession` watcher 已迁到 `DataManager::subscribe_epoch()`。
-- 已删除：legacy `BacktestHandle` 路径、`compat/` facade。
-- 正在收敛：Quote fan-out、Series callback/stream fan-out。
+- 已删除：legacy `BacktestHandle` 路径、`compat/` facade、Quote callback/channel fan-out。
+- 正在收敛：Series callback/stream fan-out。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

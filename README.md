@@ -12,9 +12,9 @@
 - 异步优先：基于 `tokio`，统一行情、序列、交易与回测的异步接口。
 - DIFF 协议：支持天勤增量数据合并、路径监听与 epoch 变化追踪。
 - 状态驱动优先：`TqApi` 负责最新市场状态读取，`SeriesSubscription` 负责窗口态序列读取。
-- 延迟启动：先注册回调、再 `start()`/`connect()`，减少初始化阶段数据丢失。
+- 延迟启动：先创建订阅/会话句柄，再显式 `start()`/`connect()`，把生命周期控制与数据读取分离。
 - 背压可控：关键通道与离线队列已改为有界缓冲，避免慢消费者无限堆积内存。
-- 零拷贝回调：大量更新路径通过 `Arc<T>` 分发，降低多消费者场景开销。
+- 零拷贝共享：状态快照与事件对象尽量通过 `Arc<T>` 共享，降低多消费者场景开销。
 - Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
 - 回测支持：`ReplaySession` 是历史回放、回测推进与 runtime 驱动的唯一推荐入口。
 
@@ -349,34 +349,33 @@ loop {
 }
 ```
 
-### 2. 回调与通道 (兼容模式)
+#### Quote 订阅的职责边界
 
-虽然推荐使用状态驱动 API，但 `tqsdk-rs` 仍保留了回调和通道模式，适用于简单的异步分发场景。
-
-#### Quote 回调与通道
+`QuoteSubscription` 现在只负责向服务端声明订阅生命周期；真正的数据读取统一走 `TqApi::quote()` 返回的 `QuoteRef`。
 
 ```rust
-let quote_sub = client
-    .subscribe_quote(&["SHFE.au2602", "SHFE.ag2512"])
-    .await?;
+let tqapi = client.tqapi();
+let symbols = ["SHFE.au2602", "SHFE.ag2512"];
 
-// 回调模式
-quote_sub
-    .on_quote(|quote| {
-        println!("{} 最新价: {}", quote.instrument_id, quote.last_price);
-    })
-    .await;
-
-// 通道模式
-let quote_rx = quote_sub.quote_channel();
-tokio::spawn(async move {
-    while let Ok(quote) = quote_rx.recv().await {
-        println!("[channel] {} {}", quote.instrument_id, quote.last_price);
-    }
-});
-
+let quote_sub = client.subscribe_quote(&symbols).await?;
 quote_sub.start().await?;
+
+let au = tqapi.quote("SHFE.au2602");
+let ag = tqapi.quote("SHFE.ag2512");
+
+loop {
+    let updates = tqapi.wait_update_and_drain().await?;
+
+    if updates.quotes.contains(&"SHFE.au2602".into()) {
+        println!("au 最新价: {}", au.load().await.last_price);
+    }
+    if updates.quotes.contains(&"SHFE.ag2512".into()) {
+        println!("ag 最新价: {}", ag.load().await.last_price);
+    }
+}
 ```
+
+`QuoteRef` 是 `MarketDataState` 上的快照句柄，不拥有订阅本身；关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态不再继续推进。
 
 ### 2. 交易功能
 
@@ -726,7 +725,7 @@ cargo run --example option_levels
 |------|------|------|
 | `quote.rs` | Quote、单合约 K 线、多合约对齐 K 线、Tick | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
 | `history.rs` | 历史 K 线、接口联调、交易状态查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL` |
-| `trade.rs` | 交易回调、账户/持仓/委托/成交监听 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0` |
+| `trade.rs` | 可靠事件流、账户/持仓监听、订单等待 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0` |
 | `backtest.rs` | `ReplaySession` 构建、K 线注册、runtime 驱动、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `pivot_point.rs` | 基于 `ReplaySession` 的日线枢轴点反转策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `datamanager.rs` | `watch` / `unwatch`、路径读取、epoch | 无 |
@@ -811,49 +810,31 @@ tqsdk-rs/
 - Quote、TradingStatus、Series stream、WebSocket 离线发送使用有界队列。
 - 背压策略优先限制内存占用；当消费者过慢时，部分更新会被丢弃并记录日志。
 
-### 灵活接口
+### Canonical 接口
 
-- Quote：回调 + Channel。
-- Series：回调 + `data_stream()`。
-- TradeSession：回调 + 主动查询。
+- Quote：`QuoteSubscription` 负责订阅生命周期，`TqApi::quote()` 负责读取最新状态。
+- Series：`TqApi` 负责 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口。
+- TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
-### 零拷贝回调设计
-
-```rust
-quote_sub.on_quote(|quote| {
-    println!("{}", quote.last_price);
-}).await;
-
-series_sub.on_update(|data, info| {
-    if info.has_new_bar {
-        println!("新 K 线");
-    }
-}).await;
-
-// 注册回调后，别忘了显式启动
-quote_sub.start().await?;
-series_sub.start().await?;
-```
-
-回调参数大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。
+仍保留的回调接口大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。
 
 ## 最佳实践
 
 ### 1. 延迟启动模式
 
 ```rust
-let sub = series_api
-    .kline("SHFE.au2602", std::time::Duration::from_secs(60), 100)
-    .await?;
+let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
+let quote_ref = client.tqapi().quote("SHFE.au2602");
 
-sub.on_update(|data, info| {
-    println!("收到更新: has_new_bar={}", info.has_new_bar);
-}).await;
+quote_sub.start().await?;
 
-sub.start().await?;
+loop {
+    quote_ref.wait_update().await?;
+    println!("最新价: {}", quote_ref.load().await.last_price);
+}
 ```
 
-不推荐先 `start()` 再注册回调，否则初始化阶段可能错过首批数据。
+先创建订阅句柄，再显式 `start()`，可以把“声明订阅”和“消费状态”分离开。
 
 ### 2. 背压与慢消费者
 
@@ -926,8 +907,8 @@ let layer = create_logger_layer("info", false);
 ### 重要提示
 
 1. 合约代码必须使用完整格式，如 `SHFE.au2602`。
-2. 先注册回调，再 `start()` 或 `connect()`。
-3. `on_update()` 只有一个槽位；如需额外消费，请使用 `data_stream()` 或自行转发。
+2. Quote 需要显式 `start()` 才会推进状态；TradeSession 需要 `connect()`；仍依赖回调或事件订阅的接口，最好在启动前先注册完成。
+3. `SeriesSubscription::on_update()` 只有一个槽位；如需额外消费，请使用 `data_stream()` 或自行转发。
 4. 通道和流式接口已采用有界缓冲；如果你观察到丢更新日志，优先检查消费者速度和队列容量。
 5. 交易示例会访问真实交易接口，请优先使用模拟环境验证。
 
@@ -935,13 +916,13 @@ let layer = create_logger_layer("info", false);
 
 **Q: 为什么收不到数据？**
 
-- 检查是否已调用 `start()`。
-- 检查回调是否在 `start()` 之前注册。
+- 检查 Quote/Series 是否已调用 `start()`，TradeSession 是否已 `connect()`。
+- 检查需要的回调或事件流是否在启动前注册完成。
 - 检查合约代码格式和账户权限。
 
 **Q: 为什么看到“通道已满，丢弃一次更新”？**
 
-- 说明当前消费者处理速度跟不上生产速度。
+- 说明当前带缓冲的消费者处理速度跟不上生产速度。
 - 提高 `message_queue_capacity()`，或减少回调/通道里的阻塞操作。
 
 **Q: `data_stream()` 会覆盖 `on_update()` 吗？**
