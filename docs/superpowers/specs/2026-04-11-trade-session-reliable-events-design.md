@@ -347,6 +347,7 @@ Reliable events are only for wakeup and observation, not for replacing snapshot 
 
 ### Modified
 
+- `AGENTS.md`
 - `src/trade_session/mod.rs`
 - `src/trade_session/core.rs`
 - `src/trade_session/watch.rs`
@@ -357,6 +358,7 @@ Reliable events are only for wakeup and observation, not for replacing snapshot 
 - `src/lib.rs`
 - `README.md`
 - `examples/trade.rs`
+- other touched `examples/*.rs` that demonstrate trade session behavior or canonical API usage
 - `src/trade_session/tests.rs`
 - `src/runtime/tasks/tests.rs`
 
@@ -391,12 +393,16 @@ Document explicitly:
 - reliable event streams are for order/trade event consumption
 - subscribers only see events after subscribe
 - `Lagged` is explicit and recoverable only by resubscription
+- `AGENTS.md` must be updated so future contributors follow the new canonical trade event API, no longer recommend removed `on_order` / `on_trade` / channel surfaces, and remember to keep examples in sync with public API changes
+- all affected examples must be updated to demonstrate the new canonical trade event subscription and waiting model, not the removed best-effort event interfaces
 
 ## Rollout
 
 This ships as a breaking change in the same release that removes legacy marketdata surfaces.
 
 No deprecated bridge is kept for old trade event APIs.
+
+Implementation is not complete until `AGENTS.md`, README, and every affected example are consistent with the shipped trade event API.
 
 ## Open Questions Resolved
 
@@ -405,4 +411,3 @@ No deprecated bridge is kept for old trade event APIs.
 - Compatibility: none.
 - Event scope: `order` and `trade` only.
 - Subscription start point: tail-only.
-
