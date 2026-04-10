@@ -1,8 +1,8 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::replay::{
-    BarState, ContinuousContractProvider, ContinuousMapping, FeedCursor, FeedEvent, InstrumentMetadata, ReplayConfig,
-    ReplayKernel, SeriesStore,
+    BarState, ContinuousContractProvider, ContinuousMapping, FeedCursor, FeedEvent, InstrumentMetadata, QuoteSelection,
+    QuoteSynthesizer, ReplayConfig, ReplayKernel, SeriesStore,
 };
 use crate::types::{Kline, Tick};
 
@@ -101,6 +101,275 @@ fn series_store_keeps_fixed_width_kline_window() {
     assert_eq!(rows[1].kline.id, 3);
 }
 
+#[test]
+fn quote_synthesizer_prefers_tick_over_kline() {
+    let mut synth = QuoteSynthesizer::default();
+    let meta = InstrumentMetadata {
+        symbol: "SHFE.rb2605".to_string(),
+        price_tick: 1.0,
+        ..InstrumentMetadata::default()
+    };
+
+    synth.register_symbol(
+        "SHFE.rb2605",
+        meta,
+        QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        },
+    );
+    synth.register_symbol("SHFE.rb2605", InstrumentMetadata::default(), QuoteSelection::Tick);
+
+    let update = synth.apply_tick(
+        "SHFE.rb2605",
+        &Tick {
+            datetime: 2_000,
+            last_price: 12.0,
+            ask_price1: 13.0,
+            ask_volume1: 1,
+            bid_price1: 11.0,
+            bid_volume1: 1,
+            ..Tick::default()
+        },
+    );
+
+    assert_eq!(update.visible.last_price, 12.0);
+}
+
+#[test]
+fn quote_synthesizer_builds_ohlc_price_path_for_smallest_kline() {
+    let mut synth = QuoteSynthesizer::default();
+    synth.register_symbol(
+        "SHFE.rb2605",
+        InstrumentMetadata {
+            symbol: "SHFE.rb2605".to_string(),
+            price_tick: 1.0,
+            ..InstrumentMetadata::default()
+        },
+        QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        },
+    );
+
+    let update = synth.apply_bar_close(
+        "SHFE.rb2605",
+        60_000_000_000,
+        &Kline {
+            datetime: 1_000,
+            open: 10.0,
+            high: 14.0,
+            low: 9.0,
+            close: 12.0,
+            open_oi: 100,
+            close_oi: 110,
+            volume: 7,
+            id: 1,
+            epoch: None,
+        },
+    );
+
+    let prices: Vec<f64> = update.path.iter().map(|step| step.last_price).collect();
+    assert_eq!(prices, vec![10.0, 14.0, 9.0, 12.0]);
+}
+
+#[test]
+fn quote_synthesizer_marks_implicit_minute_feed_as_lowest_priority() {
+    let mut synth = QuoteSynthesizer::default();
+
+    synth.register_symbol(
+        "SHFE.rb2605",
+        InstrumentMetadata {
+            symbol: "SHFE.rb2605".to_string(),
+            price_tick: 1.0,
+            ..InstrumentMetadata::default()
+        },
+        QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: true,
+        },
+    );
+
+    assert_eq!(
+        synth.selection_for("SHFE.rb2605"),
+        Some(QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: true,
+        })
+    );
+}
+
+#[test]
+fn quote_synthesizer_prefers_smaller_explicit_kline_over_larger_one() {
+    let mut synth = QuoteSynthesizer::default();
+    let meta = InstrumentMetadata {
+        symbol: "SHFE.rb2605".to_string(),
+        price_tick: 1.0,
+        ..InstrumentMetadata::default()
+    };
+
+    synth.register_symbol(
+        "SHFE.rb2605",
+        meta.clone(),
+        QuoteSelection::Kline {
+            duration_nanos: 300_000_000_000,
+            implicit: false,
+        },
+    );
+    synth.register_symbol(
+        "SHFE.rb2605",
+        meta,
+        QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        },
+    );
+
+    assert_eq!(
+        synth.selection_for("SHFE.rb2605"),
+        Some(QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        })
+    );
+}
+
+#[test]
+fn quote_synthesizer_promotes_tick_when_tick_event_arrives_after_kline_registration() {
+    let mut synth = QuoteSynthesizer::default();
+    synth.register_symbol(
+        "SHFE.rb2605",
+        InstrumentMetadata {
+            symbol: "SHFE.rb2605".to_string(),
+            price_tick: 1.0,
+            ..InstrumentMetadata::default()
+        },
+        QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        },
+    );
+
+    let update = synth.apply_tick(
+        "SHFE.rb2605",
+        &Tick {
+            datetime: 2_000,
+            last_price: 12.0,
+            ask_price1: 13.0,
+            ask_volume1: 1,
+            bid_price1: 11.0,
+            bid_volume1: 1,
+            ..Tick::default()
+        },
+    );
+
+    assert!(update.source_selected);
+    assert_eq!(update.visible.last_price, 12.0);
+    assert_eq!(synth.selection_for("SHFE.rb2605"), Some(QuoteSelection::Tick));
+}
+
+#[test]
+fn quote_synthesizer_promotes_smaller_kline_when_bar_event_arrives() {
+    let mut synth = QuoteSynthesizer::default();
+    let meta = InstrumentMetadata {
+        symbol: "SHFE.rb2605".to_string(),
+        price_tick: 1.0,
+        ..InstrumentMetadata::default()
+    };
+
+    synth.register_symbol(
+        "SHFE.rb2605",
+        meta.clone(),
+        QuoteSelection::Kline {
+            duration_nanos: 300_000_000_000,
+            implicit: false,
+        },
+    );
+
+    let update = synth.apply_bar_close(
+        "SHFE.rb2605",
+        60_000_000_000,
+        &Kline {
+            datetime: 1_000,
+            open: 10.0,
+            high: 14.0,
+            low: 9.0,
+            close: 12.0,
+            open_oi: 100,
+            close_oi: 110,
+            volume: 7,
+            id: 1,
+            epoch: None,
+        },
+    );
+
+    assert!(update.source_selected);
+    assert_eq!(
+        synth.selection_for("SHFE.rb2605"),
+        Some(QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        })
+    );
+}
+
+#[test]
+fn quote_synthesizer_keeps_non_selected_bar_close_distinguishable_from_driver_path() {
+    let mut synth = QuoteSynthesizer::default();
+    let meta = InstrumentMetadata {
+        symbol: "SHFE.rb2605".to_string(),
+        price_tick: 1.0,
+        ..InstrumentMetadata::default()
+    };
+
+    synth.register_symbol(
+        "SHFE.rb2605",
+        meta.clone(),
+        QuoteSelection::Kline {
+            duration_nanos: 60_000_000_000,
+            implicit: false,
+        },
+    );
+
+    let _ = synth.apply_bar_close(
+        "SHFE.rb2605",
+        60_000_000_000,
+        &Kline {
+            datetime: 1_000,
+            open: 10.0,
+            high: 14.0,
+            low: 9.0,
+            close: 12.0,
+            open_oi: 100,
+            close_oi: 110,
+            volume: 7,
+            id: 1,
+            epoch: None,
+        },
+    );
+
+    let update = synth.apply_bar_close(
+        "SHFE.rb2605",
+        300_000_000_000,
+        &Kline {
+            datetime: 1_000,
+            open: 20.0,
+            high: 24.0,
+            low: 19.0,
+            close: 22.0,
+            open_oi: 200,
+            close_oi: 210,
+            volume: 9,
+            id: 2,
+            epoch: None,
+        },
+    );
+
+    assert!(!update.source_selected);
+    assert_eq!(update.visible.last_price, 12.0);
+    assert!(update.path.is_empty());
+}
+
 #[tokio::test]
 async fn replay_kernel_commits_bar_open_and_close_as_two_steps() {
     let bars = vec![Kline {
@@ -168,6 +437,30 @@ async fn replay_kernel_marks_single_symbol_kline_handle_as_updated() {
     let rows = handle.rows().await;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].state, BarState::Opening);
+}
+
+#[tokio::test]
+async fn replay_kernel_marks_quote_driving_bar_events_as_updated_quotes() {
+    let bars = vec![Kline {
+        id: 1,
+        datetime: 1_000,
+        open: 10.0,
+        high: 13.0,
+        low: 9.0,
+        close: 12.0,
+        open_oi: 100,
+        close_oi: 110,
+        volume: 8,
+        epoch: None,
+    }];
+
+    let mut kernel = ReplayKernel::for_test(vec![(
+        "kline:SHFE.rb2605:60000000000".to_string(),
+        FeedCursor::from_kline_rows("SHFE.rb2605", 60_000_000_000, bars),
+    )]);
+
+    let step = kernel.step().await.unwrap().unwrap();
+    assert_eq!(step.updated_quotes, vec!["SHFE.rb2605".to_string()]);
 }
 
 #[tokio::test]

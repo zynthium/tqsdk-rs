@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use crate::errors::Result;
 use crate::replay::{
     AlignedKlineHandle, AlignedKlineRow, BarState, FeedCursor, FeedEvent, ReplayHandleId, ReplayKlineHandle,
-    ReplayStep, SeriesStore,
+    ReplayStep, QuoteSynthesizer, SeriesStore,
 };
 
 const DEFAULT_SERIES_WIDTH: usize = 1_024;
@@ -14,6 +14,7 @@ const DEFAULT_SERIES_WIDTH: usize = 1_024;
 pub struct ReplayKernel {
     feeds: Vec<(String, FeedCursor)>,
     series_store: SeriesStore,
+    quote_synthesizer: QuoteSynthesizer,
     klines: Vec<ReplayKlineHandle>,
     aligned_klines: Vec<AlignedKlineHandle>,
     next_handle_id: usize,
@@ -25,6 +26,7 @@ impl ReplayKernel {
         Self {
             feeds,
             series_store: SeriesStore::default(),
+            quote_synthesizer: QuoteSynthesizer::default(),
             klines: Vec::new(),
             aligned_klines: Vec::new(),
             next_handle_id: 0,
@@ -80,6 +82,7 @@ impl ReplayKernel {
 
         let mut updated_symbols = Vec::new();
         let mut updated_handles = Vec::new();
+        let mut updated_quotes = Vec::new();
         let mut events = Vec::new();
 
         for (_, cursor) in &mut self.feeds {
@@ -96,7 +99,8 @@ impl ReplayKernel {
         }
 
         for event in events {
-            self.apply_event(event, &mut updated_symbols, &mut updated_handles).await;
+            self.apply_event(event, &mut updated_symbols, &mut updated_handles, &mut updated_quotes)
+                .await;
         }
 
         let aligned_handles = self.materialize_aligned_rows(next_timestamp, &updated_symbols).await;
@@ -109,7 +113,7 @@ impl ReplayKernel {
         Ok(Some(ReplayStep {
             current_dt: DateTime::<Utc>::from_timestamp_nanos(next_timestamp),
             updated_handles,
-            updated_quotes: Vec::new(),
+            updated_quotes,
             settled_trading_day: None,
         }))
     }
@@ -119,10 +123,15 @@ impl ReplayKernel {
         event: FeedEvent,
         updated_symbols: &mut Vec<String>,
         updated_handles: &mut Vec<ReplayHandleId>,
+        updated_quotes: &mut Vec<String>,
     ) {
         match event {
             FeedEvent::Tick { symbol, tick } => {
+                let update = self.quote_synthesizer.apply_tick(&symbol, &tick);
                 self.series_store.push_tick(&symbol, tick, self.tick_window_width);
+                if update.source_selected && !updated_quotes.contains(&symbol) {
+                    updated_quotes.push(symbol);
+                }
             }
             FeedEvent::BarOpen {
                 symbol,
@@ -131,6 +140,10 @@ impl ReplayKernel {
             } => {
                 self.series_store
                     .push_kline(&symbol, duration_nanos, kline.clone(), BarState::Opening, DEFAULT_SERIES_WIDTH);
+                let update = self.quote_synthesizer.apply_bar_open(&symbol, duration_nanos, &kline);
+                if update.source_selected && !updated_quotes.contains(&symbol) {
+                    updated_quotes.push(symbol.clone());
+                }
                 self.update_kline_handles(&symbol, duration_nanos, kline, BarState::Opening, updated_handles)
                     .await;
                 updated_symbols.push(symbol);
@@ -142,6 +155,10 @@ impl ReplayKernel {
             } => {
                 self.series_store
                     .close_kline(&symbol, duration_nanos, kline.clone(), DEFAULT_SERIES_WIDTH);
+                let update = self.quote_synthesizer.apply_bar_close(&symbol, duration_nanos, &kline);
+                if update.source_selected && !updated_quotes.contains(&symbol) {
+                    updated_quotes.push(symbol.clone());
+                }
                 self.update_kline_handles(&symbol, duration_nanos, kline, BarState::Closed, updated_handles)
                     .await;
                 updated_symbols.push(symbol);
