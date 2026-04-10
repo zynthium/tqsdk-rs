@@ -54,7 +54,7 @@ pub mod auth;
 // WebSocket 连接
 pub mod cache;
 #[path = "websocket/mod.rs"]
-pub mod websocket;
+mod websocket;
 
 // Quote 订阅
 pub mod quote;
@@ -101,7 +101,6 @@ pub use trade_session::{
     TradeSessionEventKind,
 };
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
-pub use websocket::TqWebsocket;
 
 // Polars 扩展
 #[cfg(feature = "polars")]

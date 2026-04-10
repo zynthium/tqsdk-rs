@@ -38,7 +38,7 @@ impl InsAPI {
     /// 创建合约与基础数据查询接口
     ///
     /// `stock` 用于区分期货与股票行情系统。
-    pub fn new(
+    pub(crate) fn new(
         dm: Arc<DataManager>,
         ws: Arc<TqQuoteWebsocket>,
         trading_status_ws: Option<Arc<TqTradingStatusWebsocket>>,

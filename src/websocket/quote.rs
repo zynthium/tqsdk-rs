@@ -245,15 +245,6 @@ impl TqQuoteWebsocket {
         self.base.send(&value).await
     }
 
-    /// 检查是否就绪
-    pub fn is_ready(&self) -> bool {
-        self.base.is_ready()
-    }
-
-    pub fn is_logged_in(&self) -> bool {
-        self.runtime.login_ready.load(Ordering::SeqCst)
-    }
-
     /// 关闭连接
     pub async fn close(&self) -> Result<()> {
         self.base.close().await

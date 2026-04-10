@@ -23,7 +23,7 @@ type CloseCallback = Arc<RwLock<Option<Arc<dyn Fn() + Send + Sync>>>>;
 type ErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>;
 type NotifyCallback = Arc<RwLock<Option<Arc<dyn Fn(crate::types::Notification) + Send + Sync>>>>;
 
-pub use core::{TqWebsocket, WebSocketConfig, WebSocketStatus};
+pub use core::{TqWebsocket, WebSocketConfig};
 pub use quote::TqQuoteWebsocket;
 pub use trade::TqTradeWebsocket;
 pub use trading_status::TqTradingStatusWebsocket;

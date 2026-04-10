@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 impl TradeSession {
     /// 创建交易会话
-    pub fn new(
+    pub(crate) fn new(
         broker: String,
         user_id: String,
         password: String,

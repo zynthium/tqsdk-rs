@@ -17,6 +17,7 @@
 - 零拷贝共享：状态快照与事件对象尽量通过 `Arc<T>` 共享，降低多消费者场景开销。
 - Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
 - 回测支持：`ReplaySession` 是历史回放、回测推进与 runtime 驱动的唯一推荐入口。
+- 连接入口收口：原始 WebSocket transport 保持为内部实现，公开连接路径统一走 `Client`、`TradeSession` 和 `ReplaySession`。
 
 ## 功能模块
 

@@ -70,7 +70,7 @@ Client (facade + builder + market)
 |------|---------|------|
 | `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期 |
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
-| `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
+| `websocket` | internal transport module | 底层连接、重连、消息分发；不作为推荐 public entry point |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
 | `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时与 Builder 任务入口；adapter/registry/planning primitives 属于内部装配 |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
@@ -90,6 +90,7 @@ Client (facade + builder + market)
 - 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐/历史窗口状态。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
+- transport 收口：`TqWebsocket`、`TqQuoteWebsocket`、`TqTradeWebsocket` 等原始连接拼装件保持 crate 内部，外部统一从 `Client` / `TradeSession` / `ReplaySession` 进入。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
 - 公开入口收口：运行时的公开表面聚焦在 `TqRuntime`、`AccountHandle` 和 Builder 任务类型；adapter、registry、child-order planning 等拼装件保持 crate 内部。

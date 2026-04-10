@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 impl QuoteSubscription {
     /// 创建新的 Quote 订阅
-    pub fn new(ws: Arc<crate::websocket::TqQuoteWebsocket>, initial_symbols: Vec<String>) -> Self {
+    pub(crate) fn new(ws: Arc<crate::websocket::TqQuoteWebsocket>, initial_symbols: Vec<String>) -> Self {
         let symbols: HashSet<String> = initial_symbols.into_iter().collect();
 
         QuoteSubscription {

@@ -68,7 +68,8 @@ impl<'a> From<Vec<&'a str>> for KlineSymbols {
 
 impl SeriesAPI {
     /// 创建 Series API 实例。
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         dm: Arc<crate::datamanager::DataManager>,
         ws: Arc<crate::websocket::TqQuoteWebsocket>,
         auth: Arc<RwLock<dyn crate::auth::Authenticator>>,
@@ -77,7 +78,7 @@ impl SeriesAPI {
     }
 
     /// 创建 Series API 实例（可自定义磁盘缓存策略）。
-    pub fn new_with_cache_policy(
+    pub(crate) fn new_with_cache_policy(
         dm: Arc<crate::datamanager::DataManager>,
         ws: Arc<crate::websocket::TqQuoteWebsocket>,
         auth: Arc<RwLock<dyn crate::auth::Authenticator>>,
