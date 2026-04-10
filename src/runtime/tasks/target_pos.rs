@@ -128,23 +128,6 @@ impl TargetPosTask {
         &self.inner.config
     }
 
-    pub fn task_id(&self) -> crate::runtime::TaskId {
-        self.inner.task_id
-    }
-
-    pub fn offset_priority(&self) -> &[Vec<OffsetAction>] {
-        &self.inner.offset_priority
-    }
-
-    pub fn compute_plan(
-        &self,
-        quote: &Quote,
-        position: &Position,
-        target_volume: i64,
-    ) -> RuntimeResult<Vec<PlannedBatch>> {
-        compute_plan(quote, position, target_volume, &self.inner.offset_priority)
-    }
-
     pub fn set_target_volume(&self, volume: i64) -> RuntimeResult<()> {
         if self.inner.closed.load(Ordering::SeqCst) {
             return Err(RuntimeError::TargetTaskFinished {
@@ -471,7 +454,7 @@ fn child_order_should_stop(command_rx: &watch::Receiver<TaskCommand>, request_se
     }
 }
 
-pub fn parse_offset_priority(raw: &str) -> RuntimeResult<Vec<Vec<OffsetAction>>> {
+pub(crate) fn parse_offset_priority(raw: &str) -> RuntimeResult<Vec<Vec<OffsetAction>>> {
     let mut groups = Vec::new();
     let mut current = Vec::new();
     let mut seen = HashSet::new();
@@ -508,7 +491,7 @@ pub fn parse_offset_priority(raw: &str) -> RuntimeResult<Vec<Vec<OffsetAction>>>
     Ok(groups)
 }
 
-pub fn validate_quote_constraints(quote: &Quote) -> RuntimeResult<()> {
+pub(crate) fn validate_quote_constraints(quote: &Quote) -> RuntimeResult<()> {
     if quote.open_min_market_order_volume > 1 || quote.open_min_limit_order_volume > 1 {
         return Err(RuntimeError::UnsupportedOpenOrderVolume {
             symbol: quote.instrument_id.clone(),
@@ -520,7 +503,7 @@ pub fn validate_quote_constraints(quote: &Quote) -> RuntimeResult<()> {
     Ok(())
 }
 
-pub fn compute_plan(
+pub(crate) fn compute_plan(
     quote: &Quote,
     position: &Position,
     target_volume: i64,

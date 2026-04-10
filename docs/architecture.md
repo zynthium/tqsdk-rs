@@ -9,11 +9,11 @@
 ```text
 Client (facade + builder + market)
 ├── runtime/       统一任务运行时
-│   ├── core       `TqRuntime`（账户句柄、模式、adapter 装配）
+│   ├── core       `TqRuntime`（公开运行时句柄；adapter 装配收口为 crate 内部）
 │   ├── account    `AccountHandle`（按账户派生任务入口）
-│   ├── market     `MarketAdapter`（Quote / trading_time 读取）
-│   ├── execution  `ExecutionAdapter`（live 下单执行抽象；replay runtime 走内部实现）
-│   ├── registry   `TaskRegistry`（symbol 所有权、手工下单保护、order owner）
+│   ├── market     runtime 行情适配（crate 内部）
+│   ├── execution  runtime 执行适配（crate 内部）
+│   ├── registry   task 唯一性 / 手工下单保护（crate 内部）
 │   ├── tasks      `TargetPosTask` / `TargetPosScheduler` / child order runner
 │   ├── modes      live/backtest 模式装配
 │   └── types      运行时配置与错误
@@ -72,7 +72,7 @@ Client (facade + builder + market)
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
-| `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时、目标持仓调度、任务所有权与执行 adapter |
+| `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时与 Builder 任务入口；adapter/registry/planning primitives 属于内部装配 |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
 | `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；状态读取走 `TqApi::quote()` |
 | `series` | `SeriesAPI`, `SeriesSubscription` | 窗口态 K线/Tick 订阅，使用 `wait_update()` / `load()` 读取快照 |
@@ -92,6 +92,7 @@ Client (facade + builder + market)
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
+- 公开入口收口：运行时的公开表面聚焦在 `TqRuntime`、`AccountHandle` 和 Builder 任务类型；adapter、registry、child-order planning 等拼装件保持 crate 内部。
 - 回测入口收敛：公开回测路径统一通过 `Client::create_backtest_session` 构造 `ReplaySession`，不再维持独立 `BacktestHandle` facade。
 - 回放实现收口：`ReplayKernel`、quote 合成器、`SimBroker` 等回放拼装件属于内部实现细节；公开回测入口聚焦在 `ReplaySession` 与返回的 handles/result。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。

@@ -11,17 +11,19 @@ mod types;
 
 pub use account::AccountHandle;
 pub use core::TqRuntime;
-pub use engine::ExecutionEngine;
+pub(crate) use engine::ExecutionEngine;
 pub use errors::{RuntimeError, RuntimeResult};
-pub use execution::{ExecutionAdapter, LiveExecutionAdapter};
-pub use market::{LiveMarketAdapter, MarketAdapter};
+pub(crate) use execution::{ExecutionAdapter, LiveExecutionAdapter};
+pub(crate) use market::{LiveMarketAdapter, MarketAdapter};
 pub use modes::RuntimeMode;
-pub use registry::{RegisteredTask, TaskId, TaskRegistry};
+pub(crate) use registry::{TaskId, TaskRegistry};
+#[cfg(test)]
+pub(crate) use tasks::{
+    ChildOrderRunner, OffsetAction, PlannedOffset, compute_plan, parse_offset_priority, validate_quote_constraints,
+};
 pub use tasks::{
-    ChildOrderRunner, OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder, TargetPosBuilder,
-    TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
-    TargetPosSchedulerConfig, TargetPosTask, compute_plan, parse_offset_priority, resolve_order_price,
-    validate_quote_constraints,
+    TargetPosBuilder, TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
+    TargetPosSchedulerConfig, TargetPosTask,
 };
 pub use types::{OffsetPriority, OrderDirection, PriceMode, PriceResolver, TargetPosConfig, VolumeSplitPolicy};
 

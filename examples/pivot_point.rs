@@ -121,6 +121,16 @@ fn net_position(position: &Position) -> i64 {
     (position.volume_long_today + position.volume_long_his) - (position.volume_short_today + position.volume_short_his)
 }
 
+fn find_final_position<'a>(positions: &'a [Position], account_key: &str, symbol: &str) -> Option<&'a Position> {
+    positions
+        .iter()
+        .find(|position| {
+            position.user_id == account_key && format!("{}.{}", position.exchange_id, position.instrument_id) == symbol
+        })
+        .or_else(|| positions.iter().find(|position| position.user_id == account_key))
+        .or_else(|| positions.first())
+}
+
 #[tokio::main]
 async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
@@ -282,7 +292,9 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     task.wait_finished().await?;
 
     let result = session.finish().await?;
-    let final_position = runtime.execution().position(ACCOUNT_KEY, &symbol).await?;
+    let final_net_position = find_final_position(&result.final_positions, ACCOUNT_KEY, &symbol)
+        .map(net_position)
+        .unwrap_or(0);
     let final_account = result
         .final_accounts
         .iter()
@@ -302,7 +314,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     println!("  已实现盈亏: {:.2}", strategy.realized_pnl);
     println!("  未实现盈亏: {:.2}", unrealized_pnl);
     println!("  总成交笔数: {}", result.trades.len());
-    println!("  最终净持仓: {}", net_position(&final_position));
+    println!("  最终净持仓: {}", final_net_position);
     if let Some(account) = final_account {
         println!("  账户权益: {:.2}", account.balance);
         println!("  可用资金: {:.2}", account.available);

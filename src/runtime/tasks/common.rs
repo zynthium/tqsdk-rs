@@ -128,6 +128,7 @@ impl ChildOrderRunner {
         self
     }
 
+    #[cfg(test)]
     pub async fn run_until_all_traded(&self) -> RuntimeResult<()> {
         match self.run().await? {
             ChildOrderStatus::Completed => Ok(()),

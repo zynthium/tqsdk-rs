@@ -57,10 +57,6 @@ pub struct TaskRegistry {
 }
 
 impl TaskRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn register_target_task(
         &self,
         runtime_id: &str,
@@ -177,6 +173,7 @@ impl TaskRegistry {
         state.task_orders.entry(task_id).or_default().insert(order_id);
     }
 
+    #[cfg(test)]
     pub fn order_owner(&self, order_id: &str) -> Option<TaskId> {
         let state = self.state.lock().expect("task registry lock poisoned");
         state.order_owners.get(order_id).copied()
@@ -203,16 +200,6 @@ impl TaskRegistry {
             .get(&task_id)
             .map(|order_ids| order_ids.iter().cloned().collect())
             .unwrap_or_default()
-    }
-
-    pub fn unbind_order_owner(&self, order_id: &str) {
-        let mut state = self.state.lock().expect("task registry lock poisoned");
-        let order_id = order_id.to_string();
-        if let Some(task_id) = state.order_owners.remove(&order_id)
-            && let Some(order_ids) = state.task_orders.get_mut(&task_id)
-        {
-            order_ids.remove(&order_id);
-        }
     }
 }
 

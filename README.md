@@ -173,6 +173,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 目标持仓任务（Builder，推荐）
 
+`TqRuntime` 由 `ClientBuilder::build_runtime()`、`Client::into_runtime()` 或
+`ReplaySession::runtime()` 提供；`ExecutionAdapter` / `MarketAdapter` /
+`TaskRegistry` 等装配细节不再作为推荐的 public extension surface。
+
 ```rust
 use std::sync::Arc;
 use tqsdk_rs::prelude::*;

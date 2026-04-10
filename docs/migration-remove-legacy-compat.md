@@ -15,7 +15,8 @@
 - `ReplaySession`
   负责历史回放、回测推进、回测 runtime 和最终结果汇总。
 - `TqRuntime`
-  负责目标持仓任务、调度器和 execution/market adapter 组合。
+  由 `ClientBuilder::build_runtime()`、`Client::into_runtime()` 或 `ReplaySession::runtime()`
+  提供，负责目标持仓任务和调度器；底层 adapter / registry 装配不再对外暴露。
 
 ## Surface Mapping
 
@@ -24,7 +25,8 @@
 | `Client::init_market_backtest` | `Client::create_backtest_session` | 直接创建 `ReplaySession`，不再经过 `BacktestHandle` |
 | `Client::switch_to_backtest` | `Client::close()` 后重建 `ReplaySession` | 行情订阅控制与回测 session 分离 |
 | `BacktestHandle` | `ReplaySession` | `step()` / `finish()` / `runtime()` 是唯一推荐回测入口 |
-| `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()`，单元测试自行提供 fake `ExecutionAdapter` |
+| `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()` |
+| `runtime::{ExecutionAdapter, MarketAdapter, LiveExecutionAdapter, LiveMarketAdapter, TaskRegistry, TaskId, ChildOrderRunner, ...}` | `ClientBuilder::build_runtime()` / `Client::into_runtime()` / `ReplaySession::runtime()` | runtime 装配层收口为内部实现，公开 API 聚焦 ready-to-use `TqRuntime` 与 Builder task |
 | `compat::TargetPosTask` | `runtime.account(\"...\").target_pos(\"...\").build()` | Builder 是 canonical task 入口 |
 | `compat::TargetPosScheduler` | `runtime.account(\"...\").target_pos_scheduler(\"...\").steps(...).build()` | 调度器同样走 Builder |
 | `quote_channel` / `on_quote` | `client.tqapi().quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
@@ -75,6 +77,9 @@ let result = session.finish().await?;
 println!("trades={}", result.trades.len());
 ```
 
+回放结束后的账户/持仓汇总直接读取
+`BacktestResult::{final_accounts, final_positions}`，不要再通过 `runtime.execution()` 访问内部 execution adapter。
+
 ## Target Position Migration
 
 旧代码：
@@ -117,4 +122,5 @@ let scheduler = account
 - 已删除：legacy `BacktestHandle` 路径、`compat/` facade、Quote callback/channel fan-out、Series callback/stream fan-out、`DataManager` callback plumbing、`BacktestExecutionAdapter` public surface。
 - 已收口：`ReplayExecutionAdapter` / `ReplayMarketAdapter` 只保留为 replay 内部实现，不再作为 public replacement 暴露。
 - 已收口：`ReplayKernel`、`QuoteSynthesizer`、`SeriesStore`、`SimBroker` 等 replay 拼装件不再作为根级 public replay API 暴露。
+- 已收口：`TqRuntime::new/with_id`、runtime adapter/registry/planning types、以及 `TqRuntime::{market,execution,registry,engine}` 等装配接口都退回 crate 内部。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

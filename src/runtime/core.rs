@@ -20,12 +20,12 @@ pub struct TqRuntime {
 }
 
 impl TqRuntime {
-    pub fn new(mode: RuntimeMode, market: Arc<dyn MarketAdapter>, execution: Arc<dyn ExecutionAdapter>) -> Self {
+    pub(crate) fn new(mode: RuntimeMode, market: Arc<dyn MarketAdapter>, execution: Arc<dyn ExecutionAdapter>) -> Self {
         let id = format!("runtime-{}", NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed));
         Self::with_id(id, mode, market, execution)
     }
 
-    pub fn with_id(
+    pub(crate) fn with_id(
         id: impl Into<String>,
         mode: RuntimeMode,
         market: Arc<dyn MarketAdapter>,
@@ -52,19 +52,19 @@ impl TqRuntime {
         self.mode
     }
 
-    pub fn registry(&self) -> Arc<TaskRegistry> {
+    pub(crate) fn registry(&self) -> Arc<TaskRegistry> {
         Arc::clone(&self.registry)
     }
 
-    pub fn market(&self) -> Arc<dyn MarketAdapter> {
+    pub(crate) fn market(&self) -> Arc<dyn MarketAdapter> {
         Arc::clone(&self.market)
     }
 
-    pub fn execution(&self) -> Arc<dyn ExecutionAdapter> {
+    pub(crate) fn execution(&self) -> Arc<dyn ExecutionAdapter> {
         Arc::clone(&self.execution)
     }
 
-    pub fn engine(&self) -> Arc<ExecutionEngine> {
+    pub(crate) fn engine(&self) -> Arc<ExecutionEngine> {
         Arc::clone(&self.engine)
     }
 

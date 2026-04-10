@@ -124,8 +124,12 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
 
     while session.step().await.unwrap().is_some() {}
 
-    let position = runtime.execution().position("TQSIM", "SHFE.rb2605").await.unwrap();
-    assert_eq!(position.volume_long, 1);
+    let result = session.finish().await.unwrap();
+    assert_eq!(result.final_positions.len(), 1);
+    assert_eq!(result.final_positions[0].user_id, "TQSIM");
+    assert_eq!(result.final_positions[0].exchange_id, "SHFE");
+    assert_eq!(result.final_positions[0].instrument_id, "rb2605");
+    assert_eq!(result.final_positions[0].volume_long, 1);
 }
 
 #[tokio::test]
