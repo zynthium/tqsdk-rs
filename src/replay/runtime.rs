@@ -6,9 +6,11 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock, broadcast};
 
-use crate::replay::{InstrumentMetadata, ReplayQuote, SimBroker};
+use crate::replay::{InstrumentMetadata, ReplayQuote};
 use crate::runtime::{ExecutionAdapter, MarketAdapter, RuntimeError, RuntimeResult};
 use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade};
+
+use super::sim::SimBroker;
 
 #[derive(Debug)]
 pub(crate) struct ReplayMarketState {

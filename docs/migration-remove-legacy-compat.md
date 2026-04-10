@@ -116,4 +116,5 @@ let scheduler = account
 - 已落地：`ReplaySession` 已成为唯一推荐回测路径，`TradeSession` watcher 已迁到 `DataManager::subscribe_epoch()`。
 - 已删除：legacy `BacktestHandle` 路径、`compat/` facade、Quote callback/channel fan-out、Series callback/stream fan-out、`DataManager` callback plumbing、`BacktestExecutionAdapter` public surface。
 - 已收口：`ReplayExecutionAdapter` / `ReplayMarketAdapter` 只保留为 replay 内部实现，不再作为 public replacement 暴露。
+- 已收口：`ReplayKernel`、`QuoteSynthesizer`、`SeriesStore`、`SimBroker` 等 replay 拼装件不再作为根级 public replay API 暴露。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

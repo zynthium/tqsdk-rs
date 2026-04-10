@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::replay::{BarState, ReplayHandleId};
 use crate::types::{Kline, Tick};
+
+use super::types::{BarState, ReplayHandleId};
 
 #[derive(Debug, Clone)]
 pub struct KlineSeriesRow {
@@ -54,6 +55,7 @@ impl SeriesStore {
         }
     }
 
+    #[cfg(test)]
     pub fn kline_rows(&self, symbol: &str, duration_nanos: i64) -> &[KlineSeriesRow] {
         self.klines
             .get(&(symbol.to_string(), duration_nanos))
@@ -76,6 +78,7 @@ impl SeriesStore {
         }
     }
 
+    #[cfg(test)]
     pub fn tick_rows(&self, symbol: &str) -> &[TickSeriesRow] {
         self.ticks.get(symbol).map(Vec::as_slice).unwrap_or(&[])
     }
@@ -97,6 +100,7 @@ pub struct AlignedKlineHandle {
 }
 
 impl AlignedKlineHandle {
+    #[cfg(test)]
     pub(crate) fn new(id: ReplayHandleId, symbols: Vec<String>, duration_nanos: i64, width: usize) -> Self {
         Self {
             id,

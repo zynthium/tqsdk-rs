@@ -25,10 +25,8 @@ pub trait HistoricalSource: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub enum FeedEvent {
-    Tick {
-        symbol: String,
-        tick: Tick,
-    },
+    #[allow(dead_code)]
+    Tick { symbol: String, tick: Tick },
     BarOpen {
         symbol: String,
         duration_nanos: i64,
@@ -71,6 +69,7 @@ impl FeedCursor {
         Self { pending }
     }
 
+    #[allow(dead_code)]
     pub fn from_tick_rows(symbol: &str, rows: Vec<Tick>) -> Self {
         let pending = rows
             .into_iter()

@@ -93,6 +93,7 @@ Client (facade + builder + market)
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
 - 回测入口收敛：公开回测路径统一通过 `Client::create_backtest_session` 构造 `ReplaySession`，不再维持独立 `BacktestHandle` facade。
+- 回放实现收口：`ReplayKernel`、quote 合成器、`SimBroker` 等回放拼装件属于内部实现细节；公开回测入口聚焦在 `ReplaySession` 与返回的 handles/result。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 交易状态分层：`TradeSession` 以 DataManager epoch 驱动内部 watcher，再用 path epoch 区分账户/持仓快照与可靠订单/成交事件。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。

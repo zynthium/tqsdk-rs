@@ -1,13 +1,15 @@
 use std::collections::HashMap;
 
+#[cfg(test)]
 use chrono::NaiveDate;
 
 use crate::errors::{Result, TqError};
-use crate::replay::{BacktestResult, DailySettlementLog, ReplayQuote};
 use crate::types::{
     Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED,
     Order, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Position, Trade,
 };
+
+use super::types::{BacktestResult, DailySettlementLog, ReplayQuote};
 
 #[derive(Debug, Default)]
 pub struct SimBroker {
@@ -20,6 +22,7 @@ pub struct SimBroker {
     all_trades: Vec<Trade>,
     next_order_seq: i64,
     next_trade_seq: i64,
+    #[cfg(test)]
     last_settled_day: Option<NaiveDate>,
 }
 
@@ -143,6 +146,7 @@ impl SimBroker {
             .unwrap_or_else(|| default_position(account_key, symbol)))
     }
 
+    #[cfg(test)]
     pub fn settle_day(&mut self, trading_day: NaiveDate) -> Result<Option<DailySettlementLog>> {
         if self.last_settled_day == Some(trading_day) {
             return Ok(None);
@@ -458,6 +462,7 @@ fn weighted_price(current_price: f64, current_volume: i64, fill_price: f64, fill
     }
 }
 
+#[cfg(test)]
 fn rollover_position(position: &mut Position) {
     position.volume_long_his += position.volume_long_today;
     position.volume_long_yd = position.volume_long_his;

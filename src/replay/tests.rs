@@ -3,14 +3,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::replay::{
-    BarState, ContinuousContractProvider, ContinuousMapping, DailySettlementLog, FeedCursor, FeedEvent,
-    HistoricalSource, InstrumentMetadata, QuoteSelection, QuoteSynthesizer, ReplayConfig, ReplayKernel, ReplayQuote,
-    ReplaySession, SeriesStore, SimBroker,
-};
 use crate::runtime::TargetPosTask;
 use crate::types::{DIRECTION_BUY, InsertOrderRequest, Kline, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Tick};
 use async_trait::async_trait;
+
+use super::feed::{FeedCursor, FeedEvent, HistoricalSource};
+use super::kernel::ReplayKernel;
+use super::providers::{ContinuousContractProvider, ContinuousMapping};
+use super::quote::{QuoteSelection, QuoteSynthesizer};
+use super::series::SeriesStore;
+use super::sim::SimBroker;
+use super::{BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayQuote, ReplaySession};
 
 struct FakeHistoricalSource {
     meta: HashMap<String, InstrumentMetadata>,

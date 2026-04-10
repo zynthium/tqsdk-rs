@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
-use crate::replay::{InstrumentMetadata, ReplayQuote};
 use crate::types::{Kline, Tick};
+
+use super::types::{InstrumentMetadata, ReplayQuote};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuoteSelection {
@@ -11,6 +12,7 @@ pub enum QuoteSelection {
 
 #[derive(Debug, Clone)]
 pub struct QuoteUpdate {
+    #[allow(dead_code)]
     pub visible: ReplayQuote,
     pub path: Vec<ReplayQuote>,
     pub source_selected: bool,
@@ -59,6 +61,7 @@ impl QuoteSynthesizer {
         }
     }
 
+    #[cfg(test)]
     pub fn selection_for(&self, symbol: &str) -> Option<QuoteSelection> {
         self.symbols.get(symbol).map(|state| state.selected)
     }

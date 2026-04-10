@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use crate::errors::Result;
-use crate::replay::{
-    AlignedKlineHandle, AlignedKlineRow, BarState, FeedCursor, FeedEvent, InstrumentMetadata, QuoteSelection,
-    QuoteSynthesizer, ReplayHandleId, ReplayKlineHandle, ReplayQuote, ReplayStep, SeriesStore,
-};
+use crate::replay::{BarState, InstrumentMetadata, ReplayHandleId, ReplayQuote, ReplayStep};
+
+use super::feed::{FeedCursor, FeedEvent};
+use super::quote::{QuoteSelection, QuoteSynthesizer};
+use super::series::{AlignedKlineHandle, AlignedKlineRow, ReplayKlineHandle, SeriesStore};
 
 const DEFAULT_SERIES_WIDTH: usize = 1_024;
 
@@ -36,10 +37,12 @@ impl ReplayKernel {
         }
     }
 
+    #[cfg(test)]
     pub fn series_store(&self) -> &SeriesStore {
         &self.series_store
     }
 
+    #[cfg(test)]
     pub fn register_aligned_kline(
         &mut self,
         symbols: &[&str],
@@ -97,6 +100,7 @@ impl ReplayKernel {
         self.feeds.push((symbol, cursor));
     }
 
+    #[cfg(test)]
     pub fn set_tick_window_width(&mut self, width: usize) {
         self.tick_window_width = width;
     }
