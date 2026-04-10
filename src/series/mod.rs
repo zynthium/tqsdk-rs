@@ -15,7 +15,7 @@ mod subscription;
 mod tests;
 
 use crate::auth::Authenticator;
-use crate::cache::data_series::DataSeriesCache;
+use crate::cache::DataSeriesCache;
 use crate::datamanager::DataManager;
 use crate::types::SeriesSnapshot;
 use crate::websocket::TqQuoteWebsocket;

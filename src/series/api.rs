@@ -1,5 +1,5 @@
 use super::{KlineSymbols, SeriesAPI, SeriesCachePolicy, SeriesSubscription};
-use crate::cache::data_series::{DataSeriesCache, PAGE_VIEW_WIDTH, trim_last_datetime_range};
+use crate::cache::{DataSeriesCache, PAGE_VIEW_WIDTH, trim_last_datetime_range};
 use crate::errors::{Result, TqError};
 use crate::types::{Kline, Range, SeriesOptions, Tick, rangeset_difference};
 use chrono::{DateTime, Utc};

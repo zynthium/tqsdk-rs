@@ -14,7 +14,7 @@
 mod helpers;
 mod market;
 mod query;
-pub mod rangeset;
+mod rangeset;
 mod series;
 mod trading;
 

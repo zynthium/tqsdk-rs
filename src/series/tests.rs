@@ -1,5 +1,5 @@
 use super::*;
-use crate::cache::data_series::DataSeriesCache;
+use crate::cache::DataSeriesCache;
 use crate::datamanager::DataManagerConfig;
 use crate::errors::{Result, TqError};
 use crate::marketdata::MarketDataState;
