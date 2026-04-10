@@ -91,8 +91,4 @@ impl Client {
     pub fn tqapi(&self) -> TqApi {
         TqApi::new(Arc::clone(&self.market_state))
     }
-
-    pub fn market_state(&self) -> Arc<MarketDataState> {
-        Arc::clone(&self.market_state)
-    }
 }
