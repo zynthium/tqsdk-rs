@@ -1,13 +1,10 @@
+use super::SeriesSubscription;
 use super::processing::process_series_update;
-use super::{SeriesStreamSubscribers, SeriesSubscription};
-use crate::errors::Result;
-use crate::types::{ChartInfo, SeriesData, UpdateInfo};
-use async_stream::stream;
+use crate::errors::{Result, TqError};
+use crate::types::{ChartInfo, SeriesData, SeriesSnapshot};
 use chrono::{DateTime, Utc};
-use futures::Stream;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, info, warn};
 
 impl SeriesSubscription {
@@ -21,6 +18,7 @@ impl SeriesSubscription {
         for symbol in &options.symbols {
             last_ids.insert(symbol.clone(), -1);
         }
+        let (snapshot_tx, snapshot_rx) = tokio::sync::watch::channel(None);
 
         Ok(Self {
             dm,
@@ -31,14 +29,12 @@ impl SeriesSubscription {
             last_right_id: Arc::new(tokio::sync::RwLock::new(-1)),
             chart_ready: Arc::new(tokio::sync::RwLock::new(false)),
             has_chart_sync: Arc::new(tokio::sync::RwLock::new(false)),
-            on_update: Arc::new(tokio::sync::RwLock::new(None)),
-            on_new_bar: Arc::new(tokio::sync::RwLock::new(None)),
-            on_bar_update: Arc::new(tokio::sync::RwLock::new(None)),
-            on_error: Arc::new(tokio::sync::RwLock::new(None)),
-            stream_subscribers: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             running: Arc::new(tokio::sync::RwLock::new(false)),
             unsubscribe_sent: Arc::new(AtomicBool::new(false)),
-            data_cb_id: Arc::new(std::sync::Mutex::new(None)),
+            snapshot_tx,
+            wait_rx: Arc::new(tokio::sync::Mutex::new(snapshot_rx)),
+            latest_snapshot: Arc::new(tokio::sync::RwLock::new(None)),
+            watch_task: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -104,10 +100,10 @@ impl SeriesSubscription {
 
         debug!("启动 Series 订阅: {}", self.options.chart_id.as_deref().unwrap_or(""));
 
-        self.start_watching().await;
+        self.start_watching();
         if let Err(e) = self.send_set_chart().await {
             *self.running.write().await = false;
-            self.detach_data_callback();
+            self.abort_watch_task();
             return Err(e);
         }
         debug!(
@@ -117,10 +113,15 @@ impl SeriesSubscription {
         Ok(())
     }
 
-    fn detach_data_callback(&self) {
-        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
-            let _ = self.dm.off_data(id);
+    fn abort_watch_task(&self) {
+        if let Some(handle) = self.watch_task.lock().unwrap().take() {
+            handle.abort();
         }
+    }
+
+    async fn clear_snapshot_state(&self) {
+        *self.latest_snapshot.write().await = None;
+        let _ = self.snapshot_tx.send_replace(None);
     }
 
     /// 刷新订阅状态并重新发起 `set_chart` 请求。
@@ -137,7 +138,14 @@ impl SeriesSubscription {
         *self.has_chart_sync.write().await = false;
         *self.running.write().await = true;
         self.unsubscribe_sent.store(false, Ordering::SeqCst);
-        self.send_set_chart().await
+        self.clear_snapshot_state().await;
+        self.start_watching();
+        if let Err(e) = self.send_set_chart().await {
+            *self.running.write().await = false;
+            self.abort_watch_task();
+            return Err(e);
+        }
+        Ok(())
     }
 
     fn build_cancel_chart_request(&self) -> serde_json::Value {
@@ -159,8 +167,13 @@ impl SeriesSubscription {
     }
 
     /// 启动监听数据更新
-    async fn start_watching(&self) {
-        let dm_clone = Arc::clone(&self.dm);
+    fn start_watching(&self) {
+        let mut guard = self.watch_task.lock().unwrap();
+        if guard.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return;
+        }
+
+        let dm = Arc::clone(&self.dm);
         let ws = Arc::clone(&self.ws);
         let options = self.options.clone();
         let last_ids = Arc::clone(&self.last_ids);
@@ -168,232 +181,145 @@ impl SeriesSubscription {
         let last_right_id = Arc::clone(&self.last_right_id);
         let chart_ready = Arc::clone(&self.chart_ready);
         let has_chart_sync = Arc::clone(&self.has_chart_sync);
-        let on_update = Arc::clone(&self.on_update);
-        let on_new_bar = Arc::clone(&self.on_new_bar);
-        let on_bar_update = Arc::clone(&self.on_bar_update);
-        let on_error = Arc::clone(&self.on_error);
-        let stream_subscribers = Arc::clone(&self.stream_subscribers);
         let running = Arc::clone(&self.running);
-        let worker_running = Arc::new(AtomicBool::new(false));
-        let worker_dirty = Arc::new(AtomicBool::new(false));
-        let view_width_adjusted = Arc::new(AtomicBool::new(false));
-        let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
+        let snapshot_tx = self.snapshot_tx.clone();
+        let latest_snapshot = Arc::clone(&self.latest_snapshot);
+        let mut epoch_rx = dm.subscribe_epoch();
 
-        let dm_for_callback = Arc::clone(&dm_clone);
-        let cb_id = dm_clone.on_data_register(move || {
-            let chart_id = options.chart_id.as_deref().unwrap_or("");
-            let duration_str = options.duration.to_string();
+        info!("Series 开始监听数据更新");
 
-            let last_epoch = *last_processed_epoch.lock().unwrap();
-            let chart_epoch = dm_for_callback.get_path_epoch(&["charts", chart_id]);
-            let data_epoch = if options.duration == 0 {
-                let symbol = &options.symbols[0];
-                dm_for_callback.get_path_epoch(&["ticks", symbol])
-            } else if options.symbols.len() > 1 {
-                options
-                    .symbols
-                    .iter()
-                    .map(|symbol| dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str]))
-                    .max()
-                    .unwrap_or(0)
-            } else {
-                let symbol = &options.symbols[0];
-                dm_for_callback.get_path_epoch(&["klines", symbol, &duration_str])
-            };
+        *guard = Some(tokio::spawn(async move {
+            let view_width_adjusted = Arc::new(AtomicBool::new(false));
+            let mut last_processed_epoch = 0i64;
 
-            if chart_epoch <= last_epoch && data_epoch <= last_epoch {
-                return;
-            }
+            loop {
+                if !*running.read().await {
+                    break;
+                }
 
-            worker_dirty.store(true, Ordering::SeqCst);
-            if worker_running.swap(true, Ordering::SeqCst) {
-                return;
-            }
-            let dm = Arc::clone(&dm_for_callback);
-            let options = options.clone();
-            let last_ids = Arc::clone(&last_ids);
-            let last_left_id = Arc::clone(&last_left_id);
-            let last_right_id = Arc::clone(&last_right_id);
-            let chart_ready = Arc::clone(&chart_ready);
-            let has_chart_sync = Arc::clone(&has_chart_sync);
-            let on_update = Arc::clone(&on_update);
-            let on_new_bar = Arc::clone(&on_new_bar);
-            let on_bar_update = Arc::clone(&on_bar_update);
-            let on_error = Arc::clone(&on_error);
-            let stream_subscribers = Arc::clone(&stream_subscribers);
-            let running = Arc::clone(&running);
-            let worker_running = Arc::clone(&worker_running);
-            let worker_dirty = Arc::clone(&worker_dirty);
-            let ws = Arc::clone(&ws);
-            let view_width_adjusted = Arc::clone(&view_width_adjusted);
-            let last_processed_epoch = Arc::clone(&last_processed_epoch);
-            tokio::spawn(async move {
-                loop {
-                    worker_dirty.store(false, Ordering::SeqCst);
-                    let is_running = *running.read().await;
-                    if is_running {
-                        let chart_id = options.chart_id.as_deref().unwrap_or("");
-                        let duration_str = options.duration.to_string();
-
-                        let current_global_epoch = dm.get_epoch();
-                        let last_epoch = *last_processed_epoch.lock().unwrap();
-
-                        let chart_epoch = dm.get_path_epoch(&["charts", chart_id]);
-                        let data_epoch = if options.duration == 0 {
-                            let symbol = &options.symbols[0];
-                            dm.get_path_epoch(&["ticks", symbol])
-                        } else if options.symbols.len() > 1 {
-                            options
-                                .symbols
-                                .iter()
-                                .map(|symbol| dm.get_path_epoch(&["klines", symbol, &duration_str]))
-                                .max()
-                                .unwrap_or(0)
-                        } else {
-                            let symbol = &options.symbols[0];
-                            dm.get_path_epoch(&["klines", symbol, &duration_str])
-                        };
-
-                        if chart_epoch > last_epoch || data_epoch > last_epoch {
-                            if let Some(chart_data) = dm.get_by_path(&["charts", chart_id])
-                                && let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data)
-                                && chart_info.ready
-                                && !chart_info.more_data
-                            {
-                                match process_series_update(
-                                    &dm,
-                                    &options,
-                                    &last_ids,
-                                    &last_left_id,
-                                    &last_right_id,
-                                    &chart_ready,
-                                    &has_chart_sync,
-                                    last_epoch,
-                                )
-                                .await
-                                {
-                                    Ok((series_data, update_info)) => {
-                                        if update_info.chart_ready {
-                                            let series_data = Arc::new(series_data);
-                                            let update_info = Arc::new(update_info);
-
-                                            dispatch_update(
-                                                &on_update,
-                                                &stream_subscribers,
-                                                &series_data,
-                                                &update_info,
-                                            )
-                                            .await;
-
-                                            if update_info.has_new_bar
-                                                && let Some(callback) = on_new_bar.read().await.as_ref()
-                                            {
-                                                callback(Arc::clone(&series_data));
-                                            }
-
-                                            if update_info.has_bar_update
-                                                && let Some(callback) = on_bar_update.read().await.as_ref()
-                                            {
-                                                callback(Arc::clone(&series_data));
-                                            }
-
-                                            let use_multi_init_view_width = options.duration != 0
-                                                && options.symbols.len() > 1
-                                                && options.left_kline_id.is_none()
-                                                && options.focus_datetime.is_none()
-                                                && options.focus_position.is_none()
-                                                && options.view_width < 10000;
-                                            if use_multi_init_view_width
-                                                && !view_width_adjusted.swap(true, Ordering::SeqCst)
-                                            {
-                                                let chart_req = build_set_chart_request(&options, options.view_width);
-                                                let _ = ws.send(&chart_req).await;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        let err_str = e.to_string();
-                                        if !err_str.contains("数据未更新") {
-                                            warn!("处理 Series 更新失败: {}", e);
-                                            if let Some(callback) = on_error.read().await.as_ref() {
-                                                callback(Arc::new(err_str));
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            *last_processed_epoch.lock().unwrap() = current_global_epoch;
-                        }
-                    }
-                    if !worker_dirty.load(Ordering::SeqCst) {
-                        worker_running.store(false, Ordering::SeqCst);
-                        if worker_dirty.load(Ordering::SeqCst) && !worker_running.swap(true, Ordering::SeqCst) {
-                            continue;
-                        }
+                let current_global_epoch = *epoch_rx.borrow_and_update();
+                if current_global_epoch <= last_processed_epoch {
+                    if epoch_rx.changed().await.is_err() {
                         break;
                     }
+                    continue;
                 }
-            });
-        });
-        *self.data_cb_id.lock().unwrap() = Some(cb_id);
+
+                let chart_id = options.chart_id.as_deref().unwrap_or("");
+                let duration_str = options.duration.to_string();
+                let chart_epoch = dm.get_path_epoch(&["charts", chart_id]);
+                let data_epoch = if options.duration == 0 {
+                    let symbol = &options.symbols[0];
+                    dm.get_path_epoch(&["ticks", symbol])
+                } else if options.symbols.len() > 1 {
+                    options
+                        .symbols
+                        .iter()
+                        .map(|symbol| dm.get_path_epoch(&["klines", symbol, &duration_str]))
+                        .max()
+                        .unwrap_or(0)
+                } else {
+                    let symbol = &options.symbols[0];
+                    dm.get_path_epoch(&["klines", symbol, &duration_str])
+                };
+
+                if (chart_epoch > last_processed_epoch || data_epoch > last_processed_epoch)
+                    && let Some(chart_data) = dm.get_by_path(&["charts", chart_id])
+                    && let Ok(chart_info) = dm.convert_to_struct::<ChartInfo>(&chart_data)
+                    && chart_info.ready
+                    && !chart_info.more_data
+                {
+                    match process_series_update(
+                        &dm,
+                        &options,
+                        &last_ids,
+                        &last_left_id,
+                        &last_right_id,
+                        &chart_ready,
+                        &has_chart_sync,
+                        last_processed_epoch,
+                    )
+                    .await
+                    {
+                        Ok((series_data, update_info)) => {
+                            if update_info.chart_ready {
+                                let snapshot = SeriesSnapshot {
+                                    data: Arc::new(series_data),
+                                    update: Arc::new(update_info),
+                                    epoch: current_global_epoch,
+                                };
+
+                                *latest_snapshot.write().await = Some(snapshot.clone());
+                                let _ = snapshot_tx.send_replace(Some(snapshot));
+
+                                let use_multi_init_view_width = options.duration != 0
+                                    && options.symbols.len() > 1
+                                    && options.left_kline_id.is_none()
+                                    && options.focus_datetime.is_none()
+                                    && options.focus_position.is_none()
+                                    && options.view_width < 10000;
+                                if use_multi_init_view_width && !view_width_adjusted.swap(true, Ordering::SeqCst) {
+                                    let chart_req = build_set_chart_request(&options, options.view_width);
+                                    let _ = ws.send(&chart_req).await;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let err_str = e.to_string();
+                            if !err_str.contains("数据未更新") {
+                                warn!("处理 Series 更新失败: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                last_processed_epoch = current_global_epoch;
+            }
+        }));
     }
 
-    /// 注册更新回调。
-    pub async fn on_update<F>(&self, handler: F)
-    where
-        F: Fn(Arc<SeriesData>, Arc<UpdateInfo>) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_update.write().await;
-        *guard = Some(Arc::new(handler));
+    /// 等待下一次窗口快照更新。
+    pub async fn wait_update(&self) -> Result<SeriesSnapshot> {
+        if !*self.running.read().await {
+            return Err(TqError::InternalError("Series 订阅尚未启动".to_string()));
+        }
+        let mut rx = self.wait_rx.lock().await;
+        loop {
+            if rx.changed().await.is_err() {
+                return Err(TqError::InternalError("Series 快照订阅已关闭".to_string()));
+            }
+            if let Some(snapshot) = rx.borrow().clone() {
+                return Ok(snapshot);
+            }
+        }
     }
 
-    /// 注册新 Bar 回调。
-    pub async fn on_new_bar<F>(&self, handler: F)
-    where
-        F: Fn(Arc<SeriesData>) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_new_bar.write().await;
-        *guard = Some(Arc::new(handler));
+    /// 获取当前最新快照。
+    pub async fn snapshot(&self) -> Option<SeriesSnapshot> {
+        self.latest_snapshot.read().await.clone()
     }
 
-    /// 注册 Bar 更新回调。
-    pub async fn on_bar_update<F>(&self, handler: F)
-    where
-        F: Fn(Arc<SeriesData>) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_bar_update.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
-    /// 注册错误回调。
-    pub async fn on_error<F>(&self, handler: F)
-    where
-        F: Fn(Arc<String>) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_error.write().await;
-        *guard = Some(Arc::new(handler));
+    /// 获取当前最新序列数据。
+    pub async fn load(&self) -> Result<Arc<SeriesData>> {
+        self.snapshot()
+            .await
+            .map(|snapshot| snapshot.data)
+            .ok_or_else(|| TqError::DataNotFound("Series 快照尚未就绪".to_string()))
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
-    pub(super) async fn emit_update(&self, series_data: Arc<SeriesData>, update_info: Arc<UpdateInfo>) {
-        dispatch_update(&self.on_update, &self.stream_subscribers, &series_data, &update_info).await;
+    pub(super) async fn emit_snapshot(&self, snapshot: SeriesSnapshot) {
+        *self.latest_snapshot.write().await = Some(snapshot.clone());
+        let _ = self.snapshot_tx.send_replace(Some(snapshot));
     }
 
-    /// 获取异步数据流。
-    pub async fn data_stream(&self) -> impl Stream<Item = Arc<SeriesData>> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(self.ws.message_queue_capacity());
-        {
-            let mut subscribers = self.stream_subscribers.write().await;
-            subscribers.retain(|sender| !sender.is_closed());
-            subscribers.push(tx);
-        }
-
-        stream! {
-            while let Some(data) = rx.recv().await {
-                yield data;
-            }
-        }
+    #[cfg(test)]
+    pub(super) fn watch_task_active_for_test(&self) -> bool {
+        self.watch_task
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|handle| !handle.is_finished())
     }
 
     /// 关闭订阅并向服务端发送取消请求。
@@ -402,7 +328,7 @@ impl SeriesSubscription {
             let mut running = self.running.write().await;
             *running = false;
         }
-        self.detach_data_callback();
+        self.abort_watch_task();
 
         info!("关闭 Series 订阅: {}", self.options.chart_id.as_deref().unwrap_or(""));
 
@@ -418,9 +344,7 @@ impl SeriesSubscription {
 
 impl Drop for SeriesSubscription {
     fn drop(&mut self) {
-        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
-            let _ = self.dm.off_data(id);
-        }
+        self.abort_watch_task();
         if self.unsubscribe_sent.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -445,40 +369,6 @@ impl Drop for SeriesSubscription {
             });
         }
     }
-}
-
-async fn dispatch_stream_subscribers(stream_subscribers: &SeriesStreamSubscribers, series_data: &Arc<SeriesData>) {
-    let subscribers = stream_subscribers.read().await.clone();
-    let mut has_closed = false;
-
-    for sender in subscribers {
-        match sender.try_send(Arc::clone(series_data)) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                warn!("Series 数据流通道已满，丢弃一次更新");
-            }
-            Err(TrySendError::Closed(_)) => {
-                has_closed = true;
-            }
-        }
-    }
-
-    if has_closed {
-        let mut subscribers = stream_subscribers.write().await;
-        subscribers.retain(|sender| !sender.is_closed());
-    }
-}
-
-async fn dispatch_update(
-    on_update: &super::UpdateCallback,
-    stream_subscribers: &SeriesStreamSubscribers,
-    series_data: &Arc<SeriesData>,
-    update_info: &Arc<UpdateInfo>,
-) {
-    if let Some(callback) = on_update.read().await.as_ref() {
-        callback(Arc::clone(series_data), Arc::clone(update_info));
-    }
-    dispatch_stream_subscribers(stream_subscribers, series_data).await;
 }
 
 fn build_set_chart_request(options: &crate::types::SeriesOptions, view_width: usize) -> serde_json::Value {

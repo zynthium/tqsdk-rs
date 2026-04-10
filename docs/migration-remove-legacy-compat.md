@@ -35,6 +35,12 @@
 - `QuoteRef` 是 `MarketDataState` 上的快照句柄，不拥有订阅本身。
 - 关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态停止继续推进。
 
+## Series Snapshot Note
+
+- `SeriesSubscription` 负责窗口态 K 线/Tick 订阅生命周期。
+- `wait_update()` 返回 coalesced `SeriesSnapshot`，其中包含 `SeriesData`、`UpdateInfo` 和完成态 epoch。
+- `load()` 返回当前最新 `SeriesData`；`snapshot()` 可直接读取完整快照。
+
 ## Backtest Migration
 
 旧代码：
@@ -106,6 +112,6 @@ let scheduler = account
 ## Current Status
 
 - 已落地：`ReplaySession` 已成为唯一推荐回测路径，`TradeSession` watcher 已迁到 `DataManager::subscribe_epoch()`。
-- 已删除：legacy `BacktestHandle` 路径、`compat/` facade、Quote callback/channel fan-out。
-- 正在收敛：Series callback/stream fan-out。
+- 已删除：legacy `BacktestHandle` 路径、`compat/` facade、Quote callback/channel fan-out、Series callback/stream fan-out。
+- 正在收敛：`DataManager` 旧 callback plumbing 与 `BacktestExecutionAdapter` 残留。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

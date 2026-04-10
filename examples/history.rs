@@ -1,8 +1,6 @@
 use std::env;
-use std::pin::pin;
 use std::time::Duration;
 
-use futures::StreamExt;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
@@ -35,16 +33,12 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(105761);
 
-    let tqapi = client.tqapi();
-    let kline_ref = tqapi.kline(symbol.as_str(), duration);
-
     let series = client.series()?;
     let sub = series
         .kline_history(symbol.as_str(), duration, 8000, left_kline_id)
         .await?;
     sub.start().await?;
 
-    let mut stream = pin!(sub.data_stream().await);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
 
     loop {
@@ -52,47 +46,29 @@ async fn main() -> Result<()> {
             break;
         }
 
-        tokio::select! {
-            update = kline_ref.wait_update() => {
-                update?;
-                let k = kline_ref.load().await;
-                if k.id > 0 {
-                    info!(
-                        "Kline {} id={} O={:.2} H={:.2} L={:.2} C={:.2} V={}",
-                        kline_ref.symbol(),
-                        k.id,
-                        k.open,
-                        k.high,
-                        k.low,
-                        k.close,
-                        k.volume
-                    );
-                }
+        let snapshot = sub.wait_update().await?;
+        if !snapshot.update.chart_ready {
+            continue;
+        }
+
+        let series_data = sub.load().await?;
+        if let Some(single) = &series_data.single
+            && let Some(chart) = &single.chart
+            && chart.ready
+        {
+            info!(
+                "历史窗口同步完成 {} range=[{},{}] view_width={}",
+                symbol, chart.left_id, chart.right_id, chart.view_width
+            );
+            if let (Some(first), Some(last)) = (single.data.first(), single.data.last()) {
+                info!(
+                    "样本 first_id={} last_id={} count={}",
+                    first.id,
+                    last.id,
+                    single.data.len()
+                );
             }
-            item = stream.next() => {
-                let Some(series_data) = item else { break; };
-                if let Some(single) = &series_data.single
-                    && let Some(chart) = &single.chart
-                    && chart.ready
-                {
-                    info!(
-                        "历史窗口同步完成 {} range=[{},{}] view_width={}",
-                        symbol,
-                        chart.left_id,
-                        chart.right_id,
-                        chart.view_width
-                    );
-                    if let (Some(first), Some(last)) = (single.data.first(), single.data.last()) {
-                        info!(
-                            "样本 first_id={} last_id={} count={}",
-                            first.id,
-                            last.id,
-                            single.data.len()
-                        );
-                    }
-                    break;
-                }
-            }
+            break;
         }
     }
 

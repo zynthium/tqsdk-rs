@@ -1,6 +1,7 @@
 use super::market::{ChartInfo, Kline, Tick};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// K线序列数据（带Chart信息）
 #[derive(Debug, Clone)]
@@ -78,6 +79,14 @@ impl SeriesData {
         }
         self.single.as_ref()
     }
+}
+
+/// 序列订阅的最新快照
+#[derive(Debug, Clone)]
+pub struct SeriesSnapshot {
+    pub data: Arc<SeriesData>,
+    pub update: Arc<UpdateInfo>,
+    pub epoch: i64,
 }
 
 /// 数据更新信息

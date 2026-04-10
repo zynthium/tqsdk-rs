@@ -5,9 +5,9 @@ use crate::types::{Kline, Range, SeriesOptions, Tick, rangeset_difference};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use tokio::sync::{RwLock, oneshot};
+use tokio::sync::RwLock;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -443,35 +443,15 @@ impl SeriesAPI {
     }
 
     async fn fetch_history_page_with_subscription(&self, sub: Arc<SeriesSubscription>) -> Result<HistoryPage> {
-        let (tx, rx) = oneshot::channel::<HistoryPage>();
-        let sender = Arc::new(Mutex::new(Some(tx)));
-        let sender_for_cb = Arc::clone(&sender);
-        sub.on_update(move |series_data, update_info| {
-            if !update_info.chart_ready {
-                return;
-            }
-            if let Some(tx) = sender_for_cb.lock().ok().and_then(|mut guard| guard.take()) {
-                if let Some(single) = &series_data.single {
-                    let _ = tx.send(HistoryPage::Kline(single.data.clone()));
-                    return;
-                }
-                if let Some(tick_data) = &series_data.tick_data {
-                    let _ = tx.send(HistoryPage::Tick(tick_data.data.clone()));
-                }
-            }
-        })
-        .await;
-
         sub.start().await?;
         let fetched = if self.ws.auto_peek_enabled() {
-            match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, rx).await {
-                Ok(Ok(page)) => Ok(page),
-                Ok(Err(_)) => Err(TqError::InternalError("历史下载通道提前关闭".to_string())),
+            match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, sub.wait_update()).await {
+                Ok(Ok(snapshot)) => history_page_from_snapshot(&snapshot),
+                Ok(Err(err)) => Err(err),
                 Err(_) => Err(TqError::Timeout),
             }
         } else {
             let deadline = Instant::now() + HISTORY_CHUNK_FETCH_TIMEOUT;
-            let mut rx = rx;
             loop {
                 self.ws.send(&json!({"aid": "peek_message"})).await?;
 
@@ -480,11 +460,9 @@ impl SeriesAPI {
                     break Err(TqError::Timeout);
                 }
                 let wait_duration = (deadline - now).min(HISTORY_MANUAL_PEEK_RETRY_INTERVAL);
-                match tokio::time::timeout(wait_duration, &mut rx).await {
-                    Ok(Ok(page)) => break Ok(page),
-                    Ok(Err(_)) => {
-                        break Err(TqError::InternalError("历史下载通道提前关闭".to_string()));
-                    }
+                match tokio::time::timeout(wait_duration, sub.wait_update()).await {
+                    Ok(Ok(snapshot)) => break history_page_from_snapshot(&snapshot),
+                    Ok(Err(err)) => break Err(err),
                     Err(_) => continue,
                 }
             }
@@ -534,6 +512,18 @@ impl SeriesAPI {
             options,
         )?))
     }
+}
+
+fn history_page_from_snapshot(snapshot: &crate::types::SeriesSnapshot) -> Result<HistoryPage> {
+    if let Some(single) = &snapshot.data.single {
+        return Ok(HistoryPage::Kline(single.data.clone()));
+    }
+    if let Some(tick_data) = &snapshot.data.tick_data {
+        return Ok(HistoryPage::Tick(tick_data.data.clone()));
+    }
+    Err(TqError::InternalError(
+        "历史下载完成后未得到单合约 K 线或 Tick 数据".to_string(),
+    ))
 }
 
 fn normalize_data_length(data_length: usize) -> Result<usize> {

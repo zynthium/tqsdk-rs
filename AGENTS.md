@@ -63,6 +63,7 @@ examples/
 - `DataManager` 的 merge 通知优先使用 `subscribe_epoch()`；除非是在迁移旧代码，不要继续扩散 `on_data_register` 依赖。
 - `QuoteSubscription` 和 `SeriesSubscription` 默认是延迟启动的，创建后需要显式 `start()`。
 - `QuoteSubscription` 只负责订阅生命周期；读取 Quote 请走 `client.tqapi().quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
+- `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`；不要重新引入 `on_update`、`on_new_bar`、`data_stream()` 一类 fan-out API。
 - `TqRuntime` 的目标持仓 canonical 入口是 `runtime.account(\"...\").target_pos(...).build()` 和 scheduler builder；`compat::` facade 已删除，不要重新引入。
 - `TradeSession` 对外分为两层：账户/持仓等仍以最新状态读取为主，`order` / `trade` 则使用可靠事件流 API。
 - `TradeSession` 内部 watcher 已改为监听 DataManager epoch，再按 path epoch 拆分账户快照与可靠订单/成交事件。

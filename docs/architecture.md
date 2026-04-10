@@ -38,9 +38,9 @@ Client (facade + builder + market)
 │   └── kline      K线分段磁盘缓存（写锁、去重、区间读取、压缩）
 ├── quote/         Quote 订阅生命周期控制
 │   └── lifecycle  订阅生命周期 (start/stop/add/remove)
-├── series/        K线/Tick 订阅 (单合约 + 多合约对齐)
-│   ├── api        SeriesAPI (K线/Tick 请求)
-│   ├── subscription 订阅管理
+├── series/        K线/Tick 窗口订阅 (单合约 + 多合约对齐)
+│   ├── api        SeriesAPI (K线/Tick 请求 + 历史窗口抓取)
+│   ├── subscription 生命周期 + snapshot 等待/读取
 │   └── processing   数据处理
 ├── ins/           合约查询与基础数据
 │   ├── query      GraphQL 查询 + 合约列表/期权筛选
@@ -75,7 +75,7 @@ Client (facade + builder + market)
 | `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时、目标持仓调度、任务所有权与执行 adapter |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
 | `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；状态读取走 `TqApi::quote()` |
-| `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
+| `series` | `SeriesAPI`, `SeriesSubscription` | 窗口态 K线/Tick 订阅，使用 `wait_update()` / `load()` 读取快照 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
 | `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
 | `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
@@ -87,6 +87,7 @@ Client (facade + builder + market)
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
 - 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
 - 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
+- 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐/历史窗口状态。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。

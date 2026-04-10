@@ -250,10 +250,6 @@ impl TqQuoteWebsocket {
         self.base.is_ready()
     }
 
-    pub(crate) fn message_queue_capacity(&self) -> usize {
-        self.base.message_queue_capacity()
-    }
-
     pub fn is_logged_in(&self) -> bool {
         self.runtime.login_ready.load(Ordering::SeqCst)
     }

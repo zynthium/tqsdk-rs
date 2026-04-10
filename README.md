@@ -57,9 +57,8 @@
 - 修复行情 WebSocket 断线重连后未完成 `ins_query` 可能丢失或重复的问题。
 - 修复 `query_cont_quotes` 在未提供 `has_night` 时仍发送该变量导致的超时问题。
 - 修复 `TradeSession::connect()` 失败后后台任务仍可能继续重连或保活的问题。
-- 修复 `SeriesSubscription::data_stream()` 覆盖 `on_update()` 的接口行为：
-  `data_stream()` 现在与 `on_update()` 可并存，不再互相覆盖。
-- 将 Quote、TradingStatus、Series stream、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
+- 将 `SeriesSubscription` 收敛为快照式状态接口，窗口消费统一改用 `wait_update()` / `load()`。
+- 将 Quote、TradingStatus、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
 - 修复 `has_md_grants` 的指数权限判断顺序：
   `SSE.000016` / `SSE.000300` / `SSE.000905` / `SSE.000852` 现在会优先校验 `lmt_idx` 权限。
 - 优化交易状态订阅生命周期：
@@ -637,15 +636,13 @@ println!("quotes={:?} cont={:?} options={:?} raw={:?}", quotes, cont, options, r
 启用 `polars` feature 后，可以直接将序列数据转换为 DataFrame：
 
 ```rust
-subscription
-    .on_update(|series_data, _| {
-        if let Ok(df) = series_data.to_dataframe() {
-            println!("shape={:?}", df.shape());
-        }
-    })
-    .await;
-
 subscription.start().await?;
+let snapshot = subscription.wait_update().await?;
+
+if snapshot.update.chart_ready {
+    let df = subscription.load().await?.to_dataframe()?;
+    println!("shape={:?}", df.shape());
+}
 ```
 
 如果需要增量维护窗口，可以结合 `KlineBuffer` / `TickBuffer` 使用。
@@ -807,13 +804,13 @@ tqsdk-rs/
 ### 并发与背压
 
 - 共享状态主要通过 `Arc` 与锁保护。
-- Quote、TradingStatus、Series stream、WebSocket 离线发送使用有界队列。
+- Quote、TradingStatus、WebSocket 离线发送使用有界队列。
 - 背压策略优先限制内存占用；当消费者过慢时，部分更新会被丢弃并记录日志。
 
 ### Canonical 接口
 
 - Quote：`QuoteSubscription` 负责订阅生命周期，`TqApi::quote()` 负责读取最新状态。
-- Series：`TqApi` 负责 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口。
+- Series：`TqApi` 负责 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口，并通过 `wait_update()` / `load()` 暴露快照。
 - TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
 仍保留的回调接口大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。
@@ -886,7 +883,7 @@ let layer = create_logger_layer("info", false);
 ### 6. ViewWidth 与队列容量
 
 - `view_width` 决定本地维护的序列窗口大小。
-- `message_queue_capacity` 决定 Quote / Series stream / 离线发送等缓冲上限。
+- `message_queue_capacity` 决定 Quote / TradingStatus / 离线发送等缓冲上限。
 - `series_disk_cache_enabled` 默认 `false`；开启后会启用与官方 Python SDK 兼容的 `DataSeries` 历史快照缓存。
 - `series_disk_cache_max_bytes` 可限制 `~/.tqsdk/data_series_1` 下缓存总大小（字节），超限时会按文件修改时间优先清理旧文件。
 - `series_disk_cache_retention_days` 可按保留天数清理 `DataSeries` 历史缓存文件。
@@ -907,9 +904,9 @@ let layer = create_logger_layer("info", false);
 ### 重要提示
 
 1. 合约代码必须使用完整格式，如 `SHFE.au2602`。
-2. Quote 需要显式 `start()` 才会推进状态；TradeSession 需要 `connect()`；仍依赖回调或事件订阅的接口，最好在启动前先注册完成。
-3. `SeriesSubscription::on_update()` 只有一个槽位；如需额外消费，请使用 `data_stream()` 或自行转发。
-4. 通道和流式接口已采用有界缓冲；如果你观察到丢更新日志，优先检查消费者速度和队列容量。
+2. Quote 和 Series 都需要显式 `start()` 才会推进状态；TradeSession 需要 `connect()`。
+3. `SeriesSubscription` 是 coalesced snapshot API；用 `wait_update()` 等待下一次窗口更新，再用 `load()` 读取当前 `SeriesData`。
+4. 通道类接口已采用有界缓冲；如果你观察到丢更新日志，优先检查消费者速度和队列容量。
 5. 交易示例会访问真实交易接口，请优先使用模拟环境验证。
 
 ### 常见问题
@@ -917,7 +914,7 @@ let layer = create_logger_layer("info", false);
 **Q: 为什么收不到数据？**
 
 - 检查 Quote/Series 是否已调用 `start()`，TradeSession 是否已 `connect()`。
-- 检查需要的回调或事件流是否在启动前注册完成。
+- 对 Quote/Series，检查你是在等状态更新还是误用了已经删除的 callback/stream 接口。
 - 检查合约代码格式和账户权限。
 
 **Q: 为什么看到“通道已满，丢弃一次更新”？**
@@ -925,10 +922,10 @@ let layer = create_logger_layer("info", false);
 - 说明当前带缓冲的消费者处理速度跟不上生产速度。
 - 提高 `message_queue_capacity()`，或减少回调/通道里的阻塞操作。
 
-**Q: `data_stream()` 会覆盖 `on_update()` 吗？**
+**Q: `SeriesSubscription` 什么时候该用 `wait_update()`，什么时候该用 `load()`？**
 
-- 不会。当前版本两者可以同时工作。
-- 但 `on_update()` 仍然只有一个回调槽位，后注册会覆盖先注册。
+- `wait_update()` 用来等待下一次窗口快照推进。
+- `load()` 用来读取当前最新 `SeriesData`；通常在 `wait_update()` 返回后立即调用。
 
 **Q: 如何调试网络或权限问题？**
 

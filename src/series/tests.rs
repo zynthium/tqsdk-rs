@@ -3,18 +3,16 @@ use crate::cache::data_series::DataSeriesCache;
 use crate::datamanager::DataManagerConfig;
 use crate::errors::{Result, TqError};
 use crate::marketdata::MarketDataState;
-use crate::types::{Kline, SeriesData, Tick, UpdateInfo};
+use crate::types::{Kline, SeriesData, SeriesSnapshot, Tick, UpdateInfo};
 use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use futures::{StreamExt, pin_mut};
 use reqwest::header::HeaderMap;
 use std::collections::HashMap;
 use std::env;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration as StdDuration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, timeout};
@@ -169,6 +167,25 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
     .unwrap()
 }
 
+fn sample_series_snapshot(symbol: &str, epoch: i64) -> SeriesSnapshot {
+    SeriesSnapshot {
+        data: Arc::new(SeriesData {
+            is_multi: false,
+            is_tick: false,
+            symbols: vec![symbol.to_string()],
+            single: None,
+            multi: None,
+            tick_data: None,
+        }),
+        update: Arc::new(UpdateInfo {
+            chart_ready: true,
+            has_new_bar: true,
+            ..UpdateInfo::default()
+        }),
+        epoch,
+    }
+}
+
 #[tokio::test]
 async fn kline_returns_unstarted_subscription() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
@@ -184,11 +201,12 @@ async fn kline_returns_unstarted_subscription() {
     let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await.unwrap();
 
     assert!(!*sub.running.read().await);
-    assert!(sub.data_cb_id.lock().unwrap().is_none());
+    assert!(!sub.watch_task_active_for_test());
+    assert!(sub.snapshot().await.is_none());
 }
 
 #[tokio::test]
-async fn start_failure_rolls_back_series_callback_registration() {
+async fn start_failure_rolls_back_series_watch_task() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -215,7 +233,8 @@ async fn start_failure_rolls_back_series_callback_registration() {
 
     assert!(sub.start().await.is_err());
     assert!(!*sub.running.read().await);
-    assert!(sub.data_cb_id.lock().unwrap().is_none());
+    assert!(!sub.watch_task_active_for_test());
+    assert!(sub.snapshot().await.is_none());
 }
 
 #[tokio::test]
@@ -376,106 +395,46 @@ async fn tick_data_series_cache_miss_should_trigger_fetch_path() {
 }
 
 #[tokio::test]
-async fn data_stream_does_not_override_on_update() {
+async fn load_returns_error_before_first_snapshot() {
     let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
 
-    let fired = Arc::new(AtomicUsize::new(0));
-    {
-        let fired = Arc::clone(&fired);
-        sub.on_update(move |_data, _info| {
-            fired.fetch_add(1, Ordering::SeqCst);
-        })
-        .await;
-    }
-
-    let stream = sub.data_stream().await;
-    pin_mut!(stream);
-
-    let data = Arc::new(SeriesData {
-        is_multi: false,
-        is_tick: false,
-        symbols: vec!["SHFE.au2602".to_string()],
-        single: None,
-        multi: None,
-        tick_data: None,
-    });
-    let info = Arc::new(UpdateInfo {
-        chart_ready: true,
-        ..UpdateInfo::default()
-    });
-
-    sub.emit_update(Arc::clone(&data), Arc::clone(&info)).await;
-
-    assert_eq!(fired.load(Ordering::SeqCst), 1);
-
-    let streamed = timeout(Duration::from_millis(100), stream.next())
-        .await
-        .expect("stream should receive update")
-        .expect("stream item should exist");
-    assert_eq!(streamed.symbols, data.symbols);
+    assert!(sub.snapshot().await.is_none());
+    assert!(matches!(sub.load().await, Err(TqError::DataNotFound(_))));
+    assert!(matches!(sub.wait_update().await, Err(TqError::InternalError(_))));
 }
 
 #[tokio::test]
-async fn data_stream_is_bounded_and_drops_overflow_updates() {
-    let sub = build_series_subscription(1);
-    let stream = sub.data_stream().await;
-    pin_mut!(stream);
+async fn wait_update_and_load_track_latest_snapshot_state() {
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
+    *sub.running.write().await = true;
+    let wait_sub = sub.clone();
+    let waiter = tokio::spawn(async move { wait_sub.wait_update().await.expect("wait_update should succeed") });
 
-    let first = Arc::new(SeriesData {
-        is_multi: false,
-        is_tick: false,
-        symbols: vec!["FIRST".to_string()],
-        single: None,
-        multi: None,
-        tick_data: None,
-    });
-    let second = Arc::new(SeriesData {
-        is_multi: false,
-        is_tick: false,
-        symbols: vec!["SECOND".to_string()],
-        single: None,
-        multi: None,
-        tick_data: None,
-    });
-    let info = Arc::new(UpdateInfo::default());
+    tokio::task::yield_now().await;
 
-    sub.emit_update(Arc::clone(&first), Arc::clone(&info)).await;
-    sub.emit_update(Arc::clone(&second), Arc::clone(&info)).await;
+    let snapshot = sample_series_snapshot("SHFE.au2602", 7);
+    sub.emit_snapshot(snapshot.clone()).await;
 
-    let streamed = timeout(Duration::from_millis(100), stream.next())
+    let received = timeout(Duration::from_millis(100), waiter)
         .await
-        .expect("stream should receive first update")
-        .expect("stream item should exist");
-    assert_eq!(streamed.symbols, first.symbols);
+        .expect("waiter should finish")
+        .expect("waiter task should not panic");
+    assert_eq!(received.epoch, 7);
+    assert_eq!(received.data.symbols, snapshot.data.symbols);
+    assert!(received.update.chart_ready);
 
-    assert!(
-        timeout(Duration::from_millis(50), stream.next()).await.is_err(),
-        "second update should be dropped when stream queue is full"
-    );
+    let loaded = sub.load().await.expect("load should return latest snapshot data");
+    assert_eq!(loaded.symbols, snapshot.data.symbols);
 }
 
 #[tokio::test]
-async fn closed_data_stream_subscriber_is_pruned_on_dispatch() {
-    let sub = build_series_subscription(1);
+async fn series_subscription_start_and_close_manage_watch_task_lifecycle() {
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
 
-    let stream = sub.data_stream().await;
-    assert_eq!(sub.stream_subscribers.read().await.len(), 1);
-    drop(stream);
+    assert!(!sub.watch_task_active_for_test());
+    sub.start().await.expect("start should succeed");
+    assert!(sub.watch_task_active_for_test());
 
-    let data = Arc::new(SeriesData {
-        is_multi: false,
-        is_tick: false,
-        symbols: vec!["SHFE.au2602".to_string()],
-        single: None,
-        multi: None,
-        tick_data: None,
-    });
-    let info = Arc::new(UpdateInfo::default());
-
-    sub.emit_update(data, info).await;
-
-    assert!(
-        sub.stream_subscribers.read().await.is_empty(),
-        "closed stream subscribers should be pruned after dispatch"
-    );
+    sub.close().await.expect("close should succeed");
+    assert!(!sub.watch_task_active_for_test());
 }

@@ -114,16 +114,12 @@ loop {
 
 ### 4. K 线（Kline）与 Tick 订阅迁移
 
-历史和实时 K 线现在共享完全一致的语义接口 `KlineRef`。它内部会自动合并网络分片，你读取的永远是当前视角的“最新一根”或“历史截面”。
+最新一根 K 线仍然推荐通过 `KlineRef` 读取；如果你需要历史窗口、多合约对齐窗口或后续 DataFrame 转换，则应通过 `SeriesSubscription` 的快照接口消费。
 
 **旧代码：**
 ```rust
 let series_api = client.series()?;
 let sub = series_api.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
-
-sub.on_new_bar(|data| {
-    // 繁琐的事件拆解
-}).await;
 sub.start().await?;
 ```
 
@@ -133,14 +129,17 @@ let series_api = client.series()?;
 let sub = series_api.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
 sub.start().await?;
 
-let cu_kline = api.kline("SHFE.cu2605", Duration::from_secs(60));
-
 loop {
-    api.wait_update().await?;
-    
-    if cu_kline.is_changing() {
-        let k = cu_kline.load().await;
-        println!("当前 K线 C: {}, V: {}", k.close, k.volume);
+    let snapshot = sub.wait_update().await?;
+    if !snapshot.update.chart_ready {
+        continue;
+    }
+
+    let series_data = sub.load().await?;
+    if let Some(single) = &series_data.single {
+        if let Some(last) = single.data.last() {
+            println!("当前窗口最后一根 K线 C: {}, V: {}", last.close, last.volume);
+        }
     }
 }
 ```
@@ -173,4 +172,4 @@ loop {
 1. **`wait_update` 不返回任何网络包**：它纯粹是一个调度屏障（Barrier）。底层网络线程已经在它返回前，把所有收到的 JSON 数据合并成了强类型的内存结构体（`Quote`/`Kline`）。
 2. **`is_changing()` 会消耗状态**：每次调用 `is_changing()` 如果返回 `true`，内部会推进本地的 `seen_epoch`。在同一个策略循环里，同一个 `QuoteRef` 第二次调用会返回 `false`。
 3. **回测模式 (Backtest)**：无需修改任何策略层代码！底层 `TqApi` 会自动识别，当你在回测中调用 `wait_update().await` 时，它会驱动历史数据流快进。
-4. **当前边界**：Quote callback/channel 已删除；Series 的 legacy callback/stream 仍处于迁移过程中，但新代码应优先使用状态驱动读取模型。
+4. **当前边界**：Quote callback/channel 与 Series callback/stream 都已删除；新代码应统一使用状态驱动读取模型。
