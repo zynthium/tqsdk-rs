@@ -162,14 +162,14 @@ impl TradeSession {
         if let Err(e) = self.send_login().await {
             self.running.store(false, Ordering::SeqCst);
             self.logged_in.store(false, Ordering::SeqCst);
-            self.detach_data_callback();
+            self.stop_watch_task();
             let _ = self.ws.close().await;
             return Err(e);
         }
         if let Err(e) = self.send_confirm_settlement().await {
             self.running.store(false, Ordering::SeqCst);
             self.logged_in.store(false, Ordering::SeqCst);
-            self.detach_data_callback();
+            self.stop_watch_task();
             let _ = self.ws.close().await;
             return Err(e);
         }
@@ -195,7 +195,7 @@ impl TradeSession {
 
         info!("关闭交易会话");
         self.logged_in.store(false, Ordering::SeqCst);
-        self.detach_data_callback();
+        self.stop_watch_task();
         self.trade_events.close();
         self.ws.close().await?;
         Ok(())

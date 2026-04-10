@@ -4,7 +4,7 @@
 //! - 路径监听 (Watch/UnWatch)
 //! - 数据访问 (Get/GetByPath)
 //! - 多路径同时监听
-//! - 数据更新回调
+//! - merge 完成后的 epoch 订阅
 
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -181,27 +181,25 @@ async fn multi_watch_example() {
     info!("多路径监听示例结束");
 }
 
-/// 数据更新回调示例
-async fn on_data_callback_example() {
-    info!("==================== 数据更新回调示例 ====================");
+/// merge 完成后的 epoch 订阅示例
+async fn epoch_subscription_example() {
+    info!("==================== DataManager Epoch 示例 ====================");
 
     let mut initial_data = HashMap::new();
     initial_data.insert("quotes".to_string(), json!({}));
 
     let config = DataManagerConfig::default();
     let dm = Arc::new(DataManager::new(initial_data, config));
+    let mut epoch_rx = dm.subscribe_epoch();
 
-    // 注册数据更新回调
-    let dm_clone = Arc::clone(&dm);
-    dm.on_data(move || {
-        info!("🔔 数据更新通知");
-        let epoch = dm_clone.get_epoch();
-        info!("   当前 epoch: {}", epoch);
-
-        // 可以在这里触发其他操作
-        // 例如：检查特定路径的数据
-        if let Some(data) = dm_clone.get_by_path(&["quotes", "SHFE.au2512"]) {
-            info!("   SHFE.au2512 数据: {:?}", data);
+    let dm_for_task = Arc::clone(&dm);
+    tokio::spawn(async move {
+        while epoch_rx.changed().await.is_ok() {
+            let epoch = *epoch_rx.borrow_and_update();
+            info!("🔔 merge 完成，当前 epoch: {}", epoch);
+            if let Some(data) = dm_for_task.get_by_path(&["quotes", "SHFE.au2512"]) {
+                info!("   SHFE.au2512 数据: {:?}", data);
+            }
         }
     });
 
@@ -238,7 +236,7 @@ async fn on_data_callback_example() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    info!("数据更新回调示例结束");
+    info!("epoch 示例结束");
 }
 
 #[tokio::main]
@@ -256,7 +254,7 @@ async fn main() {
     multi_watch_example().await;
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    on_data_callback_example().await;
+    epoch_subscription_example().await;
 
     info!("\n所有示例运行完成!");
 }

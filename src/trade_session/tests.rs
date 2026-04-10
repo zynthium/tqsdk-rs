@@ -48,6 +48,102 @@ fn trade_json(order_id: &str, trade_id: &str) -> serde_json::Value {
     })
 }
 
+fn account_json(balance: f64, available: f64) -> serde_json::Value {
+    json!({
+        "user_id": "u",
+        "currency": "CNY",
+        "balance": balance,
+        "available": available
+    })
+}
+
+fn position_json() -> serde_json::Value {
+    json!({
+        "user_id": "u",
+        "exchange_id": "SHFE",
+        "instrument_id": "au2602",
+        "volume_long_today": 1,
+        "volume_long": 1
+    })
+}
+
+#[tokio::test]
+async fn trade_session_start_watching_uses_epoch_subscription_instead_of_datamanager_callbacks() {
+    let dm = build_dm();
+    let session = build_session(Arc::clone(&dm));
+
+    session.running.store(true, Ordering::SeqCst);
+    assert_eq!(dm.callback_count_for_test(), 0);
+
+    session.start_watching().await;
+
+    assert_eq!(dm.callback_count_for_test(), 0);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn trade_session_epoch_watcher_still_delivers_snapshot_and_reliable_event_updates() {
+    let dm = build_dm();
+    let session = build_session(Arc::clone(&dm));
+    let account_rx = session.account_channel();
+    let position_rx = session.position_channel();
+    let mut events = session.subscribe_events();
+
+    session.running.store(true, Ordering::SeqCst);
+    session.start_watching().await;
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "session": {
+                        "trading_day": "20260411"
+                    },
+                    "accounts": {
+                        "CNY": account_json(1000.0, 900.0)
+                    },
+                    "positions": {
+                        "SHFE.au2602": position_json()
+                    },
+                    "orders": {
+                        "o1": order_json("o1", "ALIVE")
+                    },
+                    "trades": {
+                        "t1": trade_json("o1", "t1")
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    let account = timeout(Duration::from_secs(1), account_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let position = timeout(Duration::from_secs(1), position_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let first = timeout(Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
+    let second = timeout(Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
+
+    assert_eq!(account.balance, 1000.0);
+    assert_eq!(position.symbol, "SHFE.au2602");
+    assert!(session.logged_in.load(Ordering::SeqCst));
+    assert!(matches!(
+        first.kind,
+        TradeSessionEventKind::OrderUpdated { ref order_id, .. } if order_id == "o1"
+    ));
+    assert!(matches!(
+        second.kind,
+        TradeSessionEventKind::TradeCreated { ref trade_id, .. } if trade_id == "t1"
+    ));
+
+    session.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn trade_session_emits_order_then_trade_events() {
     let dm = build_dm();

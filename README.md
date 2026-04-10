@@ -570,6 +570,27 @@ let epoch = dm.get_epoch();
 println!("当前全局 epoch: {}", epoch);
 ```
 
+如需在每次 merge 完成后拉取最新状态，优先使用 `subscribe_epoch()`，再结合 `get_path_epoch()` / `get_by_path()` 做状态轮询，而不是新增全局 callback：
+
+```rust
+let mut epoch_rx = dm.subscribe_epoch();
+tokio::spawn(async move {
+    while epoch_rx.changed().await.is_ok() {
+        println!("merge 完成后的全局 epoch = {}", *epoch_rx.borrow_and_update());
+    }
+});
+
+dm.merge_data(
+    serde_json::json!({
+        "quotes": {
+            "SHFE.au2602": { "last_price": 500.0 }
+        }
+    }),
+    true,
+    true,
+);
+```
+
 ### 4. 回测与历史回放（推荐）
 
 ```rust

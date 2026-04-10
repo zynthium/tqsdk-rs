@@ -17,6 +17,7 @@ use async_channel::{Receiver, Sender};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
 type AccountCallback = Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>;
 type PositionCallback = Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>;
@@ -53,5 +54,5 @@ pub struct TradeSession {
 
     logged_in: Arc<AtomicBool>,
     running: Arc<AtomicBool>,
-    data_cb_id: Arc<std::sync::Mutex<Option<i64>>>,
+    watch_task: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
 }

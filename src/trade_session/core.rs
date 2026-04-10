@@ -86,7 +86,7 @@ impl TradeSession {
             on_error,
             logged_in: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
-            data_cb_id: Arc::new(std::sync::Mutex::new(None)),
+            watch_task: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -111,9 +111,9 @@ impl TradeSession {
         Ok(())
     }
 
-    pub(super) fn detach_data_callback(&self) {
-        if let Some(id) = self.data_cb_id.lock().unwrap().take() {
-            let _ = self.dm.off_data(id);
+    pub(super) fn stop_watch_task(&self) {
+        if let Some(handle) = self.watch_task.lock().unwrap().take() {
+            handle.abort();
         }
     }
 

@@ -30,7 +30,7 @@ Client (facade + builder + market)
 │   ├── reconnect       重连逻辑 + 数据完整性校验
 │   └── message         通知构建 + 日志脱敏
 ├── datamanager/   DIFF 协议数据管理
-│   ├── core       创建 + 回调注册
+│   ├── core       创建 + epoch 订阅 + legacy callback 注册
 │   ├── merge      递归合并 (prototype 语义)
 │   ├── query      路径查询 + 数据转换
 │   └── watch      路径监听
@@ -50,9 +50,9 @@ Client (facade + builder + market)
 │   ├── parse      查询结果解析
 │   └── validation 参数校验 + 缓存匹配
 ├── trade_session/ 交易会话
-│   ├── core       创建 + 登录 + 回调注册
+│   ├── core       创建 + 登录 + watcher 生命周期
 │   ├── ops        下单/撤单/查询持仓/账户/成交
-│   └── watch      数据变更监听 (DM → channel/callback)
+│   └── watch      监听 DataManager epoch，再按 path epoch 生成 snapshot / reliable event
 ├── backtest/      回测控制
 │   ├── core       初始化 + 时间推进 + 事件分发 + 回调清理
 │   └── parsing    回测时间状态解析
@@ -89,13 +89,14 @@ Client (facade + builder + market)
 ## 关键设计模式
 
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
-- DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询。
+- DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
 - 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 backtest 行为。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
+- 交易状态分层：`TradeSession` 以 DataManager epoch 驱动内部 watcher，再用 path epoch 区分账户/持仓快照与可靠订单/成交事件。
 - 回测生命周期：`BacktestHandle` 释放时会注销内部 DataManager 回调，避免长会话回调累积。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
 - 缓存治理：Series 磁盘缓存默认关闭；开启后写入 `~/.tqsdk/data_series_1`，并支持按总容量上限清理、按保留天数清理。

@@ -3,13 +3,18 @@ use crate::datamanager::DataManager;
 use crate::types::{Order, PositionUpdate, Trade};
 use async_channel::{Sender, TrySendError};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use tracing::{debug, error, info, warn};
 
 impl TradeSession {
     /// 启动数据监听
     pub(super) async fn start_watching(&self) {
-        let dm_clone = Arc::clone(&self.dm);
+        let mut guard = self.watch_task.lock().unwrap();
+        if guard.as_ref().is_some_and(|handle| !handle.is_finished()) {
+            return;
+        }
+
+        let dm = Arc::clone(&self.dm);
         let user_id = self.user_id.clone();
         let logged_in = Arc::clone(&self.logged_in);
         let running = Arc::clone(&self.running);
@@ -18,97 +23,75 @@ impl TradeSession {
         let trade_events = Arc::clone(&self.trade_events);
         let on_account = Arc::clone(&self.on_account);
         let on_position = Arc::clone(&self.on_position);
-        let worker_running = Arc::new(AtomicBool::new(false));
-        let worker_dirty = Arc::new(AtomicBool::new(false));
-        let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
+        let mut epoch_rx = dm.subscribe_epoch();
 
         info!("TradeSession 开始监听数据更新");
 
-        let dm_for_callback = Arc::clone(&dm_clone);
-        let cb_id = dm_clone.on_data_register(move || {
-            worker_dirty.store(true, Ordering::SeqCst);
-            if worker_running.swap(true, Ordering::SeqCst) {
-                return;
-            }
-            let dm = Arc::clone(&dm_for_callback);
-            let user_id = user_id.clone();
-            let logged_in = Arc::clone(&logged_in);
-            let running = Arc::clone(&running);
-            let account_tx = account_tx.clone();
-            let position_tx = position_tx.clone();
-            let trade_events = Arc::clone(&trade_events);
-            let on_account = Arc::clone(&on_account);
-            let on_position = Arc::clone(&on_position);
-            let worker_running = Arc::clone(&worker_running);
-            let worker_dirty = Arc::clone(&worker_dirty);
-            let last_processed_epoch = Arc::clone(&last_processed_epoch);
+        *guard = Some(tokio::spawn(async move {
+            let mut last_processed_epoch = 0i64;
 
-            tokio::spawn(async move {
-                loop {
-                    worker_dirty.store(false, Ordering::SeqCst);
-                    if running.load(Ordering::SeqCst) {
-                        let current_global_epoch = dm.get_epoch();
-                        let last_epoch = { *last_processed_epoch.lock().unwrap() };
+            loop {
+                if !running.load(Ordering::SeqCst) {
+                    break;
+                }
 
-                        if let Some(serde_json::Value::Object(session_map)) =
-                            dm.get_by_path(&["trade", &user_id, "session"])
-                            && session_map
-                                .get("trading_day")
-                                .is_some_and(|trading_day| !trading_day.is_null())
-                            && logged_in
-                                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                                .is_ok()
-                        {
-                            info!("交易会话已登录: user_id={}", user_id);
-                        }
-
-                        if dm.get_path_epoch(&["trade", &user_id, "accounts", "CNY"]) > last_epoch {
-                            match dm.get_account_data(&user_id, "CNY") {
-                                Ok(account) => {
-                                    debug!("账户更新: balance={}", account.balance);
-                                    match account_tx.try_send(account.clone()) {
-                                        Ok(()) => {}
-                                        Err(TrySendError::Full(_)) => {
-                                            warn!("TradeSession 账户队列已满，丢弃一次更新");
-                                        }
-                                        Err(TrySendError::Closed(_)) => {}
-                                    }
-                                    let callback = on_account.read().await.clone();
-                                    if let Some(callback) = callback {
-                                        callback(account);
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("获取账户数据失败（这不应该发生）: {}", e);
-                                }
-                            }
-                        }
-
-                        if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_epoch {
-                            Self::process_position_update(&dm, &user_id, &position_tx, &on_position, last_epoch).await;
-                        }
-
-                        if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_epoch {
-                            Self::process_order_update(&dm, &user_id, &trade_events, last_epoch).await;
-                        }
-
-                        if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_epoch {
-                            Self::process_trade_update(&dm, &user_id, &trade_events, last_epoch).await;
-                        }
-
-                        *last_processed_epoch.lock().unwrap() = current_global_epoch;
-                    }
-                    if !worker_dirty.load(Ordering::SeqCst) {
-                        worker_running.store(false, Ordering::SeqCst);
-                        if worker_dirty.load(Ordering::SeqCst) && !worker_running.swap(true, Ordering::SeqCst) {
-                            continue;
-                        }
+                let current_global_epoch = *epoch_rx.borrow_and_update();
+                if current_global_epoch <= last_processed_epoch {
+                    if epoch_rx.changed().await.is_err() {
                         break;
                     }
+                    continue;
                 }
-            });
-        });
-        *self.data_cb_id.lock().unwrap() = Some(cb_id);
+
+                if let Some(serde_json::Value::Object(session_map)) = dm.get_by_path(&["trade", &user_id, "session"])
+                    && session_map
+                        .get("trading_day")
+                        .is_some_and(|trading_day| !trading_day.is_null())
+                    && logged_in
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                {
+                    info!("交易会话已登录: user_id={}", user_id);
+                }
+
+                if dm.get_path_epoch(&["trade", &user_id, "accounts", "CNY"]) > last_processed_epoch {
+                    match dm.get_account_data(&user_id, "CNY") {
+                        Ok(account) => {
+                            debug!("账户更新: balance={}", account.balance);
+                            match account_tx.try_send(account.clone()) {
+                                Ok(()) => {}
+                                Err(TrySendError::Full(_)) => {
+                                    warn!("TradeSession 账户队列已满，丢弃一次更新");
+                                }
+                                Err(TrySendError::Closed(_)) => {}
+                            }
+                            let callback = on_account.read().await.clone();
+                            if let Some(callback) = callback {
+                                callback(account);
+                            }
+                        }
+                        Err(e) => {
+                            error!("获取账户数据失败（这不应该发生）: {}", e);
+                        }
+                    }
+                }
+
+                if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_processed_epoch {
+                    Self::process_position_update(&dm, &user_id, &position_tx, &on_position, last_processed_epoch)
+                        .await;
+                }
+
+                if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_processed_epoch {
+                    Self::process_order_update(&dm, &user_id, &trade_events, last_processed_epoch).await;
+                }
+
+                if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_processed_epoch {
+                    Self::process_trade_update(&dm, &user_id, &trade_events, last_processed_epoch).await;
+                }
+
+                last_processed_epoch = current_global_epoch;
+            }
+        }));
     }
 
     /// 处理持仓更新
