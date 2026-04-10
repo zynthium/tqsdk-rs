@@ -82,16 +82,15 @@ pub use auth::Authenticator;
 pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
 pub use datamanager::{DataManager, DataManagerConfig};
 pub use errors::{Result, TqError};
-pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};
-pub use marketdata::{KlineKey, KlineRef, MarketDataState, MarketDataUpdates, QuoteRef, SymbolId, TickRef, TqApi};
+pub use marketdata::{KlineRef, QuoteRef, TickRef, TqApi};
 pub use quote::QuoteSubscription;
 pub use replay::{BacktestResult, ReplayConfig, ReplaySession};
 pub use runtime::{
     AccountHandle, OffsetPriority, OrderDirection, PriceMode, RuntimeResult, TargetPosConfig, TargetPosScheduleStep,
     TargetPosScheduler, TargetPosTask, TqRuntime, VolumeSplitPolicy,
 };
-pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
+pub use series::SeriesSubscription;
 pub use trade_session::{TradeSession, TradeSessionEventKind};
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
 
