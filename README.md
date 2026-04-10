@@ -229,15 +229,19 @@ use tqsdk_rs::prelude::*;
 let config = ReplayConfig::new(start_dt, end_dt)?;
 let mut session = client.create_backtest_session(config).await?;
 let quote = session.quote("SHFE.rb2605").await?;
-let klines = session
-    .series()
-    .kline("SHFE.rb2605", Duration::from_secs(60), 64)
-    .await?;
+let klines = {
+    let mut series = session.series();
+    series.kline("SHFE.rb2605", Duration::from_secs(60), 64).await?
+};
 let runtime = session.runtime(["TQSIM"]).await?;
 let task = TargetPosTask::new(runtime.clone(), "TQSIM", "SHFE.rb2605", TargetPosTaskOptions::default())
     .await?;
 
-while let Some(_step) = session.step().await? {
+while let Some(step) = session.step().await? {
+    if !step.updated_handles.iter().any(|id| id == klines.id()) {
+        continue;
+    }
+
     let rows = klines.rows().await;
     if rows.len() >= 2 {
         let last = &rows[rows.len() - 1];
@@ -253,9 +257,13 @@ while let Some(_step) = session.step().await? {
     }
 }
 
+task.cancel().await?;
+task.wait_finished().await?;
 let result = session.finish().await?;
 println!("trades={}", result.trades.len());
 ```
+
+日线开盘信号策略可参考 `examples/pivot_point.rs`。
 
 ### Legacy BacktestHandle（兼容）
 
@@ -826,12 +834,15 @@ cargo run --example option_levels
 tqsdk-rs/
 ├── src/
 │   ├── auth/              # 认证与权限
-│   ├── backtest/          # 回测实现
+│   ├── backtest/          # 旧回测入口（compat）
 │   ├── cache/             # 本地 K 线磁盘缓存（分段写入/压缩/区间读取）
 │   ├── client/            # ClientBuilder / facade / market
+│   ├── compat/            # Python 风格 TargetPos facade
 │   ├── datamanager/       # DIFF 合并与 watch
 │   ├── ins/               # 合约、期权、交易状态等查询
 │   ├── quote/             # Quote 订阅
+│   ├── replay/            # ReplaySession、回放内核、仿真撮合
+│   ├── runtime/           # TqRuntime、TargetPosTask / Scheduler
 │   ├── series/            # K 线 / Tick / 历史序列
 │   ├── trade_session/     # 交易会话
 │   ├── types/             # 公共数据结构

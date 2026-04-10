@@ -218,10 +218,9 @@ impl SimBroker {
             .ok_or_else(|| TqError::OrderNotFound(order_id.to_string()))?;
 
         match order.price_type.as_str() {
-            PRICE_TYPE_LIMIT => Ok(match limit_fill_price(order, quote) {
-                Some(fill_price) => Some(MatchOutcome::Filled { fill_price }),
-                None => None,
-            }),
+            PRICE_TYPE_LIMIT => {
+                Ok(limit_fill_price(order, quote).map(|fill_price| MatchOutcome::Filled { fill_price }))
+            }
             PRICE_TYPE_ANY => Ok(match market_fill_price(order, quote) {
                 Some(fill_price) => Some(MatchOutcome::Filled { fill_price }),
                 None => Some(MatchOutcome::Cancel),

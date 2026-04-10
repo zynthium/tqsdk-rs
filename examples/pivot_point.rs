@@ -1,21 +1,25 @@
 //! 枢轴点反转策略回放示例。
 //!
-//! 这个版本基于 `ReplaySession`：
-//! - `Client::create_backtest_session`
-//! - `ReplaySession::quote`
-//! - `ReplaySession::series().kline`
-//! - `ReplaySession::runtime`
-//! - `ReplaySession::step` / `finish`
+//! 参照 `tqsdk-python/tqsdk/demo/example/pivot_point.py`，使用
+//! `ReplaySession` 在 Rust 中演示等价的日线回放交易逻辑。
+//!
+//! 关键对齐点：
+//! - 信号在“新的一天开始”时触发，即处理日线 `Opening` 事件
+//! - 枢轴点使用上一交易日的 high/low/close 计算
+//! - 调仓通过 `TqRuntime` + `TargetPosTask` 完成
 
 use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
 use std::env;
+use std::error::Error;
+use std::result::Result as StdResult;
 use std::time::Duration;
 use tqsdk_rs::Position;
 use tqsdk_rs::prelude::*;
 
 const ACCOUNT_KEY: &str = "TQSIM";
 const DAILY_BAR: Duration = Duration::from_secs(60 * 60 * 24);
-const DAILY_WIDTH: usize = 64;
+const MIN_DAILY_WIDTH: usize = 32;
+const DEFAULT_POSITION_SIZE: i64 = 100;
 const REVERSAL_CONFIRM: f64 = 50.0;
 const STOP_LOSS_POINTS: f64 = 100.0;
 
@@ -60,43 +64,21 @@ struct StrategyState {
     realized_pnl: f64,
     processed_days: usize,
     signal_count: usize,
-}
-
-fn parse_env_date(name: &str, default: (i32, u32, u32)) -> tqsdk_rs::Result<NaiveDate> {
-    match env::var(name) {
-        Ok(raw) => NaiveDate::parse_from_str(&raw, "%Y-%m-%d")
-            .map_err(|err| TqError::InvalidParameter(format!("invalid {name}: {err}"))),
-        Err(_) => NaiveDate::from_ymd_opt(default.0, default.1, default.2)
-            .ok_or_else(|| TqError::InvalidParameter(format!("invalid default date for {name}"))),
-    }
-}
-
-fn shanghai_range(start_date: NaiveDate, end_date: NaiveDate) -> tqsdk_rs::Result<(DateTime<Utc>, DateTime<Utc>)> {
-    let tz = FixedOffset::east_opt(8 * 3600)
-        .ok_or_else(|| TqError::InternalError("failed to construct Asia/Shanghai offset".to_string()))?;
-    let start_dt = tz
-        .from_local_datetime(
-            &start_date
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| TqError::InvalidParameter("invalid start datetime".to_string()))?,
-        )
-        .single()
-        .ok_or_else(|| TqError::InvalidParameter("ambiguous start datetime".to_string()))?
-        .with_timezone(&Utc);
-    let end_dt = tz
-        .from_local_datetime(
-            &end_date
-                .and_hms_opt(23, 59, 59)
-                .ok_or_else(|| TqError::InvalidParameter("invalid end datetime".to_string()))?,
-        )
-        .single()
-        .ok_or_else(|| TqError::InvalidParameter("ambiguous end datetime".to_string()))?
-        .with_timezone(&Utc);
-    Ok((start_dt, end_dt))
+    last_observed_price: Option<f64>,
 }
 
 fn env_or_default(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
+}
+
+fn parse_env_date(name: &str, default: (i32, u32, u32)) -> StdResult<NaiveDate, Box<dyn Error>> {
+    match env::var(name) {
+        Ok(raw) => Ok(NaiveDate::parse_from_str(&raw, "%Y-%m-%d")?),
+        Err(_) => {
+            Ok(NaiveDate::from_ymd_opt(default.0, default.1, default.2)
+                .ok_or_else(|| format!("默认日期无效: {name}"))?)
+        }
+    }
 }
 
 fn parse_env_i64(name: &str, default: i64) -> i64 {
@@ -106,35 +88,56 @@ fn parse_env_i64(name: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
-fn format_cst_datetime(nanos: i64) -> String {
+fn shanghai_range(
+    start_date: NaiveDate,
+    end_date: NaiveDate,
+) -> StdResult<(DateTime<Utc>, DateTime<Utc>), Box<dyn Error>> {
+    let tz = FixedOffset::east_opt(8 * 3600).ok_or("无法创建 Asia/Shanghai 时区")?;
+    let start_dt = tz
+        .from_local_datetime(&start_date.and_hms_opt(0, 0, 0).ok_or("无效开始时间")?)
+        .single()
+        .ok_or("开始时间存在歧义")?
+        .with_timezone(&Utc);
+    let end_dt = tz
+        .from_local_datetime(&end_date.and_hms_opt(23, 59, 59).ok_or("无效结束时间")?)
+        .single()
+        .ok_or("结束时间存在歧义")?
+        .with_timezone(&Utc);
+    Ok((start_dt, end_dt))
+}
+
+fn history_view_width(start_date: NaiveDate, end_date: NaiveDate) -> usize {
+    let span_days = (end_date - start_date).num_days().max(0) as usize;
+    (span_days + 16).max(MIN_DAILY_WIDTH)
+}
+
+fn format_shanghai_nanos(nanos: i64) -> String {
     let dt = DateTime::<Utc>::from_timestamp_nanos(nanos);
-    let tz = FixedOffset::east_opt(8 * 3600).expect("fixed offset should be valid");
+    let tz = FixedOffset::east_opt(8 * 3600).expect("固定东八区时区应可用");
     dt.with_timezone(&tz).format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn net_position(position: &Position) -> i64 {
-    position.volume_long - position.volume_short
-}
-
-fn runtime_err(err: RuntimeError) -> TqError {
-    TqError::InternalError(format!("runtime error: {err}"))
+    (position.volume_long_today + position.volume_long_his) - (position.volume_short_today + position.volume_short_his)
 }
 
 #[tokio::main]
-async fn main() -> tqsdk_rs::Result<()> {
-    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
-    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
-    let symbol = env_or_default("TQ_TEST_SYMBOL", "SHFE.cu2606");
-    let position_size = parse_env_i64("TQ_POSITION_SIZE", 1);
-    let start_date = parse_env_date("TQ_START_DT", (2026, 4, 1))?;
-    let end_date = parse_env_date("TQ_END_DT", (2026, 4, 15))?;
+async fn main() -> StdResult<(), Box<dyn Error>> {
+    let username = env::var("TQ_AUTH_USER")?;
+    let password = env::var("TQ_AUTH_PASS")?;
+    let symbol = env_or_default("TQ_TEST_SYMBOL", "SHFE.cu2309");
+    let log_level = env_or_default("TQ_LOG_LEVEL", "info");
+    let position_size = parse_env_i64("TQ_POSITION_SIZE", DEFAULT_POSITION_SIZE);
+    let start_date = parse_env_date("TQ_START_DT", (2023, 2, 10))?;
+    let end_date = parse_env_date("TQ_END_DT", (2023, 3, 15))?;
     let (start_dt, end_dt) = shanghai_range(start_date, end_date)?;
+    let daily_width = history_view_width(start_date, end_date);
 
-    init_logger(&env_or_default("TQ_LOG_LEVEL", "info"), false);
+    init_logger(&log_level, false);
 
     let mut client = Client::builder(&username, &password)
         .endpoints(EndpointConfig::from_env())
-        .log_level(env_or_default("TQ_LOG_LEVEL", "info"))
+        .log_level(log_level)
         .view_width(2048)
         .build()
         .await?;
@@ -142,81 +145,99 @@ async fn main() -> tqsdk_rs::Result<()> {
     let mut session = client
         .create_backtest_session(ReplayConfig::new(start_dt, end_dt)?)
         .await?;
-
-    let quote = session.quote(&symbol).await?;
-    let daily = session.series().kline(&symbol, DAILY_BAR, DAILY_WIDTH).await?;
+    let daily_bars = {
+        let mut series = session.series();
+        series.kline(&symbol, DAILY_BAR, daily_width).await?
+    };
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
-    let task = TargetPosTask::new(runtime.clone(), ACCOUNT_KEY, &symbol, TargetPosTaskOptions::default())
-        .await
-        .map_err(runtime_err)?;
+    let task = TargetPosTask::new(runtime.clone(), ACCOUNT_KEY, &symbol, TargetPosTaskOptions::default()).await?;
 
-    println!("pivot-point replay");
-    println!("  symbol: {symbol}");
-    println!("  range:  {start_date} -> {end_date}");
-    println!("  size:   {position_size}");
-    println!("  reversal_confirm: {REVERSAL_CONFIRM}");
-    println!("  stop_loss_points: {STOP_LOSS_POINTS}");
+    println!("开始运行枢轴点反转策略...");
+    println!("  合约: {}", symbol);
+    println!("  区间: {} -> {}", start_date, end_date);
+    println!("  日线窗口宽度: {}", daily_width);
+    println!("  反转确认点数: {}", REVERSAL_CONFIRM);
+    println!("  止损点数: {}", STOP_LOSS_POINTS);
 
     let mut strategy = StrategyState::default();
     let mut processed_bar_id = None;
 
-    while session.step().await?.is_some() {
-        let rows = daily.rows().await;
-        let closed_rows = rows.iter().filter(|row| row.state.is_closed()).collect::<Vec<_>>();
-        if closed_rows.len() < 2 {
+    while let Some(step) = session.step().await? {
+        if !step.updated_handles.iter().any(|id| id == daily_bars.id()) {
             continue;
         }
 
-        let current_day = closed_rows[closed_rows.len() - 1];
-        if processed_bar_id == Some(current_day.kline.id) {
+        let rows = daily_bars.rows().await;
+        if rows.len() < 2 {
             continue;
         }
-        let previous_day = closed_rows[closed_rows.len() - 2];
-        processed_bar_id = Some(current_day.kline.id);
+
+        let current = rows.last().expect("rows len checked");
+        if !current.state.is_opening() || processed_bar_id == Some(current.kline.id) {
+            continue;
+        }
+
+        let previous = &rows[rows.len() - 2];
+        if !previous.state.is_closed() {
+            continue;
+        }
+
+        processed_bar_id = Some(current.kline.id);
         strategy.processed_days += 1;
+        strategy.last_observed_price = Some(current.kline.close);
 
-        let levels = PivotLevels::from_previous_day(
-            previous_day.kline.high,
-            previous_day.kline.low,
-            previous_day.kline.close,
-        );
-        let current_price = current_day.kline.close;
-        let snapshot_price = quote
-            .snapshot()
-            .await
-            .map(|snapshot| snapshot.last_price)
-            .unwrap_or(current_price);
+        let current_price = current.kline.close;
+        let current_high = current.kline.high;
+        let current_low = current.kline.low;
+        let levels = PivotLevels::from_previous_day(previous.kline.high, previous.kline.low, previous.kline.close);
 
-        println!("\n日期: {}", format_cst_datetime(current_day.kline.datetime));
+        println!();
+        println!("新的一天开始:");
         println!(
-            "前一日 HLC: {:.2} / {:.2} / {:.2}",
-            previous_day.kline.high, previous_day.kline.low, previous_day.kline.close
+            "前一日数据 - 最高价: {:.2}, 最低价: {:.2}, 收盘价: {:.2}",
+            previous.kline.high, previous.kline.low, previous.kline.close
         );
+        println!("日期: {}", format_shanghai_nanos(current.kline.datetime));
+        println!("当前价格: {:.2}", current_price);
+        println!("枢轴点: {:.2}", levels.pivot);
+        println!("支撑位: S1={:.2}, S2={:.2}, S3={:.2}", levels.s1, levels.s2, levels.s3);
+        println!("阻力位: R1={:.2}, R2={:.2}, R3={:.2}", levels.r1, levels.r2, levels.r3);
+        println!();
+        println!("多头信号条件:");
         println!(
-            "枢轴点: P={:.2}, R1={:.2}, R2={:.2}, R3={:.2}, S1={:.2}, S2={:.2}, S3={:.2}",
-            levels.pivot, levels.r1, levels.r2, levels.r3, levels.s1, levels.s2, levels.s3
+            "1. 价格在S1附近: {}",
+            current_price <= levels.s1 + REVERSAL_CONFIRM && current_price > levels.s1 - REVERSAL_CONFIRM
         );
-        println!("当前收盘价: {:.2}, replay quote: {:.2}", current_price, snapshot_price);
+        println!("2. 价格高于当日最低价: {}", current_price > current_low);
+        println!("3. 价格高于前一日收盘价: {}", current_price > previous.kline.close);
+        println!();
+        println!("空头信号条件:");
+        println!(
+            "1. 价格在R1附近: {}",
+            current_price >= levels.r1 - REVERSAL_CONFIRM && current_price < levels.r1 + REVERSAL_CONFIRM
+        );
+        println!("2. 价格低于当日最高价: {}", current_price < current_high);
+        println!("3. 价格低于前一日收盘价: {}", current_price < previous.kline.close);
 
         if strategy.current_direction == 0 {
-            if current_price <= levels.s1 + REVERSAL_CONFIRM && current_price < levels.s1 {
+            if current_price < levels.s1 {
                 strategy.current_direction = 1;
                 strategy.entry_price = current_price;
                 strategy.stop_loss_price = current_price - STOP_LOSS_POINTS;
                 strategy.signal_count += 1;
-                task.set_target_volume(position_size).map_err(runtime_err)?;
+                task.set_target_volume(position_size)?;
                 println!(
-                    "多头开仓: entry={:.2}, stop={:.2}",
+                    "\n多头开仓信号! 开仓价: {:.2}, 止损价: {:.2}",
                     strategy.entry_price, strategy.stop_loss_price
                 );
-            } else if current_price >= levels.r1 - REVERSAL_CONFIRM && current_price > levels.r1 {
+            } else if current_price > levels.r1 {
                 strategy.current_direction = -1;
                 strategy.entry_price = current_price;
                 strategy.stop_loss_price = current_price + STOP_LOSS_POINTS;
                 strategy.signal_count += 1;
-                task.set_target_volume(-position_size).map_err(runtime_err)?;
+                task.set_target_volume(-position_size)?;
                 println!(
-                    "空头开仓: entry={:.2}, stop={:.2}",
+                    "\n空头开仓信号! 开仓价: {:.2}, 止损价: {:.2}",
                     strategy.entry_price, strategy.stop_loss_price
                 );
             }
@@ -225,56 +246,65 @@ async fn main() -> tqsdk_rs::Result<()> {
 
         if strategy.current_direction > 0 {
             if current_price >= levels.pivot {
-                strategy.realized_pnl += (current_price - strategy.entry_price) * position_size as f64;
+                let profit = (current_price - strategy.entry_price) * position_size as f64;
+                strategy.realized_pnl += profit;
                 strategy.current_direction = 0;
                 strategy.signal_count += 1;
-                task.set_target_volume(0).map_err(runtime_err)?;
-                println!("多头止盈: price={current_price:.2}, pnl={:.2}", strategy.realized_pnl);
+                task.set_target_volume(0)?;
+                println!("多头止盈平仓: 价格={:.2}, 盈利={:.2}", current_price, profit);
             } else if current_price <= strategy.stop_loss_price {
-                strategy.realized_pnl += (current_price - strategy.entry_price) * position_size as f64;
+                let loss = (strategy.entry_price - current_price) * position_size as f64;
+                strategy.realized_pnl -= loss;
                 strategy.current_direction = 0;
                 strategy.signal_count += 1;
-                task.set_target_volume(0).map_err(runtime_err)?;
-                println!("多头止损: price={current_price:.2}, pnl={:.2}", strategy.realized_pnl);
+                task.set_target_volume(0)?;
+                println!("多头止损平仓: 价格={:.2}, 亏损={:.2}", current_price, loss);
             }
         } else if current_price <= levels.pivot {
-            strategy.realized_pnl += (strategy.entry_price - current_price) * position_size as f64;
+            let profit = (strategy.entry_price - current_price) * position_size as f64;
+            strategy.realized_pnl += profit;
             strategy.current_direction = 0;
             strategy.signal_count += 1;
-            task.set_target_volume(0).map_err(runtime_err)?;
-            println!("空头止盈: price={current_price:.2}, pnl={:.2}", strategy.realized_pnl);
+            task.set_target_volume(0)?;
+            println!("空头止盈平仓: 价格={:.2}, 盈利={:.2}", current_price, profit);
         } else if current_price >= strategy.stop_loss_price {
-            strategy.realized_pnl += (strategy.entry_price - current_price) * position_size as f64;
+            let loss = (current_price - strategy.entry_price) * position_size as f64;
+            strategy.realized_pnl -= loss;
             strategy.current_direction = 0;
             strategy.signal_count += 1;
-            task.set_target_volume(0).map_err(runtime_err)?;
-            println!("空头止损: price={current_price:.2}, pnl={:.2}", strategy.realized_pnl);
+            task.set_target_volume(0)?;
+            println!("空头止损平仓: 价格={:.2}, 亏损={:.2}", current_price, loss);
         }
     }
 
-    let final_position = runtime
-        .execution()
-        .position(ACCOUNT_KEY, &symbol)
-        .await
-        .map_err(runtime_err)?;
+    task.cancel().await?;
+    task.wait_finished().await?;
+
     let result = session.finish().await?;
+    let final_position = runtime.execution().position(ACCOUNT_KEY, &symbol).await?;
     let final_account = result
         .final_accounts
         .iter()
         .find(|account| account.user_id == ACCOUNT_KEY)
         .or_else(|| result.final_accounts.first());
+    let unrealized_pnl = match (strategy.current_direction, strategy.last_observed_price) {
+        (1, Some(price)) => (price - strategy.entry_price) * position_size as f64,
+        (-1, Some(price)) => (strategy.entry_price - price) * position_size as f64,
+        _ => 0.0,
+    };
 
-    println!("\nsummary");
-    println!("  processed_days: {}", strategy.processed_days);
-    println!("  signals:        {}", strategy.signal_count);
-    println!("  realized_pnl:   {:.2}", strategy.realized_pnl);
-    println!("  trades:         {}", result.trades.len());
-    println!("  settlements:    {}", result.settlements.len());
-    println!("  net_position:   {}", net_position(&final_position));
+    println!();
+    println!("回测结束");
+    println!("策略汇总:");
+    println!("  处理交易日: {}", strategy.processed_days);
+    println!("  信号次数: {}", strategy.signal_count);
+    println!("  已实现盈亏: {:.2}", strategy.realized_pnl);
+    println!("  未实现盈亏: {:.2}", unrealized_pnl);
+    println!("  总成交笔数: {}", result.trades.len());
+    println!("  最终净持仓: {}", net_position(&final_position));
     if let Some(account) = final_account {
-        println!("  balance:        {:.2}", account.balance);
-        println!("  available:      {:.2}", account.available);
-        println!("  close_profit:   {:.2}", account.close_profit);
+        println!("  账户权益: {:.2}", account.balance);
+        println!("  可用资金: {:.2}", account.available);
     }
 
     Ok(())

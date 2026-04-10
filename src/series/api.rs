@@ -3,6 +3,7 @@ use crate::cache::data_series::{DataSeriesCache, PAGE_VIEW_WIDTH, trim_last_date
 use crate::errors::{Result, TqError};
 use crate::types::{Kline, Range, SeriesOptions, Tick, rangeset_difference};
 use chrono::{DateTime, Utc};
+use serde_json::json;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
@@ -458,6 +459,7 @@ impl SeriesAPI {
         .await;
 
         sub.start().await?;
+        self.ws.send(&json!({"aid": "peek_message"})).await?;
         let fetched = match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, rx).await {
             Ok(Ok(page)) => Ok(page),
             Ok(Err(_)) => Err(TqError::InternalError("历史下载通道提前关闭".to_string())),

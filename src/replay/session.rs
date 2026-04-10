@@ -45,8 +45,7 @@ impl<'a> ReplaySeriesSession<'a> {
 
         let handle = {
             let mut kernel = self.session.kernel.lock().await;
-            let handle = kernel.register_kline(symbol, duration_nanos, width, metadata.clone());
-            handle
+            kernel.register_kline(symbol, duration_nanos, width, metadata.clone())
         };
 
         Ok(handle)

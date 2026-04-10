@@ -170,7 +170,11 @@ async fn replay_session_quote_uses_implicit_minute_feed() {
 
     let quote = session.quote("SHFE.rb2605").await.unwrap();
 
-    let first_step = session.step().await.unwrap().expect("implicit minute feed should advance");
+    let first_step = session
+        .step()
+        .await
+        .unwrap()
+        .expect("implicit minute feed should advance");
     assert_eq!(first_step.updated_quotes, vec!["SHFE.rb2605".to_string()]);
 
     let snapshot = quote.snapshot().await.unwrap();

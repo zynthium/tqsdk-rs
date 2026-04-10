@@ -9,7 +9,7 @@ use crate::runtime::{
     BacktestExecutionAdapter, ExecutionAdapter, MarketAdapter, OffsetPriority, PriceMode, RuntimeError, RuntimeMode,
     TargetPosConfig, TargetPosScheduleStep, TaskRegistry, TqRuntime,
 };
-use crate::types::{DIRECTION_BUY, InsertOrderRequest, Quote, OFFSET_OPEN, PRICE_TYPE_LIMIT};
+use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT, Quote};
 use async_trait::async_trait;
 
 #[test]
@@ -88,7 +88,7 @@ fn task_registry_tracks_order_owner() {
 fn runtime_flows_with_market_adapter_without_datamanager() {
     let runtime = Arc::new(TqRuntime::new(
         RuntimeMode::Backtest,
-        Arc::new(StubMarket::default()),
+        Arc::new(StubMarket),
         Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
     ));
 
