@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tqsdk_rs::prelude::*;
+use tqsdk_rs::{DataManager, DataManagerConfig};
 use tracing::info;
 
 /// DataManager Watch 功能示例
