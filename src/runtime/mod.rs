@@ -4,9 +4,9 @@ mod engine;
 mod errors;
 mod execution;
 mod market;
-pub mod modes;
+mod modes;
 mod registry;
-pub mod tasks;
+mod tasks;
 mod types;
 
 pub use account::AccountHandle;
