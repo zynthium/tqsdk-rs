@@ -1,5 +1,10 @@
 # Rust 版 TargetPosTask / Unified Runtime 设计
 
+> Historical design note:
+> This document captures an early runtime architecture exploration from April 2026.
+> It may mention compatibility facades and adapter types that have since been removed or collapsed.
+> For the current runtime API, prefer `README.md`, `docs/architecture.md`, and `docs/migration-remove-legacy-compat.md`.
+
 ## 状态
 
 - 设计阶段：已确认

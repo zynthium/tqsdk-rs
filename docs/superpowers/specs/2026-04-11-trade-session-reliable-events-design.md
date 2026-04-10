@@ -1,5 +1,10 @@
 # TradeSession Reliable Events Design
 
+> Historical design note:
+> This document captures the reasoning behind the reliable trade-event migration.
+> It may discuss removed best-effort trade callback and channel surfaces as part of that history.
+> For the current public trade-session API, prefer `README.md`, `docs/architecture.md`, and `AGENTS.md`.
+
 ## Summary
 
 Upgrade `TradeSession` from best-effort bounded `order` / `trade` notifications to a first-class, process-local reliable event API.

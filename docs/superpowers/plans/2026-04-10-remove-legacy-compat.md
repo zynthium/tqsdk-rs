@@ -1,5 +1,10 @@
 # tqsdk-rs Legacy Cleanup And API Consolidation Implementation Plan
 
+> Historical plan note:
+> This file captures the cleanup plan that drove the breaking-change removal of legacy surfaces.
+> Checklist items may already be completed, and the file intentionally mentions removed APIs such as `BacktestHandle`, `compat::`, `quote_channel`, `on_quote`, `on_update`, and `data_stream`.
+> For current state, prefer `docs/migration-remove-legacy-compat.md`, `docs/architecture.md`, and `README.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在下一次 breaking release 中，把 `tqsdk-rs` 收敛为一套清晰、单一、可维护的公开模型：`Client` 负责连接与订阅控制，`TqApi` 负责实时状态读取，`SeriesSubscription` 负责对齐窗口/历史窗口状态，`ReplaySession` 负责回测，`TqRuntime` 负责任务执行；删除多余的 legacy public surface、兼容 facade 和通用回调管线。

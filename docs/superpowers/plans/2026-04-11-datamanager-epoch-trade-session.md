@@ -1,5 +1,10 @@
 # DataManager Epoch Subscription And TradeSession Migration Plan
 
+> Historical plan note:
+> This file records the migration plan for moving `TradeSession` from callback plumbing to epoch-driven watching.
+> Some passages intentionally describe transitional states, including temporary coexistence with older `on_data`-style paths.
+> For the current canonical state model, prefer `README.md`, `docs/architecture.md`, and `docs/migration-remove-legacy-compat.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为 `DataManager` 增加完成态 epoch 订阅能力，并把 `TradeSession` 的内部 watcher 从 `on_data_register` 迁移到这条新路径，为后续删除全局 callback plumbing 铺路。

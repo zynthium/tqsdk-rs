@@ -1,5 +1,10 @@
 # TradeSession Reliable Events Implementation Plan
 
+> Historical plan note:
+> This file records the engineering plan for replacing best-effort trade callbacks and channels with reliable event streams.
+> It may still describe intermediate steps and removed surfaces as part of that migration story.
+> For the current public trade-session API, prefer `README.md`, `docs/architecture.md`, and `AGENTS.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为 `TradeSession` 增加进程内可靠的 `order` / `trade` 事件 API，迁移 `TqRuntime` 到这条新路径，并删除旧的 best-effort 交易事件回调与通道接口。

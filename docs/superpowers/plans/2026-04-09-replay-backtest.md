@@ -1,5 +1,10 @@
 # Replay Backtest Implementation Plan
 
+> Historical plan note:
+> This file records an early replay/backtest implementation plan from April 2026.
+> It may reference transitional surfaces that are no longer current, including `BacktestHandle`, `BacktestExecutionAdapter`, and `compat::` facades.
+> For current repository truth, prefer `README.md`, `docs/architecture.md`, and `docs/migration-remove-legacy-compat.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a new Rust-native replay backtest subsystem centered on `ReplaySession`, preserving the Python backtest semantics that affect strategy results while dropping Python’s `wait_update` / diff / chart transport scaffolding.

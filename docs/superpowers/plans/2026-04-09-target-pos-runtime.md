@@ -1,5 +1,10 @@
 # TargetPos Runtime Implementation Plan
 
+> Historical plan note:
+> This file records an early runtime build-out plan from April 2026.
+> It may reference interim compatibility layers and adapter types that have since been removed or renamed, including `compat::TargetPosTask` and `BacktestExecutionAdapter`.
+> For the current public runtime surface, prefer `README.md`, `docs/architecture.md`, and `docs/migration-remove-legacy-compat.md`.
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a unified runtime for `tqsdk-rs` and implement a Rust-native + Python-compatible `TargetPosTask`, with a clear path to `TargetPosScheduler` and future backtest execution.

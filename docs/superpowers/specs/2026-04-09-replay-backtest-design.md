@@ -1,5 +1,10 @@
 # tqsdk-rs Replay Backtest Design
 
+> Historical design note:
+> This document captures an early replay/backtest architecture exploration from April 2026.
+> It may mention transitional surfaces that no longer exist in the public API, including `BacktestHandle` and `BacktestExecutionAdapter`.
+> For current repository truth, prefer `README.md`, `docs/architecture.md`, and `docs/migration-remove-legacy-compat.md`.
+
 ## 结论先行
 
 基于对官方 `tqsdk-python` 回测实现的重新拆解，Rust 版回测最应该对齐的，不是 `wait_update()`、diff merge、chart_id 或 DataFrame 更新机制，而是下面这条核心链路：
