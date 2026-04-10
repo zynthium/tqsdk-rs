@@ -2,6 +2,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::replay::{
     BarState, ContinuousContractProvider, ContinuousMapping, FeedCursor, FeedEvent, InstrumentMetadata, ReplayConfig,
+    ReplayKernel, SeriesStore,
 };
 use crate::types::Kline;
 
@@ -67,4 +68,126 @@ fn continuous_provider_only_reveals_requested_day() {
 
     let current = provider.mapping_for(NaiveDate::from_ymd_opt(2026, 4, 8).unwrap());
     assert_eq!(current["KQ.m@SHFE.rb"], "SHFE.rb2605");
+}
+
+#[test]
+fn series_store_keeps_fixed_width_kline_window() {
+    let mut store = SeriesStore::default();
+
+    for id in 1..=3 {
+        store.push_kline(
+            "SHFE.rb2605",
+            60_000_000_000,
+            Kline {
+                id,
+                datetime: id * 1_000,
+                open: 10.0,
+                high: 10.0,
+                low: 10.0,
+                close: 10.0,
+                open_oi: 100,
+                close_oi: 100,
+                volume: 1,
+                epoch: None,
+            },
+            BarState::Closed,
+            2,
+        );
+    }
+
+    let rows = store.kline_rows("SHFE.rb2605", 60_000_000_000);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].kline.id, 2);
+    assert_eq!(rows[1].kline.id, 3);
+}
+
+#[tokio::test]
+async fn replay_kernel_commits_bar_open_and_close_as_two_steps() {
+    let bars = vec![Kline {
+        id: 1,
+        datetime: 1_000,
+        open: 10.0,
+        high: 13.0,
+        low: 9.0,
+        close: 12.0,
+        open_oi: 100,
+        close_oi: 110,
+        volume: 8,
+        epoch: None,
+    }];
+
+    let mut kernel = ReplayKernel::for_test(vec![(
+        "kline:SHFE.rb2605:60000000000".to_string(),
+        FeedCursor::from_kline_rows("SHFE.rb2605", 60_000_000_000, bars),
+    )]);
+
+    let first = kernel.step().await.unwrap().unwrap();
+    assert_eq!(first.current_dt, DateTime::<Utc>::from_timestamp_nanos(1_000));
+
+    let opening = kernel
+        .series_store()
+        .kline_rows("SHFE.rb2605", 60_000_000_000)
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(opening.state, BarState::Opening);
+
+    let second = kernel.step().await.unwrap().unwrap();
+    assert_eq!(second.current_dt, DateTime::<Utc>::from_timestamp_nanos(60_000_000_999));
+
+    let closed = kernel
+        .series_store()
+        .kline_rows("SHFE.rb2605", 60_000_000_000)
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(closed.state, BarState::Closed);
+}
+
+#[tokio::test]
+async fn replay_kernel_aligns_secondary_symbol_to_main_bar_time() {
+    let main = vec![Kline {
+        id: 1,
+        datetime: 1_000,
+        open: 10.0,
+        high: 11.0,
+        low: 9.0,
+        close: 10.5,
+        open_oi: 100,
+        close_oi: 101,
+        volume: 5,
+        epoch: None,
+    }];
+    let secondary = vec![Kline {
+        id: 8,
+        datetime: 1_000,
+        open: 20.0,
+        high: 21.0,
+        low: 19.0,
+        close: 20.5,
+        open_oi: 200,
+        close_oi: 201,
+        volume: 6,
+        epoch: None,
+    }];
+
+    let mut kernel = ReplayKernel::for_test(vec![
+        (
+            "kline:SHFE.rb2605:60000000000".to_string(),
+            FeedCursor::from_kline_rows("SHFE.rb2605", 60_000_000_000, main),
+        ),
+        (
+            "kline:SHFE.hc2605:60000000000".to_string(),
+            FeedCursor::from_kline_rows("SHFE.hc2605", 60_000_000_000, secondary),
+        ),
+    ]);
+    let aligned = kernel.register_aligned_kline(&["SHFE.rb2605", "SHFE.hc2605"], 60_000_000_000, 32);
+
+    let _ = kernel.step().await.unwrap().unwrap();
+    let rows = aligned.rows().await;
+    let last = rows.last().unwrap();
+
+    assert_eq!(last.datetime_nanos, 1_000);
+    assert!(last.bars["SHFE.rb2605"].is_some());
+    assert!(last.bars["SHFE.hc2605"].is_some());
 }
