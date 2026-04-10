@@ -20,7 +20,7 @@ pub struct TargetPosBuilder {
 }
 
 #[derive(Clone)]
-pub struct TargetPosHandle {
+pub struct TargetPosTask {
     inner: Arc<TargetPosTaskInner>,
 }
 
@@ -67,7 +67,7 @@ impl TargetPosBuilder {
         self
     }
 
-    pub fn build(self) -> RuntimeResult<TargetPosHandle> {
+    pub fn build(self) -> RuntimeResult<TargetPosTask> {
         let offset_priority = parse_offset_priority(self.config.offset_priority.as_str())?;
         let registry = self.account.runtime().registry();
         let registered = registry.register_target_task(
@@ -80,7 +80,7 @@ impl TargetPosBuilder {
         self.build_with_task_id(registered.task_id, offset_priority)
     }
 
-    pub(crate) fn build_internal(self) -> RuntimeResult<TargetPosHandle> {
+    pub(crate) fn build_internal(self) -> RuntimeResult<TargetPosTask> {
         let offset_priority = parse_offset_priority(self.config.offset_priority.as_str())?;
         let task_id = self.account.runtime().registry().allocate_task_id();
         self.build_with_task_id(task_id, offset_priority)
@@ -90,12 +90,12 @@ impl TargetPosBuilder {
         self,
         task_id: crate::runtime::TaskId,
         offset_priority: Vec<Vec<OffsetAction>>,
-    ) -> RuntimeResult<TargetPosHandle> {
+    ) -> RuntimeResult<TargetPosTask> {
         let (command_tx, _) = watch::channel(TaskCommand::Idle);
         let (reached_seq_tx, _) = watch::channel(0_u64);
         let (finished_tx, _) = watch::channel(false);
 
-        Ok(TargetPosHandle {
+        Ok(TargetPosTask {
             inner: Arc::new(TargetPosTaskInner {
                 account: self.account,
                 symbol: self.symbol,
@@ -115,7 +115,7 @@ impl TargetPosBuilder {
     }
 }
 
-impl TargetPosHandle {
+impl TargetPosTask {
     pub fn account(&self) -> &AccountHandle {
         &self.inner.account
     }

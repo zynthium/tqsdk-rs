@@ -8,7 +8,7 @@ use tokio::sync::watch;
 use crate::runtime::{AccountHandle, RuntimeError, RuntimeResult, TargetPosConfig};
 use crate::types::Trade;
 
-use super::TargetPosHandle;
+use super::TargetPosTask;
 
 #[derive(Debug, Clone)]
 pub struct TargetPosScheduleStep {
@@ -37,7 +37,7 @@ pub struct TargetPosSchedulerBuilder {
 }
 
 #[derive(Clone)]
-pub struct TargetPosSchedulerHandle {
+pub struct TargetPosScheduler {
     inner: Arc<TargetPosSchedulerInner>,
 }
 
@@ -79,7 +79,7 @@ impl TargetPosSchedulerBuilder {
         self
     }
 
-    pub fn build(self) -> RuntimeResult<TargetPosSchedulerHandle> {
+    pub fn build(self) -> RuntimeResult<TargetPosScheduler> {
         let handle = tokio::runtime::Handle::try_current().map_err(|_| RuntimeError::TokioRuntimeRequired {
             operation: "build_target_pos_scheduler",
         })?;
@@ -105,11 +105,11 @@ impl TargetPosSchedulerBuilder {
         handle.spawn(async move {
             task.run().await;
         });
-        Ok(TargetPosSchedulerHandle { inner })
+        Ok(TargetPosScheduler { inner })
     }
 }
 
-impl TargetPosSchedulerHandle {
+impl TargetPosScheduler {
     pub fn account(&self) -> &AccountHandle {
         &self.inner.account
     }
@@ -212,7 +212,7 @@ impl TargetPosSchedulerInner {
         &self,
         target_volume: i64,
         price_mode: crate::runtime::PriceMode,
-    ) -> RuntimeResult<TargetPosHandle> {
+    ) -> RuntimeResult<TargetPosTask> {
         let task = self
             .account
             .target_pos(&self.symbol)
@@ -264,7 +264,7 @@ impl TargetPosSchedulerInner {
 
     async fn wait_last_step(
         &self,
-        task: &TargetPosHandle,
+        task: &TargetPosTask,
         cancel_rx: &mut watch::Receiver<bool>,
     ) -> RuntimeResult<StepOutcome> {
         tokio::select! {
@@ -276,7 +276,7 @@ impl TargetPosSchedulerInner {
         }
     }
 
-    async fn finish_step_task(&self, task: &TargetPosHandle) -> RuntimeResult<()> {
+    async fn finish_step_task(&self, task: &TargetPosTask) -> RuntimeResult<()> {
         if !task.is_finished() {
             task.cancel().await?;
         }

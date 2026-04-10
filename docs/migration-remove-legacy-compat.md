@@ -100,5 +100,6 @@ let scheduler = account
 ## Current Status
 
 - 已落地：`ReplaySession` 已成为唯一推荐回测路径，`TradeSession` watcher 已迁到 `DataManager::subscribe_epoch()`。
-- 正在收敛：`compat/` facade、Quote fan-out、Series callback/stream fan-out。
-- 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`compat::`、`on_quote`、`on_update`、`data_stream` 等依赖。
+- 已删除：legacy `BacktestHandle` 路径、`compat/` facade。
+- 正在收敛：Quote fan-out、Series callback/stream fan-out。
+- 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

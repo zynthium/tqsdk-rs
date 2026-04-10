@@ -19,8 +19,8 @@ pub use modes::{BacktestRuntimeMode, LiveRuntimeMode, RuntimeMode};
 pub use registry::{RegisteredTask, TaskId, TaskRegistry};
 pub use tasks::{
     ChildOrderRunner, OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder, TargetPosBuilder,
-    TargetPosExecutionReport, TargetPosHandle, TargetPosScheduleStep, TargetPosSchedulerBuilder,
-    TargetPosSchedulerConfig, TargetPosSchedulerHandle, compute_plan, parse_offset_priority, resolve_order_price,
+    TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
+    TargetPosSchedulerConfig, TargetPosTask, compute_plan, parse_offset_priority, resolve_order_price,
     validate_quote_constraints,
 };
 pub use types::{OffsetPriority, OrderDirection, PriceMode, PriceResolver, TargetPosConfig, VolumeSplitPolicy};

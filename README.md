@@ -767,7 +767,6 @@ tqsdk-rs/
 │   ├── auth/              # 认证与权限
 │   ├── cache/             # 本地 K 线磁盘缓存（分段写入/压缩/区间读取）
 │   ├── client/            # ClientBuilder / facade / market
-│   ├── compat/            # 过渡中的 Python 风格 TargetPos facade
 │   ├── datamanager/       # DIFF 合并与 watch
 │   ├── ins/               # 合约、期权、交易状态等查询
 │   ├── quote/             # Quote 订阅

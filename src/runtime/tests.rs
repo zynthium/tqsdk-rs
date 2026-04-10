@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::runtime::{
     BacktestExecutionAdapter, ExecutionAdapter, MarketAdapter, OffsetPriority, PriceMode, RuntimeError, RuntimeMode,
-    TargetPosConfig, TargetPosScheduleStep, TaskRegistry, TqRuntime,
+    TargetPosConfig, TargetPosScheduleStep, TargetPosScheduler, TargetPosTask, TaskRegistry, TqRuntime,
 };
 use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT, Quote};
 use async_trait::async_trait;
@@ -177,55 +177,49 @@ async fn manual_insert_order_is_blocked_while_target_task_owns_symbol() {
 }
 
 #[tokio::test]
-async fn compat_target_pos_task_wraps_runtime_handle() {
+async fn runtime_builder_returns_target_pos_task() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let market = Arc::new(FakeMarketAdapter { dm: Arc::clone(&dm) });
     let execution = Arc::new(FakeExecutionAdapter {
         accounts: vec!["SIM".to_string()],
     });
     let runtime = Arc::new(TqRuntime::with_id("runtime-1", RuntimeMode::Live, market, execution));
+    let account = runtime.account("SIM").expect("registered account should be exposed");
 
-    let task = crate::compat::TargetPosTask::new(
-        runtime,
-        "SIM",
-        "SHFE.rb2601",
-        crate::compat::TargetPosTaskOptions::default(),
-    )
-    .await
-    .expect("compat target task should build");
+    let task: TargetPosTask = account
+        .target_pos("SHFE.rb2601")
+        .build()
+        .expect("target task should build");
 
-    assert_eq!(task.account_key(), "SIM");
+    assert_eq!(task.account().account_key(), "SIM");
     assert_eq!(task.symbol(), "SHFE.rb2601");
 }
 
 #[tokio::test]
-async fn compat_target_pos_scheduler_wraps_runtime_handle() {
+async fn runtime_builder_returns_target_pos_scheduler() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let market = Arc::new(FakeMarketAdapter { dm: Arc::clone(&dm) });
     let execution = Arc::new(FakeExecutionAdapter {
         accounts: vec!["SIM".to_string()],
     });
     let runtime = Arc::new(TqRuntime::with_id("runtime-1", RuntimeMode::Live, market, execution));
+    let account = runtime.account("SIM").expect("registered account should be exposed");
 
-    let scheduler = crate::compat::TargetPosScheduler::new(
-        runtime,
-        "SIM",
-        "SHFE.rb2601",
-        vec![TargetPosScheduleStep {
+    let scheduler: TargetPosScheduler = account
+        .target_pos_scheduler("SHFE.rb2601")
+        .steps(vec![TargetPosScheduleStep {
             interval: std::time::Duration::from_millis(1),
             target_volume: 0,
             price_mode: None,
-        }],
-        crate::compat::TargetPosSchedulerOptions::default(),
-    )
-    .await
-    .expect("compat target scheduler should build");
+        }])
+        .build()
+        .expect("target scheduler should build");
 
     scheduler
         .wait_finished()
         .await
-        .expect("empty compat target scheduler should finish");
-    assert_eq!(scheduler.account_key(), "SIM");
+        .expect("empty target scheduler should finish");
+    assert_eq!(scheduler.account().account_key(), "SIM");
     assert_eq!(scheduler.symbol(), "SHFE.rb2601");
 }
 

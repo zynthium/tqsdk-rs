@@ -3,12 +3,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::compat::{TargetPosTask, TargetPosTaskOptions};
 use crate::replay::{
     BarState, ContinuousContractProvider, ContinuousMapping, DailySettlementLog, FeedCursor, FeedEvent,
     HistoricalSource, InstrumentMetadata, QuoteSelection, QuoteSynthesizer, ReplayConfig, ReplayKernel, ReplayQuote,
     ReplaySession, SeriesStore, SimBroker,
 };
+use crate::runtime::TargetPosTask;
 use crate::types::{DIRECTION_BUY, InsertOrderRequest, Kline, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Tick};
 use async_trait::async_trait;
 
@@ -114,9 +114,8 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
         .unwrap();
 
     let runtime = session.runtime(["TQSIM"]).await.unwrap();
-    let task = TargetPosTask::new(runtime.clone(), "TQSIM", "SHFE.rb2605", TargetPosTaskOptions::default())
-        .await
-        .unwrap();
+    let account = runtime.account("TQSIM").expect("configured account should exist");
+    let task: TargetPosTask = account.target_pos("SHFE.rb2605").build().unwrap();
 
     task.set_target_volume(1).unwrap();
 

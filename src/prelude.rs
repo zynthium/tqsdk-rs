@@ -4,9 +4,8 @@ pub use crate::{
     InstrumentMetadata, KlineKey, KlineRef, MarketDataState, OffsetPriority, OrderDirection, OrderEventStream,
     PriceMode, QuoteRef, QuoteSubscription, ReplayConfig, ReplayHandleId, ReplayQuote, ReplayQuoteHandle,
     ReplaySession, ReplayStep, Result, RuntimeError, RuntimeMode, RuntimeResult, SeriesAPI, SeriesCachePolicy,
-    SeriesSubscription, SymbolId, TargetPosBuilder, TargetPosConfig, TargetPosExecutionReport, TargetPosHandle,
-    TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder, TargetPosSchedulerConfig,
-    TargetPosSchedulerHandle, TargetPosSchedulerOptions, TargetPosTask, TargetPosTaskOptions, TickRef, TqApi, TqError,
+    SeriesSubscription, SymbolId, TargetPosBuilder, TargetPosConfig, TargetPosExecutionReport, TargetPosScheduleStep,
+    TargetPosScheduler, TargetPosSchedulerBuilder, TargetPosSchedulerConfig, TargetPosTask, TickRef, TqApi, TqError,
     TqRuntime, TqWebsocket, TradeEventRecvError, TradeEventStream, TradeOnlyEventStream, TradeSession,
     TradeSessionEvent, TradeSessionEventKind, TradeSessionOptions, VolumeSplitPolicy, create_logger_layer, init_logger,
 };

@@ -62,7 +62,6 @@ pub mod quote;
 // Series API
 pub mod series;
 
-pub mod compat;
 pub mod runtime;
 
 // 合约查询
@@ -81,7 +80,6 @@ pub mod polars_ext;
 // 重新导出常用类型
 pub use auth::Authenticator;
 pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
-pub use compat::{TargetPosScheduler, TargetPosSchedulerOptions, TargetPosTask, TargetPosTaskOptions};
 pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;
@@ -95,8 +93,8 @@ pub use replay::{
 pub use runtime::{
     AccountHandle, BacktestExecutionAdapter, BacktestRuntimeMode, OffsetPriority, OrderDirection, PriceMode,
     PriceResolver, RuntimeError, RuntimeMode, RuntimeResult, TargetPosBuilder, TargetPosConfig,
-    TargetPosExecutionReport, TargetPosHandle, TargetPosScheduleStep, TargetPosSchedulerBuilder,
-    TargetPosSchedulerConfig, TargetPosSchedulerHandle, TqRuntime, VolumeSplitPolicy,
+    TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
+    TargetPosSchedulerConfig, TargetPosTask, TqRuntime, VolumeSplitPolicy,
 };
 pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 pub use trade_session::{
