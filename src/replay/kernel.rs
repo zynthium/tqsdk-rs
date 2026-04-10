@@ -4,7 +4,8 @@ use chrono::{DateTime, Utc};
 
 use crate::errors::Result;
 use crate::replay::{
-    AlignedKlineHandle, AlignedKlineRow, BarState, FeedCursor, FeedEvent, ReplayHandleId, ReplayStep, SeriesStore,
+    AlignedKlineHandle, AlignedKlineRow, BarState, FeedCursor, FeedEvent, ReplayHandleId, ReplayKlineHandle,
+    ReplayStep, SeriesStore,
 };
 
 const DEFAULT_SERIES_WIDTH: usize = 1_024;
@@ -13,8 +14,10 @@ const DEFAULT_SERIES_WIDTH: usize = 1_024;
 pub struct ReplayKernel {
     feeds: Vec<(String, FeedCursor)>,
     series_store: SeriesStore,
+    klines: Vec<ReplayKlineHandle>,
     aligned_klines: Vec<AlignedKlineHandle>,
     next_handle_id: usize,
+    tick_window_width: usize,
 }
 
 impl ReplayKernel {
@@ -22,8 +25,10 @@ impl ReplayKernel {
         Self {
             feeds,
             series_store: SeriesStore::default(),
+            klines: Vec::new(),
             aligned_klines: Vec::new(),
             next_handle_id: 0,
+            tick_window_width: DEFAULT_SERIES_WIDTH,
         }
     }
 
@@ -50,6 +55,19 @@ impl ReplayKernel {
         handle
     }
 
+    pub fn register_kline(&mut self, symbol: &str, duration_nanos: i64, width: usize) -> ReplayKlineHandle {
+        let id = ReplayHandleId(format!("kline_{}", self.next_handle_id));
+        self.next_handle_id += 1;
+
+        let handle = ReplayKlineHandle::new(id, symbol.to_string(), duration_nanos, width);
+        self.klines.push(handle.clone());
+        handle
+    }
+
+    pub fn set_tick_window_width(&mut self, width: usize) {
+        self.tick_window_width = width;
+    }
+
     pub async fn step(&mut self) -> Result<Option<ReplayStep>> {
         let Some(next_timestamp) = self
             .feeds
@@ -61,6 +79,8 @@ impl ReplayKernel {
         };
 
         let mut updated_symbols = Vec::new();
+        let mut updated_handles = Vec::new();
+        let mut events = Vec::new();
 
         for (_, cursor) in &mut self.feeds {
             loop {
@@ -71,11 +91,20 @@ impl ReplayKernel {
                 let Some(event) = cursor.next_event() else {
                     break;
                 };
-                Self::apply_event(&mut self.series_store, event, &mut updated_symbols);
+                events.push(event);
             }
         }
 
-        let updated_handles = self.materialize_aligned_rows(next_timestamp, &updated_symbols).await;
+        for event in events {
+            self.apply_event(event, &mut updated_symbols, &mut updated_handles).await;
+        }
+
+        let aligned_handles = self.materialize_aligned_rows(next_timestamp, &updated_symbols).await;
+        for handle_id in aligned_handles {
+            if !updated_handles.contains(&handle_id) {
+                updated_handles.push(handle_id);
+            }
+        }
 
         Ok(Some(ReplayStep {
             current_dt: DateTime::<Utc>::from_timestamp_nanos(next_timestamp),
@@ -85,15 +114,25 @@ impl ReplayKernel {
         }))
     }
 
-    fn apply_event(series_store: &mut SeriesStore, event: FeedEvent, updated_symbols: &mut Vec<String>) {
+    async fn apply_event(
+        &mut self,
+        event: FeedEvent,
+        updated_symbols: &mut Vec<String>,
+        updated_handles: &mut Vec<ReplayHandleId>,
+    ) {
         match event {
-            FeedEvent::Tick { .. } => {}
+            FeedEvent::Tick { symbol, tick } => {
+                self.series_store.push_tick(&symbol, tick, self.tick_window_width);
+            }
             FeedEvent::BarOpen {
                 symbol,
                 duration_nanos,
                 kline,
             } => {
-                series_store.push_kline(&symbol, duration_nanos, kline, BarState::Opening, DEFAULT_SERIES_WIDTH);
+                self.series_store
+                    .push_kline(&symbol, duration_nanos, kline.clone(), BarState::Opening, DEFAULT_SERIES_WIDTH);
+                self.update_kline_handles(&symbol, duration_nanos, kline, BarState::Opening, updated_handles)
+                    .await;
                 updated_symbols.push(symbol);
             }
             FeedEvent::BarClose {
@@ -101,8 +140,31 @@ impl ReplayKernel {
                 duration_nanos,
                 kline,
             } => {
-                series_store.push_kline(&symbol, duration_nanos, kline, BarState::Closed, DEFAULT_SERIES_WIDTH);
+                self.series_store
+                    .close_kline(&symbol, duration_nanos, kline.clone(), DEFAULT_SERIES_WIDTH);
+                self.update_kline_handles(&symbol, duration_nanos, kline, BarState::Closed, updated_handles)
+                    .await;
                 updated_symbols.push(symbol);
+            }
+        }
+    }
+
+    async fn update_kline_handles(
+        &self,
+        symbol: &str,
+        duration_nanos: i64,
+        kline: crate::types::Kline,
+        state: BarState,
+        updated_handles: &mut Vec<ReplayHandleId>,
+    ) {
+        for handle in &self.klines {
+            if !handle.matches(symbol, duration_nanos) {
+                continue;
+            }
+
+            handle.apply_kline(kline.clone(), state).await;
+            if !updated_handles.contains(handle.id()) {
+                updated_handles.push(handle.id().clone());
             }
         }
     }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::replay::{BarState, ReplayHandleId};
-use crate::types::Kline;
+use crate::types::{Kline, Tick};
 
 #[derive(Debug, Clone)]
 pub struct KlineSeriesRow {
@@ -12,9 +12,15 @@ pub struct KlineSeriesRow {
     pub state: BarState,
 }
 
+#[derive(Debug, Clone)]
+pub struct TickSeriesRow {
+    pub tick: Tick,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct SeriesStore {
     klines: HashMap<(String, i64), Vec<KlineSeriesRow>>,
+    ticks: HashMap<String, Vec<TickSeriesRow>>,
 }
 
 impl SeriesStore {
@@ -22,6 +28,27 @@ impl SeriesStore {
         let rows = self.klines.entry((symbol.to_string(), duration_nanos)).or_default();
         rows.push(KlineSeriesRow { kline, state });
 
+        while rows.len() > width {
+            rows.remove(0);
+        }
+    }
+
+    pub fn close_kline(&mut self, symbol: &str, duration_nanos: i64, kline: Kline, width: usize) {
+        let rows = self.klines.entry((symbol.to_string(), duration_nanos)).or_default();
+
+        if let Some(last) = rows.last_mut()
+            && last.kline.id == kline.id
+            && last.kline.datetime == kline.datetime
+        {
+            last.kline = kline;
+            last.state = BarState::Closed;
+            return;
+        }
+
+        rows.push(KlineSeriesRow {
+            kline,
+            state: BarState::Closed,
+        });
         while rows.len() > width {
             rows.remove(0);
         }
@@ -38,6 +65,19 @@ impl SeriesStore {
         self.klines
             .get(&(symbol.to_string(), duration_nanos))
             .and_then(|rows| rows.last())
+    }
+
+    pub fn push_tick(&mut self, symbol: &str, tick: Tick, width: usize) {
+        let rows = self.ticks.entry(symbol.to_string()).or_default();
+        rows.push(TickSeriesRow { tick });
+
+        while rows.len() > width {
+            rows.remove(0);
+        }
+    }
+
+    pub fn tick_rows(&self, symbol: &str) -> &[TickSeriesRow] {
+        self.ticks.get(symbol).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 
@@ -88,6 +128,58 @@ impl AlignedKlineHandle {
     }
 
     pub async fn rows(&self) -> Vec<AlignedKlineRow> {
+        self.rows.read().await.iter().cloned().collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayKlineHandle {
+    id: ReplayHandleId,
+    symbol: String,
+    duration_nanos: i64,
+    width: usize,
+    rows: Arc<RwLock<VecDeque<KlineSeriesRow>>>,
+}
+
+impl ReplayKlineHandle {
+    pub(crate) fn new(id: ReplayHandleId, symbol: String, duration_nanos: i64, width: usize) -> Self {
+        Self {
+            id,
+            symbol,
+            duration_nanos,
+            width,
+            rows: Arc::new(RwLock::new(VecDeque::new())),
+        }
+    }
+
+    pub fn id(&self) -> &ReplayHandleId {
+        &self.id
+    }
+
+    pub(crate) fn matches(&self, symbol: &str, duration_nanos: i64) -> bool {
+        self.symbol == symbol && self.duration_nanos == duration_nanos
+    }
+
+    pub(crate) async fn apply_kline(&self, kline: Kline, state: BarState) {
+        let mut rows = self.rows.write().await;
+
+        if state.is_closed()
+            && let Some(last) = rows.back_mut()
+            && last.kline.id == kline.id
+            && last.kline.datetime == kline.datetime
+        {
+            last.kline = kline;
+            last.state = BarState::Closed;
+            return;
+        }
+
+        rows.push_back(KlineSeriesRow { kline, state });
+        while rows.len() > self.width {
+            rows.pop_front();
+        }
+    }
+
+    pub async fn rows(&self) -> Vec<KlineSeriesRow> {
         self.rows.read().await.iter().cloned().collect()
     }
 }

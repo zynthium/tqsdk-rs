@@ -10,7 +10,7 @@ mod tests;
 pub use feed::{FeedCursor, FeedEvent, HistoricalSource};
 pub use kernel::ReplayKernel;
 pub use providers::{ContinuousContractProvider, ContinuousMapping};
-pub use series::{AlignedKlineHandle, AlignedKlineRow, KlineSeriesRow, SeriesStore};
+pub use series::{AlignedKlineHandle, AlignedKlineRow, KlineSeriesRow, ReplayKlineHandle, SeriesStore, TickSeriesRow};
 pub use types::{
     BacktestResult, BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayHandleId, ReplayQuote,
     ReplayStep,
