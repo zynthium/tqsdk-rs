@@ -1,6 +1,6 @@
 # 迁移指南：从 Channel/Callback 到高性能状态驱动 API
 
-本指南说明了在 `tqsdk-rs` 中从旧的 Channel 和 Callback 行情订阅模型迁移到全新“高性能状态驱动 API”（TqApi + QuoteRef/KlineRef/TickRef）的原因、概念和具体步骤。
+本指南说明了在 `tqsdk-rs` 中从旧的 Channel 和 Callback 行情订阅模型迁移到全新“高性能状态驱动 API”（`TqApi` + `QuoteRef`/`KlineRef`/`TickRef` + `SeriesSubscription` 快照接口）的原因、概念和具体步骤。
 
 ## 为什么需要迁移？
 
@@ -11,7 +11,7 @@
 
 **新版状态驱动 API 的优势**：
 - **类似 Python TqSdk 的极简体验**：提供 `api.wait_update().await` 和 `q.is_changing()`。
-- **O(1) 无锁读取**：底层采用 `ArcSwap` 实现了零锁竞争的数据更新。策略端读取最新价格开销为纳秒级。
+- **轻量快照读取**：最新 Quote/Kline/Tick 通过共享快照暴露，策略端读取最新状态不需要自己维护一套镜像缓存。
 - **O(changed) 批量唤醒**：内置增量更新集合（UpdateSet），策略只需处理本轮跳动的合约，支持高吞吐全品种扫描。
 
 ---
@@ -22,7 +22,7 @@
 |---|---|---|
 | **获取入口** | `Client` | `client.tqapi()` 返回 `TqApi` |
 | **发起订阅** | `client.subscribe_quote(...)`<br>`client.series()?.kline(...)` | 保持不变（仍作为驱动网络下发的入口） |
-| **数据读取** | `rx.recv().await`<br>`sub.on_new_bar(...)` | `api.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
+| **数据读取** | `channel.recv().await`<br>或 callback 消费 | `api.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
 | **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing()` 检测本地是否过期 |
 | **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `api.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
 | **批量获取** | 无法直接获取本次变更全集 | `api.wait_update_and_drain().await` 直接返回本轮发生变化的 key 集合 |
@@ -54,13 +54,13 @@ let api = client.tqapi();
 
 以前你必须监听一个 channel 或者注册回调；现在 Quote 已经彻底收敛到 `QuoteSubscription` + `QuoteRef` 二段式模型：前者负责网络订阅，后者负责状态读取。
 
-**旧代码（已删除）：**
+**旧代码（已删除，概念示意）：**
 ```rust
 let sub = client.subscribe_quote(&["SHFE.cu2605"]).await?;
-let rx = sub.quote_channel();
+let mut quote_rx = /* old best-effort quote channel */;
 
 tokio::spawn(async move {
-    while let Ok(quote) = rx.recv().await {
+    while let Ok(quote) = quote_rx.recv().await {
         println!("最新价: {}", quote.last_price);
     }
 });
@@ -171,5 +171,5 @@ loop {
 
 1. **`wait_update` 不返回任何网络包**：它纯粹是一个调度屏障（Barrier）。底层网络线程已经在它返回前，把所有收到的 JSON 数据合并成了强类型的内存结构体（`Quote`/`Kline`）。
 2. **`is_changing()` 会消耗状态**：每次调用 `is_changing()` 如果返回 `true`，内部会推进本地的 `seen_epoch`。在同一个策略循环里，同一个 `QuoteRef` 第二次调用会返回 `false`。
-3. **回测模式 (Backtest)**：无需修改任何策略层代码！底层 `TqApi` 会自动识别，当你在回测中调用 `wait_update().await` 时，它会驱动历史数据流快进。
+3. **回测模式 (Backtest)**：回测主路径已经收敛到 `ReplaySession`。应显式调用 `session.step().await?` 推进历史时间；如果需要目标持仓任务，请通过 `session.runtime(...).await?` 获取回放 runtime，而不是假设 `TqApi::wait_update()` 会自动驱动历史流。
 4. **当前边界**：Quote callback/channel 与 Series callback/stream 都已删除；新代码应统一使用状态驱动读取模型。
