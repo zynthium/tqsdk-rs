@@ -150,7 +150,8 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         series.kline(&symbol, DAILY_BAR, daily_width).await?
     };
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
-    let task = TargetPosTask::new(runtime.clone(), ACCOUNT_KEY, &symbol, TargetPosTaskOptions::default()).await?;
+    let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
+    let task = account.target_pos(&symbol).build()?;
 
     println!("开始运行枢轴点反转策略...");
     println!("  合约: {}", symbol);

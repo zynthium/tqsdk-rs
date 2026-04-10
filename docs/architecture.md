@@ -53,9 +53,6 @@ Client (facade + builder + market)
 │   ├── core       创建 + 登录 + watcher 生命周期
 │   ├── ops        下单/撤单/查询持仓/账户/成交
 │   └── watch      监听 DataManager epoch，再按 path epoch 生成 snapshot / reliable event
-├── backtest/      回测控制
-│   ├── core       初始化 + 时间推进 + 事件分发 + 回调清理
-│   └── parsing    回测时间状态解析
 ├── polars_ext/    Polars DataFrame 转换 (可选 feature)
 │   ├── kline      KlineBuffer (K线 → DataFrame)
 │   ├── tick       TickBuffer (Tick → DataFrame)
@@ -76,13 +73,12 @@ Client (facade + builder + market)
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | `TqWebsocket` | 底层连接、重连、消息分发 |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
-| `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosHandle`, `TargetPosSchedulerHandle` | 统一任务运行时、目标持仓调度、任务所有权与执行 adapter |
+| `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时、目标持仓调度、任务所有权与执行 adapter |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
 | `quote` | `QuoteSubscription` | 行情订阅 (回调/channel) |
 | `series` | `SeriesAPI`, `SeriesSubscription` | K线/Tick 订阅 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
 | `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
-| `backtest` | `BacktestHandle`, `BacktestConfig`, `BacktestEvent`, `BacktestTime` | 回测时间推进与事件 |
 | `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
 | `prelude` | — | 便捷 re-export |
 
@@ -95,9 +91,9 @@ Client (facade + builder + market)
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 backtest 行为。
+- 回测入口收敛：公开回测路径统一通过 `Client::create_backtest_session` 构造 `ReplaySession`，不再维持独立 `BacktestHandle` facade。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 交易状态分层：`TradeSession` 以 DataManager epoch 驱动内部 watcher，再用 path epoch 区分账户/持仓快照与可靠订单/成交事件。
-- 回测生命周期：`BacktestHandle` 释放时会注销内部 DataManager 回调，避免长会话回调累积。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
 - 缓存治理：Series 磁盘缓存默认关闭；开启后写入 `~/.tqsdk/data_series_1`，并支持按总容量上限清理、按保留天数清理。
 

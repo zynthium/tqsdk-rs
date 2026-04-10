@@ -7,8 +7,8 @@
 //!
 //! 说明：
 //! - 本示例聚焦底层 `TradeSession` 交易接口。
-//! - 若需要 Python `TargetPosTask` / `TargetPosScheduler` 对齐能力，请使用 `TqRuntime`
-//!   以及 `compat::TargetPosTask` / `compat::TargetPosScheduler`。
+//! - 若需要目标持仓任务，请使用 `TqRuntime` 的 account builder：
+//!   `runtime.account(...).target_pos(...).build()` 或 scheduler builder。
 
 use std::env;
 use std::time::Duration;

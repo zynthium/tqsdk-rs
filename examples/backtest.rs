@@ -96,7 +96,8 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         series.kline(&symbol, KLINE_DURATION, DEFAULT_KLINE_WIDTH).await?
     };
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
-    let task = TargetPosTask::new(runtime.clone(), ACCOUNT_KEY, &symbol, TargetPosTaskOptions::default()).await?;
+    let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
+    let task = account.target_pos(&symbol).build()?;
 
     println!("开始运行 ReplaySession 回测示例...");
     println!("  合约: {}", symbol);

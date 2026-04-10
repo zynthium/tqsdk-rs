@@ -1,5 +1,4 @@
 use super::Client;
-use crate::backtest::{BacktestConfig, BacktestHandle};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::replay::{HistoricalSource, InstrumentMetadata};
@@ -230,11 +229,6 @@ impl Client {
         Ok(())
     }
 
-    pub async fn init_market_backtest(&mut self, config: BacktestConfig) -> Result<BacktestHandle> {
-        let quotes_ws = self.initialize_market_runtime(true).await?;
-        Ok(BacktestHandle::new(Arc::clone(&self.dm), quotes_ws, config))
-    }
-
     pub async fn switch_to_live(&mut self) -> Result<()> {
         self.close_market().await?;
         self.dm.merge_data(
@@ -248,10 +242,6 @@ impl Client {
         self.init_market().await
     }
 
-    pub async fn switch_to_backtest(&mut self, config: BacktestConfig) -> Result<BacktestHandle> {
-        self.close_market().await?;
-        self.init_market_backtest(config).await
-    }
     pub(super) async fn close_market(&self) -> Result<()> {
         self.market_active.store(false, Ordering::SeqCst);
         if let Some(ws) = &self.quotes_ws {

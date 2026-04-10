@@ -35,7 +35,8 @@ src/
 ├── series/         K 线/Tick 订阅与处理
 ├── ins/            合约与基础数据查询
 ├── trade_session/  交易会话与交易操作
-├── backtest/       回测控制
+├── replay/         回放内核、回测 session、仿真撮合
+├── runtime/        目标持仓运行时与任务调度
 ├── polars_ext/     DataFrame 转换（feature = "polars"）
 ├── types/          各类数据结构
 ├── prelude.rs      常用 re-export
@@ -57,9 +58,11 @@ examples/
 
 - `Client` / `ClientBuilder` 是统一入口，优先从这里开始理解调用路径。
 - WebSocket 层使用 I/O actor 模式，避免跨 `await` 持锁。
+- `ReplaySession` 是唯一推荐的公开回测入口；不要为新代码重新引入 `BacktestHandle` 风格的 facade。
 - `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
 - `DataManager` 的 merge 通知优先使用 `subscribe_epoch()`；除非是在迁移旧代码，不要继续扩散 `on_data_register` 依赖。
 - `QuoteSubscription` 和 `SeriesSubscription` 默认是延迟启动的，创建后需要显式 `start()`。
+- `TqRuntime` 的目标持仓 canonical 入口是 `runtime.account(\"...\").target_pos(...).build()` 和 scheduler builder，不要为新示例继续扩散 `compat::` facade。
 - `TradeSession` 对外分为两层：账户/持仓等仍以最新状态读取为主，`order` / `trade` 则使用可靠事件流 API。
 - `TradeSession` 内部 watcher 已改为监听 DataManager epoch，再按 path epoch 拆分账户快照与可靠订单/成交事件。
 - 重连逻辑包含完整性校验，不要为了“简化”而破坏临时缓冲再合并的策略。
@@ -137,6 +140,7 @@ examples/
 
 - 优先保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
 - 修改公开 API 时，同时检查 `README.md`、`AGENTS.md`、示例代码、`prelude` re-export 是否需要同步。
+- 如果这次改动删除或替换 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
 - 修改 `DataManager` merge/query/watch 语义时，要特别关注向后兼容性；这部分会影响多个上层模块。
 - 修改 `DataManager` 通知路径时，优先沿用 `subscribe_epoch()` + `get_path_epoch()` 的状态驱动模式，不要为新逻辑新增 callback plumbing。
 - 修改重连、背压、消息队列时，要明确说明是否改变了丢弃策略、顺序语义或完整性保证。

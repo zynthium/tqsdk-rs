@@ -74,15 +74,12 @@ pub mod trade_session;
 // 客户端
 pub mod client;
 
-pub mod backtest;
-
 // Polars 扩展（可选功能）
 #[cfg(feature = "polars")]
 pub mod polars_ext;
 
 // 重新导出常用类型
 pub use auth::Authenticator;
-pub use backtest::{BacktestConfig, BacktestEvent, BacktestHandle, BacktestTime};
 pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
 pub use compat::{TargetPosScheduler, TargetPosSchedulerOptions, TargetPosTask, TargetPosTaskOptions};
 pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};

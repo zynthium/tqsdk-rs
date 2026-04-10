@@ -11,12 +11,12 @@
 - 类型安全：核心行情、K 线、Tick、账户、委托、成交等结构均为强类型定义。
 - 异步优先：基于 `tokio`，统一行情、序列、交易与回测的异步接口。
 - DIFF 协议：支持天勤增量数据合并、路径监听与 epoch 变化追踪。
-- 多种消费方式：Quote/Series 同时支持回调、通道和流式消费。
+- 状态驱动优先：`TqApi` 负责最新市场状态读取，`SeriesSubscription` 负责窗口态序列读取。
 - 延迟启动：先注册回调、再 `start()`/`connect()`，减少初始化阶段数据丢失。
 - 背压可控：关键通道与离线队列已改为有界缓冲，避免慢消费者无限堆积内存。
 - 零拷贝回调：大量更新路径通过 `Arc<T>` 分发，降低多消费者场景开销。
 - Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
-- 回测支持：推荐使用 `ReplaySession` 做历史回放、回测推进与 runtime 驱动，也保留 legacy `BacktestHandle` 兼容路径。
+- 回测支持：`ReplaySession` 是历史回放、回测推进与 runtime 驱动的唯一推荐入口。
 
 ## 功能模块
 
@@ -30,7 +30,7 @@
 ### 交易功能
 
 - `TradeSession` 实盘/模拟交易会话。
-- `TqRuntime` + `TargetPosTask` / `TargetPosScheduler` 目标持仓运行时与 Python 风格兼容 facade。
+- `TqRuntime` + `AccountHandle::{target_pos,target_pos_scheduler}` Builder 目标持仓运行时。
 - 账户、持仓、委托、成交实时更新与主动查询。
 - 下单、撤单、登录就绪检测与自动重连。
 
@@ -62,7 +62,6 @@
 - 将 Quote、TradingStatus、Series stream、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
 - 修复 `has_md_grants` 的指数权限判断顺序：
   `SSE.000016` / `SSE.000300` / `SSE.000905` / `SSE.000852` 现在会优先校验 `lmt_idx` 权限。
-- 修复 `BacktestHandle` 生命周期中回调未注销的问题，实例释放后会自动取消 DataManager 回调注册。
 - 优化交易状态订阅生命周期：
   多订阅者按引用计数聚合，receiver 释放后会自动减少订阅集合并回发 `subscribe_trading_status`。
 - 日志与磁盘缓存初始化移除库级 `panic` 路径，改为可降级行为和告警输出。
@@ -173,20 +172,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 目标持仓任务（compat facade）
+### 目标持仓任务（Builder，推荐）
 
 ```rust
 use std::sync::Arc;
 use tqsdk_rs::prelude::*;
 
 async fn demo(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
-    let task = TargetPosTask::new(
-        runtime,
-        "SIM",
-        "SHFE.rb2601",
-        TargetPosTaskOptions::default(),
-    )
-    .await?;
+    let account = runtime
+        .account("SIM")
+        .expect("configured account should exist");
+    let task = account.target_pos("SHFE.rb2601").build()?;
 
     task.set_target_volume(1)?;
     task.wait_target_reached().await?;
@@ -196,7 +192,7 @@ async fn demo(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
 }
 ```
 
-### 时间分片调仓（compat facade）
+### 时间分片调仓（Builder，推荐）
 
 ```rust
 use std::sync::Arc;
@@ -204,11 +200,12 @@ use std::time::Duration;
 use tqsdk_rs::prelude::*;
 
 async fn demo_scheduler(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
-    let scheduler = TargetPosScheduler::new(
-        runtime,
-        "SIM",
-        "SHFE.rb2601",
-        vec![
+    let account = runtime
+        .account("SIM")
+        .expect("configured account should exist");
+    let scheduler = account
+        .target_pos_scheduler("SHFE.rb2601")
+        .steps(vec![
             TargetPosScheduleStep {
                 interval: Duration::from_secs(10),
                 target_volume: 1,
@@ -219,10 +216,8 @@ async fn demo_scheduler(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
                 target_volume: 1,
                 price_mode: Some(PriceMode::Active),
             },
-        ],
-        TargetPosSchedulerOptions::default(),
-    )
-    .await?;
+        ])
+        .build()?;
 
     scheduler.wait_finished().await?;
     println!("aggregated trades: {}", scheduler.execution_report().trades.len());
@@ -244,8 +239,8 @@ let klines = {
     series.kline("SHFE.rb2605", Duration::from_secs(60), 64).await?
 };
 let runtime = session.runtime(["TQSIM"]).await?;
-let task = TargetPosTask::new(runtime.clone(), "TQSIM", "SHFE.rb2605", TargetPosTaskOptions::default())
-    .await?;
+let account = runtime.account("TQSIM").expect("configured account should exist");
+let task = account.target_pos("SHFE.rb2605").build()?;
 
 while let Some(step) = session.step().await? {
     if !step.updated_handles.iter().any(|id| id == klines.id()) {
@@ -274,11 +269,6 @@ println!("trades={}", result.trades.len());
 ```
 
 日线开盘信号策略可参考 `examples/pivot_point.rs`。
-
-### Legacy BacktestHandle（兼容）
-
-`BacktestHandle`、`LiveMarketAdapter`、`BacktestExecutionAdapter` 仍然保留，适合已有兼容 facade 或直接 `DataManager` 读取场景。
-新代码优先使用 `Client::create_backtest_session` + `ReplaySession`；只有在需要兼容旧入口时再走 legacy 路径。
 
 ### 覆盖服务端点
 
@@ -520,36 +510,28 @@ println!("orders={}, trades={}", orders.len(), trades.len());
 
 ### 3. 数据管理器（DataManager）
 
-DataManager 是底层 DIFF 合并与数据读取核心。大多数场景不需要直接操作，但 legacy 回测或高级扩展时可以直接使用：
+DataManager 是底层 DIFF 合并与数据读取核心。大多数场景不需要直接操作；如果你在做协议调试、离线 merge 验证或自定义状态派生，可以直接使用：
 
 ```rust
-use chrono::Utc;
-use tqsdk_rs::{BacktestConfig, Client};
+use std::collections::HashMap;
+use serde_json::json;
+use tqsdk_rs::{DataManager, DataManagerConfig};
 
-let username = std::env::var("TQ_AUTH_USER")?;
-let password = std::env::var("TQ_AUTH_PASS")?;
+let dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
 
-let mut client = Client::builder(username, password).build().await?;
-let start = Utc::now() - chrono::Duration::days(7);
-let end = Utc::now();
-let backtest = client
-    .init_market_backtest(BacktestConfig::new(start, end))
-    .await?;
-
-let dm = backtest.dm();
-
-// 获取 Quote 数据
-if let Ok(quote) = dm.get_quote_data("SHFE.au2602") {
-    println!("最新价: {}", quote.last_price);
-    println!("买一价: {}", quote.bid_price1);
-    println!("卖一价: {}", quote.ask_price1);
-}
-
-// 获取 K线数据
-// 参数：合约代码, 周期(纳秒), 数量, right_id(-1表示最新)
-if let Ok(klines) = dm.get_klines_data("SHFE.au2602", 60_000_000_000, 100, -1) {
-    println!("K线数量: {}", klines.data.len());
-}
+dm.merge_data(
+    json!({
+        "quotes": {
+            "SHFE.au2602": {
+                "instrument_id": "SHFE.au2602",
+                "datetime": "2026-04-11 09:00:00.000000",
+                "last_price": 500.0
+            }
+        }
+    }),
+    true,
+    true,
+);
 
 // 路径访问（灵活访问任意数据）
 if let Some(data) = dm.get_by_path(&["quotes", "SHFE.au2602"]) {
@@ -623,8 +605,6 @@ println!("closed bars={}", bars.rows().await.len());
 let result = session.finish().await?;
 println!("final trades={}", result.trades.len());
 ```
-
-如需兼容旧回测接口，仍可使用 `init_market_backtest(BacktestConfig)` 获取 `BacktestHandle`。
 
 ### 5. 合约查询
 
@@ -785,10 +765,9 @@ cargo run --example option_levels
 tqsdk-rs/
 ├── src/
 │   ├── auth/              # 认证与权限
-│   ├── backtest/          # 旧回测入口（compat）
 │   ├── cache/             # 本地 K 线磁盘缓存（分段写入/压缩/区间读取）
 │   ├── client/            # ClientBuilder / facade / market
-│   ├── compat/            # Python 风格 TargetPos facade
+│   ├── compat/            # 过渡中的 Python 风格 TargetPos facade
 │   ├── datamanager/       # DIFF 合并与 watch
 │   ├── ins/               # 合约、期权、交易状态等查询
 │   ├── quote/             # Quote 订阅
