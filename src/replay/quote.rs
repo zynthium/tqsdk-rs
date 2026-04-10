@@ -63,6 +63,10 @@ impl QuoteSynthesizer {
         self.symbols.get(symbol).map(|state| state.selected)
     }
 
+    pub fn visible_quote(&self, symbol: &str) -> Option<&ReplayQuote> {
+        self.symbols.get(symbol).map(|state| &state.visible)
+    }
+
     pub fn apply_tick(&mut self, symbol: &str, tick: &Tick) -> QuoteUpdate {
         self.observe_source(
             symbol,
@@ -151,11 +155,7 @@ impl QuoteSynthesizer {
         }
 
         QuoteUpdate {
-            visible: if selected {
-                visible
-            } else {
-                state.visible.clone()
-            },
+            visible: if selected { visible } else { state.visible.clone() },
             path: if selected { path } else { Vec::new() },
             source_selected: selected,
         }

@@ -1,0 +1,224 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use async_trait::async_trait;
+use serde_json::Value;
+use tokio::sync::{Mutex, RwLock, broadcast};
+
+use crate::replay::{InstrumentMetadata, ReplayQuote, SimBroker};
+use crate::runtime::{ExecutionAdapter, MarketAdapter, RuntimeError, RuntimeResult};
+use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade};
+
+#[derive(Debug)]
+pub struct ReplayMarketState {
+    metadata: RwLock<HashMap<String, InstrumentMetadata>>,
+    quotes: RwLock<HashMap<String, ReplayQuote>>,
+    updates_tx: broadcast::Sender<String>,
+}
+
+impl ReplayMarketState {
+    pub fn new() -> Self {
+        let (updates_tx, _) = broadcast::channel(64);
+        Self {
+            metadata: RwLock::new(HashMap::new()),
+            quotes: RwLock::new(HashMap::new()),
+            updates_tx,
+        }
+    }
+
+    pub async fn register_symbol(&self, metadata: InstrumentMetadata) {
+        self.metadata.write().await.insert(metadata.symbol.clone(), metadata);
+    }
+
+    pub async fn metadata_for(&self, symbol: &str) -> Option<InstrumentMetadata> {
+        self.metadata.read().await.get(symbol).cloned()
+    }
+
+    pub async fn update_quote(&self, quote: ReplayQuote) {
+        let symbol = quote.symbol.clone();
+        self.quotes.write().await.insert(symbol.clone(), quote);
+        let _ = self.updates_tx.send(symbol);
+    }
+
+    pub async fn replay_quote(&self, symbol: &str) -> Option<ReplayQuote> {
+        self.quotes.read().await.get(symbol).cloned()
+    }
+
+    async fn api_quote(&self, symbol: &str) -> RuntimeResult<Quote> {
+        let metadata = self.metadata.read().await.get(symbol).cloned().ok_or_else(|| {
+            RuntimeError::Tq(crate::TqError::DataNotFound(format!(
+                "replay metadata not found: {symbol}"
+            )))
+        })?;
+        let replay_quote = self
+            .quotes
+            .read()
+            .await
+            .get(symbol)
+            .cloned()
+            .unwrap_or_else(|| ReplayQuote {
+                symbol: symbol.to_string(),
+                ..ReplayQuote::default()
+            });
+        Ok(build_quote(&metadata, &replay_quote))
+    }
+}
+
+impl Default for ReplayMarketState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug)]
+pub struct ReplayExecutionState {
+    broker: Mutex<SimBroker>,
+    updates_tx: broadcast::Sender<u64>,
+    next_update_seq: AtomicU64,
+}
+
+impl ReplayExecutionState {
+    pub fn new(broker: SimBroker) -> Self {
+        let (updates_tx, _) = broadcast::channel(64);
+        Self {
+            broker: Mutex::new(broker),
+            updates_tx,
+            next_update_seq: AtomicU64::new(1),
+        }
+    }
+
+    pub async fn notify_update(&self) {
+        let seq = self.next_update_seq.fetch_add(1, Ordering::Relaxed);
+        let _ = self.updates_tx.send(seq);
+    }
+
+    pub async fn finish(&self) -> crate::Result<crate::replay::BacktestResult> {
+        self.broker.lock().await.finish()
+    }
+
+    pub(crate) async fn apply_quote_path(&self, symbol: &str, path: &[ReplayQuote]) -> crate::Result<()> {
+        self.broker.lock().await.apply_quote_path(symbol, path)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayMarketAdapter {
+    state: Arc<ReplayMarketState>,
+}
+
+impl ReplayMarketAdapter {
+    pub fn new(state: Arc<ReplayMarketState>) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl MarketAdapter for ReplayMarketAdapter {
+    async fn latest_quote(&self, symbol: &str) -> RuntimeResult<Quote> {
+        self.state.api_quote(symbol).await
+    }
+
+    async fn wait_quote_update(&self, symbol: &str) -> RuntimeResult<()> {
+        let mut rx = self.state.updates_tx.subscribe();
+        loop {
+            let updated = rx.recv().await.map_err(|_| RuntimeError::AdapterChannelClosed {
+                resource: "replay quote updates",
+            })?;
+            if updated == symbol {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn trading_time(&self, _symbol: &str) -> RuntimeResult<Option<Value>> {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayExecutionAdapter {
+    accounts: Vec<String>,
+    state: Arc<ReplayExecutionState>,
+}
+
+impl ReplayExecutionAdapter {
+    pub fn new(accounts: Vec<String>, state: Arc<ReplayExecutionState>) -> Self {
+        Self { accounts, state }
+    }
+}
+
+#[async_trait]
+impl ExecutionAdapter for ReplayExecutionAdapter {
+    fn known_accounts(&self) -> Vec<String> {
+        self.accounts.clone()
+    }
+
+    async fn insert_order(&self, account_key: &str, req: &InsertOrderRequest) -> RuntimeResult<String> {
+        let order_id = self.state.broker.lock().await.insert_order(account_key, req)?;
+        self.state.notify_update().await;
+        Ok(order_id)
+    }
+
+    async fn cancel_order(&self, account_key: &str, order_id: &str) -> RuntimeResult<()> {
+        self.state.broker.lock().await.cancel_order(account_key, order_id)?;
+        self.state.notify_update().await;
+        Ok(())
+    }
+
+    async fn order(&self, account_key: &str, order_id: &str) -> RuntimeResult<Order> {
+        Ok(self.state.broker.lock().await.order(account_key, order_id)?)
+    }
+
+    async fn trades_by_order(&self, account_key: &str, order_id: &str) -> RuntimeResult<Vec<Trade>> {
+        Ok(self.state.broker.lock().await.trades_by_order(account_key, order_id)?)
+    }
+
+    async fn position(&self, account_key: &str, symbol: &str) -> RuntimeResult<Position> {
+        Ok(self.state.broker.lock().await.position(account_key, symbol)?)
+    }
+
+    async fn wait_order_update(&self, account_key: &str, order_id: &str) -> RuntimeResult<()> {
+        if let Ok(order) = self.state.broker.lock().await.order(account_key, order_id)
+            && order.status == crate::types::ORDER_STATUS_FINISHED
+        {
+            return Ok(());
+        }
+
+        let mut rx = self.state.updates_tx.subscribe();
+        rx.recv().await.map_err(|_| RuntimeError::AdapterChannelClosed {
+            resource: "replay order updates",
+        })?;
+        Ok(())
+    }
+}
+
+fn build_quote(metadata: &InstrumentMetadata, replay_quote: &ReplayQuote) -> Quote {
+    Quote {
+        instrument_id: metadata.instrument_id.clone(),
+        datetime: replay_quote.datetime_nanos.to_string(),
+        last_price: replay_quote.last_price,
+        ask_price1: replay_quote.ask_price1,
+        ask_volume1: replay_quote.ask_volume1,
+        bid_price1: replay_quote.bid_price1,
+        bid_volume1: replay_quote.bid_volume1,
+        highest: replay_quote.highest,
+        lowest: replay_quote.lowest,
+        open: replay_quote.last_price,
+        close: replay_quote.last_price,
+        average: replay_quote.average,
+        volume: replay_quote.volume,
+        amount: replay_quote.amount,
+        open_interest: replay_quote.open_interest,
+        margin: metadata.margin,
+        commission: metadata.commission,
+        class: metadata.class.clone(),
+        exchange_id: metadata.exchange_id.clone(),
+        underlying_symbol: metadata.underlying_symbol.clone(),
+        volume_multiple: metadata.volume_multiple,
+        price_tick: metadata.price_tick,
+        open_min_market_order_volume: metadata.open_min_market_order_volume,
+        open_min_limit_order_volume: metadata.open_min_limit_order_volume,
+        ..Quote::default()
+    }
+}

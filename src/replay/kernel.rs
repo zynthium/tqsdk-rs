@@ -4,8 +4,8 @@ use chrono::{DateTime, Utc};
 
 use crate::errors::Result;
 use crate::replay::{
-    AlignedKlineHandle, AlignedKlineRow, BarState, FeedCursor, FeedEvent, ReplayHandleId, ReplayKlineHandle,
-    ReplayStep, QuoteSynthesizer, SeriesStore,
+    AlignedKlineHandle, AlignedKlineRow, BarState, FeedCursor, FeedEvent, InstrumentMetadata, QuoteSelection,
+    QuoteSynthesizer, ReplayHandleId, ReplayKlineHandle, ReplayQuote, ReplayStep, SeriesStore,
 };
 
 const DEFAULT_SERIES_WIDTH: usize = 1_024;
@@ -15,6 +15,7 @@ pub struct ReplayKernel {
     feeds: Vec<(String, FeedCursor)>,
     series_store: SeriesStore,
     quote_synthesizer: QuoteSynthesizer,
+    quote_paths: HashMap<String, Vec<ReplayQuote>>,
     klines: Vec<ReplayKlineHandle>,
     aligned_klines: Vec<AlignedKlineHandle>,
     next_handle_id: usize,
@@ -27,6 +28,7 @@ impl ReplayKernel {
             feeds,
             series_store: SeriesStore::default(),
             quote_synthesizer: QuoteSynthesizer::default(),
+            quote_paths: HashMap::new(),
             klines: Vec::new(),
             aligned_klines: Vec::new(),
             next_handle_id: 0,
@@ -57,17 +59,54 @@ impl ReplayKernel {
         handle
     }
 
-    pub fn register_kline(&mut self, symbol: &str, duration_nanos: i64, width: usize) -> ReplayKlineHandle {
+    pub fn register_quote(&mut self, symbol: &str, metadata: InstrumentMetadata) {
+        self.quote_synthesizer.register_symbol(
+            symbol,
+            metadata,
+            QuoteSelection::Kline {
+                duration_nanos: 60_000_000_000,
+                implicit: true,
+            },
+        );
+    }
+
+    pub fn register_kline(
+        &mut self,
+        symbol: &str,
+        duration_nanos: i64,
+        width: usize,
+        metadata: InstrumentMetadata,
+    ) -> ReplayKlineHandle {
         let id = ReplayHandleId(format!("kline_{}", self.next_handle_id));
         self.next_handle_id += 1;
 
+        self.quote_synthesizer.register_symbol(
+            symbol,
+            metadata,
+            QuoteSelection::Kline {
+                duration_nanos,
+                implicit: false,
+            },
+        );
         let handle = ReplayKlineHandle::new(id, symbol.to_string(), duration_nanos, width);
         self.klines.push(handle.clone());
         handle
     }
 
+    pub fn push_feed(&mut self, symbol: String, cursor: FeedCursor) {
+        self.feeds.push((symbol, cursor));
+    }
+
     pub fn set_tick_window_width(&mut self, width: usize) {
         self.tick_window_width = width;
+    }
+
+    pub fn visible_quote(&self, symbol: &str) -> Option<&ReplayQuote> {
+        self.quote_synthesizer.visible_quote(symbol)
+    }
+
+    pub fn quote_path(&self, symbol: &str) -> Option<&[ReplayQuote]> {
+        self.quote_paths.get(symbol).map(Vec::as_slice)
     }
 
     pub async fn step(&mut self) -> Result<Option<ReplayStep>> {
@@ -128,6 +167,7 @@ impl ReplayKernel {
         match event {
             FeedEvent::Tick { symbol, tick } => {
                 let update = self.quote_synthesizer.apply_tick(&symbol, &tick);
+                self.quote_paths.insert(symbol.clone(), update.path.clone());
                 self.series_store.push_tick(&symbol, tick, self.tick_window_width);
                 if update.source_selected && !updated_quotes.contains(&symbol) {
                     updated_quotes.push(symbol);
@@ -138,9 +178,15 @@ impl ReplayKernel {
                 duration_nanos,
                 kline,
             } => {
-                self.series_store
-                    .push_kline(&symbol, duration_nanos, kline.clone(), BarState::Opening, DEFAULT_SERIES_WIDTH);
+                self.series_store.push_kline(
+                    &symbol,
+                    duration_nanos,
+                    kline.clone(),
+                    BarState::Opening,
+                    DEFAULT_SERIES_WIDTH,
+                );
                 let update = self.quote_synthesizer.apply_bar_open(&symbol, duration_nanos, &kline);
+                self.quote_paths.insert(symbol.clone(), update.path.clone());
                 if update.source_selected && !updated_quotes.contains(&symbol) {
                     updated_quotes.push(symbol.clone());
                 }
@@ -156,6 +202,7 @@ impl ReplayKernel {
                 self.series_store
                     .close_kline(&symbol, duration_nanos, kline.clone(), DEFAULT_SERIES_WIDTH);
                 let update = self.quote_synthesizer.apply_bar_close(&symbol, duration_nanos, &kline);
+                self.quote_paths.insert(symbol.clone(), update.path.clone());
                 if update.source_selected && !updated_quotes.contains(&symbol) {
                     updated_quotes.push(symbol.clone());
                 }
@@ -219,5 +266,11 @@ impl ReplayKernel {
         }
 
         updated_handles
+    }
+}
+
+impl Default for ReplayKernel {
+    fn default() -> Self {
+        Self::for_test(Vec::new())
     }
 }

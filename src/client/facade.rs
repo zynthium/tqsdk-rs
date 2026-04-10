@@ -3,6 +3,7 @@ use crate::auth::Authenticator;
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
+use crate::replay::{ReplayConfig, ReplaySession};
 use crate::runtime::{LiveExecutionAdapter, LiveMarketAdapter, RuntimeMode, TqRuntime};
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
@@ -362,6 +363,11 @@ impl Client {
         let market = Arc::new(LiveMarketAdapter::new(Arc::clone(&self.dm)));
         let execution = Arc::new(LiveExecutionAdapter::new(Arc::clone(&self.trade_sessions)));
         Arc::new(TqRuntime::new(RuntimeMode::Live, market, execution))
+    }
+
+    pub async fn create_backtest_session(&mut self, config: ReplayConfig) -> Result<ReplaySession> {
+        let source = self.build_historical_source().await?;
+        ReplaySession::from_source(config, source).await
     }
 
     /// 关闭客户端

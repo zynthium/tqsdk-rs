@@ -2,17 +2,59 @@ use super::Client;
 use crate::backtest::{BacktestConfig, BacktestHandle};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
+use crate::replay::{HistoricalSource, InstrumentMetadata};
 use crate::series::{SeriesAPI, SeriesCachePolicy};
+use crate::types::{Kline, Tick};
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 struct MarketBootstrap {
     md_url: String,
     headers: HeaderMap,
     enable_trading_status: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct SdkHistoricalSource {
+    ins: Arc<InsAPI>,
+    series: Arc<SeriesAPI>,
+}
+
+impl SdkHistoricalSource {
+    pub(crate) fn new(ins: Arc<InsAPI>, series: Arc<SeriesAPI>) -> Self {
+        Self { ins, series }
+    }
+}
+
+#[async_trait(?Send)]
+impl HistoricalSource for SdkHistoricalSource {
+    async fn instrument_metadata(&self, symbol: &str) -> Result<InstrumentMetadata> {
+        let mut rows = self.ins.query_symbol_info(&[symbol]).await?;
+        let row = rows
+            .pop()
+            .ok_or_else(|| TqError::DataNotFound(format!("instrument metadata not found: {symbol}")))?;
+        Ok(parse_instrument_metadata(symbol, &row))
+    }
+
+    async fn load_klines(
+        &self,
+        symbol: &str,
+        duration: Duration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<Kline>> {
+        self.series.kline_data_series(symbol, duration, start_dt, end_dt).await
+    }
+
+    async fn load_ticks(&self, symbol: &str, start_dt: DateTime<Utc>, end_dt: DateTime<Utc>) -> Result<Vec<Tick>> {
+        self.series.tick_data_series(symbol, start_dt, end_dt).await
+    }
 }
 
 impl Client {
@@ -156,6 +198,24 @@ impl Client {
         Ok(quotes_ws)
     }
 
+    pub(crate) async fn build_historical_source(&mut self) -> Result<Arc<dyn HistoricalSource>> {
+        if !self.market_active.load(Ordering::SeqCst) {
+            let _ = self.initialize_market_runtime(true).await?;
+        }
+
+        let ins = self
+            .ins_api
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))?;
+        let series = self
+            .series_api
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))?;
+        Ok(Arc::new(SdkHistoricalSource::new(ins, series)))
+    }
+
     /// 初始化行情功能
     pub async fn init_market(&mut self) -> Result<()> {
         let _ = self.initialize_market_runtime(false).await?;
@@ -193,6 +253,45 @@ impl Client {
             ins.close().await?;
         }
         Ok(())
+    }
+}
+
+fn parse_instrument_metadata(symbol: &str, value: &Value) -> InstrumentMetadata {
+    InstrumentMetadata {
+        symbol: symbol.to_string(),
+        exchange_id: value
+            .get("exchange_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        instrument_id: value
+            .get("instrument_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        class: value
+            .get("class")
+            .or_else(|| value.get("ins_class"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        underlying_symbol: value
+            .get("underlying_symbol")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        price_tick: value.get("price_tick").and_then(Value::as_f64).unwrap_or_default(),
+        volume_multiple: value.get("volume_multiple").and_then(Value::as_i64).unwrap_or_default() as i32,
+        margin: value.get("margin").and_then(Value::as_f64).unwrap_or_default(),
+        commission: value.get("commission").and_then(Value::as_f64).unwrap_or_default(),
+        open_min_market_order_volume: value
+            .get("open_min_market_order_volume")
+            .and_then(Value::as_i64)
+            .unwrap_or_default() as i32,
+        open_min_limit_order_volume: value
+            .get("open_min_limit_order_volume")
+            .and_then(Value::as_i64)
+            .unwrap_or_default() as i32,
     }
 }
 

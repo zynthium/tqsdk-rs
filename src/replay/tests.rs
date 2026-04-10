@@ -1,11 +1,130 @@
 use chrono::{DateTime, NaiveDate, Utc};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
+use crate::compat::{TargetPosTask, TargetPosTaskOptions};
 use crate::replay::{
     BarState, ContinuousContractProvider, ContinuousMapping, DailySettlementLog, FeedCursor, FeedEvent,
-    InstrumentMetadata, QuoteSelection, QuoteSynthesizer, ReplayConfig, ReplayKernel, ReplayQuote, SeriesStore,
-    SimBroker,
+    HistoricalSource, InstrumentMetadata, QuoteSelection, QuoteSynthesizer, ReplayConfig, ReplayKernel, ReplayQuote,
+    ReplaySession, SeriesStore, SimBroker,
 };
 use crate::types::{DIRECTION_BUY, InsertOrderRequest, Kline, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Tick};
+use async_trait::async_trait;
+
+struct FakeHistoricalSource {
+    meta: HashMap<String, InstrumentMetadata>,
+    klines: HashMap<(String, i64), Vec<Kline>>,
+}
+
+#[async_trait(?Send)]
+impl HistoricalSource for FakeHistoricalSource {
+    async fn instrument_metadata(&self, symbol: &str) -> crate::Result<InstrumentMetadata> {
+        Ok(self.meta.get(symbol).cloned().unwrap())
+    }
+
+    async fn load_klines(
+        &self,
+        symbol: &str,
+        duration: Duration,
+        _start_dt: DateTime<Utc>,
+        _end_dt: DateTime<Utc>,
+    ) -> crate::Result<Vec<Kline>> {
+        Ok(self
+            .klines
+            .get(&(symbol.to_string(), duration.as_nanos() as i64))
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn load_ticks(
+        &self,
+        _symbol: &str,
+        _start_dt: DateTime<Utc>,
+        _end_dt: DateTime<Utc>,
+    ) -> crate::Result<Vec<Tick>> {
+        Ok(Vec::new())
+    }
+}
+
+#[tokio::test]
+async fn replay_session_runtime_can_drive_target_pos_task() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(
+            "SHFE.rb2605".to_string(),
+            InstrumentMetadata {
+                symbol: "SHFE.rb2605".to_string(),
+                exchange_id: "SHFE".to_string(),
+                instrument_id: "rb2605".to_string(),
+                class: "FUTURE".to_string(),
+                price_tick: 1.0,
+                volume_multiple: 10,
+                margin: 1000.0,
+                commission: 2.0,
+                ..InstrumentMetadata::default()
+            },
+        )]),
+        klines: HashMap::from([(
+            ("SHFE.rb2605".to_string(), 60_000_000_000),
+            vec![
+                Kline {
+                    id: 1,
+                    datetime: 1_000,
+                    open: 10.0,
+                    high: 12.0,
+                    low: 9.0,
+                    close: 11.0,
+                    open_oi: 10,
+                    close_oi: 11,
+                    volume: 5,
+                    epoch: None,
+                },
+                Kline {
+                    id: 2,
+                    datetime: 60_000_001_000,
+                    open: 11.0,
+                    high: 13.0,
+                    low: 10.0,
+                    close: 12.0,
+                    open_oi: 11,
+                    close_oi: 12,
+                    volume: 6,
+                    epoch: None,
+                },
+            ],
+        )]),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    let _quote = session.quote("SHFE.rb2605").await.unwrap();
+    let _klines = session
+        .series()
+        .kline("SHFE.rb2605", Duration::from_secs(60), 32)
+        .await
+        .unwrap();
+
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let task = TargetPosTask::new(runtime.clone(), "TQSIM", "SHFE.rb2605", TargetPosTaskOptions::default())
+        .await
+        .unwrap();
+
+    task.set_target_volume(1).unwrap();
+
+    while session.step().await.unwrap().is_some() {}
+
+    let position = runtime.execution().position("TQSIM", "SHFE.rb2605").await.unwrap();
+    assert_eq!(position.volume_long, 1);
+}
 
 #[test]
 fn replay_config_rejects_inverted_range() {
@@ -430,7 +549,15 @@ async fn replay_kernel_marks_single_symbol_kline_handle_as_updated() {
         "kline:SHFE.rb2605:60000000000".to_string(),
         FeedCursor::from_kline_rows("SHFE.rb2605", 60_000_000_000, bars),
     )]);
-    let handle = kernel.register_kline("SHFE.rb2605", 60_000_000_000, 16);
+    let handle = kernel.register_kline(
+        "SHFE.rb2605",
+        60_000_000_000,
+        16,
+        InstrumentMetadata {
+            symbol: "SHFE.rb2605".to_string(),
+            ..InstrumentMetadata::default()
+        },
+    );
 
     let step = kernel.step().await.unwrap().unwrap();
     assert!(step.updated_handles.contains(handle.id()));
@@ -753,7 +880,9 @@ fn sim_broker_limit_fill_uses_order_price_and_updates_position_once() {
 #[test]
 fn sim_broker_finish_returns_accumulated_settlements_and_final_state() {
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
-    let order_id = broker.insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2)).unwrap();
+    let order_id = broker
+        .insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2))
+        .unwrap();
 
     broker
         .apply_quote_path(

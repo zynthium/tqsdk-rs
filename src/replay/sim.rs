@@ -123,6 +123,17 @@ impl SimBroker {
         Ok(self.trades_by_order.get(order_id).cloned().unwrap_or_default())
     }
 
+    pub fn cancel_order(&mut self, account_key: &str, order_id: &str) -> Result<()> {
+        let order = self
+            .orders
+            .get_mut(order_id)
+            .ok_or_else(|| TqError::OrderNotFound(order_id.to_string()))?;
+        ensure_account_owns_order(account_key, order)?;
+        order.status = ORDER_STATUS_FINISHED.to_string();
+        order.last_msg = "cancelled by replay runtime".to_string();
+        Ok(())
+    }
+
     pub fn position(&self, account_key: &str, symbol: &str) -> Result<Position> {
         self.ensure_account(account_key)?;
         Ok(self

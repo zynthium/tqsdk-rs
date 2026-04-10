@@ -8,7 +8,7 @@ use crate::errors::Result;
 use crate::replay::InstrumentMetadata;
 use crate::types::{Kline, Tick};
 
-#[async_trait]
+#[async_trait(?Send)]
 pub trait HistoricalSource: Send + Sync {
     async fn instrument_metadata(&self, symbol: &str) -> Result<InstrumentMetadata>;
 
@@ -87,9 +87,7 @@ impl FeedCursor {
             Some(FeedEvent::Tick { tick, .. }) => Some(tick.datetime),
             Some(FeedEvent::BarOpen { kline, .. }) => Some(kline.datetime),
             Some(FeedEvent::BarClose {
-                kline,
-                duration_nanos,
-                ..
+                kline, duration_nanos, ..
             }) => Some(kline.datetime + duration_nanos - 1),
             None => None,
         }

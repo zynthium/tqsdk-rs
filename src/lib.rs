@@ -91,7 +91,7 @@ pub use logger::{create_logger_layer, init_logger};
 pub use quote::QuoteSubscription;
 pub use replay::{
     BacktestResult, BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayHandleId, ReplayQuote,
-    ReplayStep,
+    ReplayQuoteHandle, ReplaySession, ReplayStep,
 };
 pub use runtime::{
     AccountHandle, BacktestExecutionAdapter, BacktestRuntimeMode, OffsetPriority, OrderDirection, PriceMode,
