@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 
 use crate::errors::{Result, TqError};
-use crate::replay::{DailySettlementLog, ReplayQuote};
+use crate::replay::{BacktestResult, DailySettlementLog, ReplayQuote};
 use crate::types::{
     Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED,
     Order, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Position, Trade,
@@ -15,7 +15,9 @@ pub struct SimBroker {
     orders: HashMap<String, Order>,
     trades_by_order: HashMap<String, Vec<Trade>>,
     positions: HashMap<(String, String), Position>,
+    settlements: Vec<DailySettlementLog>,
     recent_trades: Vec<Trade>,
+    all_trades: Vec<Trade>,
     next_order_seq: i64,
     next_trade_seq: i64,
     last_settled_day: Option<NaiveDate>,
@@ -148,15 +150,38 @@ impl SimBroker {
             rollover_position(position);
         }
 
-        self.recent_trades.clear();
-        self.last_settled_day = Some(trading_day);
-
-        Ok(Some(DailySettlementLog {
+        let settlement = DailySettlementLog {
             trading_day,
             account,
             positions,
             trades,
-        }))
+        };
+
+        self.settlements.push(settlement.clone());
+        self.recent_trades.clear();
+        self.last_settled_day = Some(trading_day);
+
+        Ok(Some(settlement))
+    }
+
+    pub fn finish(&self) -> Result<BacktestResult> {
+        let mut final_accounts = self.accounts.values().cloned().collect::<Vec<_>>();
+        final_accounts.sort_by(|left, right| left.user_id.cmp(&right.user_id));
+
+        let mut final_positions = self.positions.values().cloned().collect::<Vec<_>>();
+        final_positions.sort_by(|left, right| {
+            left.user_id
+                .cmp(&right.user_id)
+                .then_with(|| left.exchange_id.cmp(&right.exchange_id))
+                .then_with(|| left.instrument_id.cmp(&right.instrument_id))
+        });
+
+        Ok(BacktestResult {
+            settlements: self.settlements.clone(),
+            final_accounts,
+            final_positions,
+            trades: self.all_trades.clone(),
+        })
     }
 
     fn ensure_account(&self, account_key: &str) -> Result<()> {
@@ -234,6 +259,7 @@ impl SimBroker {
             .entry(order_id.to_string())
             .or_default()
             .push(trade.clone());
+        self.all_trades.push(trade.clone());
         self.recent_trades.push(trade);
 
         Ok(())

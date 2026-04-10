@@ -749,3 +749,47 @@ fn sim_broker_limit_fill_uses_order_price_and_updates_position_once() {
     let trades = broker.trades_by_order("TQSIM", &order_id).unwrap();
     assert_eq!(trades.len(), 1);
 }
+
+#[test]
+fn sim_broker_finish_returns_accumulated_settlements_and_final_state() {
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    let order_id = broker.insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2)).unwrap();
+
+    broker
+        .apply_quote_path(
+            "SHFE.rb2605",
+            &[ReplayQuote {
+                symbol: "SHFE.rb2605".to_string(),
+                datetime_nanos: 1_000,
+                last_price: 10.0,
+                ask_price1: 10.5,
+                ask_volume1: 3,
+                bid_price1: 9.5,
+                bid_volume1: 1,
+                ..ReplayQuote::default()
+            }],
+        )
+        .unwrap();
+
+    let first_day = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+    let second_day = NaiveDate::from_ymd_opt(2026, 4, 10).unwrap();
+
+    let first = broker.settle_day(first_day).unwrap().unwrap();
+    assert_eq!(first.trading_day, first_day);
+
+    let second = broker.settle_day(second_day).unwrap().unwrap();
+    assert_eq!(second.trading_day, second_day);
+    assert!(second.trades.is_empty());
+
+    let result = broker.finish().unwrap();
+    assert_eq!(result.settlements.len(), 2);
+    assert_eq!(result.settlements[0].trading_day, first_day);
+    assert_eq!(result.settlements[1].trading_day, second_day);
+    assert_eq!(result.final_accounts.len(), 1);
+    assert_eq!(result.final_accounts[0].user_id, "TQSIM");
+    assert_eq!(result.final_positions.len(), 1);
+    assert_eq!(result.final_positions[0].user_id, "TQSIM");
+    assert_eq!(result.final_positions[0].volume_long, 2);
+    assert_eq!(result.trades.len(), 1);
+    assert_eq!(result.trades[0].order_id, order_id);
+}
