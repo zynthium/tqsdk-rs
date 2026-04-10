@@ -15,7 +15,7 @@ pub use engine::ExecutionEngine;
 pub use errors::{RuntimeError, RuntimeResult};
 pub use execution::{ExecutionAdapter, LiveExecutionAdapter};
 pub use market::{LiveMarketAdapter, MarketAdapter};
-pub use modes::{BacktestRuntimeMode, LiveRuntimeMode, RuntimeMode};
+pub use modes::RuntimeMode;
 pub use registry::{RegisteredTask, TaskId, TaskRegistry};
 pub use tasks::{
     ChildOrderRunner, OffsetAction, PlannedBatch, PlannedOffset, PlannedOrder, TargetPosBuilder,
