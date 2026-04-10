@@ -1,9 +1,8 @@
 pub use crate::{
-    AccountHandle, Authenticator, BacktestResult, BarState, Client, ClientConfig, ClientOption, DailySettlementLog,
-    DataManager, DataManagerConfig, EndpointConfig, InsAPI, KlineKey, KlineRef, MarketDataState, OffsetPriority,
-    OrderDirection, OrderEventStream, PriceMode, QuoteRef, QuoteSubscription, ReplayConfig, ReplayHandleId,
-    ReplayQuote, ReplayQuoteHandle, ReplaySession, ReplayStep, Result, RuntimeError, RuntimeMode, RuntimeResult,
-    SeriesAPI, SeriesCachePolicy, SeriesSubscription, SymbolId, TargetPosBuilder, TargetPosConfig,
+    AccountHandle, Authenticator, BacktestResult, Client, ClientConfig, ClientOption, DataManager, DataManagerConfig,
+    EndpointConfig, InsAPI, KlineKey, KlineRef, MarketDataState, OffsetPriority, OrderDirection, OrderEventStream,
+    PriceMode, QuoteRef, QuoteSubscription, ReplayConfig, ReplaySession, Result, RuntimeError, RuntimeMode,
+    RuntimeResult, SeriesAPI, SeriesCachePolicy, SeriesSubscription, SymbolId, TargetPosBuilder, TargetPosConfig,
     TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,
     TargetPosSchedulerConfig, TargetPosTask, TickRef, TqApi, TqError, TqRuntime, TradeEventRecvError, TradeEventStream,
     TradeOnlyEventStream, TradeSession, TradeSessionEvent, TradeSessionEventKind, TradeSessionOptions,

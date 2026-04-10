@@ -80,16 +80,13 @@ pub mod polars_ext;
 // 重新导出常用类型
 pub use auth::Authenticator;
 pub use client::{Client, ClientBuilder, ClientConfig, ClientOption, EndpointConfig, TradeSessionOptions};
-pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
+pub use datamanager::{DataManager, DataManagerConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};
 pub use marketdata::{KlineKey, KlineRef, MarketDataState, MarketDataUpdates, QuoteRef, SymbolId, TickRef, TqApi};
 pub use quote::QuoteSubscription;
-pub use replay::{
-    BacktestResult, BarState, DailySettlementLog, ReplayConfig, ReplayHandleId, ReplayQuote, ReplayQuoteHandle,
-    ReplaySession, ReplayStep,
-};
+pub use replay::{BacktestResult, ReplayConfig, ReplaySession};
 pub use runtime::{
     AccountHandle, OffsetPriority, OrderDirection, PriceMode, PriceResolver, RuntimeError, RuntimeMode, RuntimeResult,
     TargetPosBuilder, TargetPosConfig, TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler,

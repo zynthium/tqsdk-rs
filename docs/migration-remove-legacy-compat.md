@@ -28,6 +28,7 @@
 | `replay::HistoricalSource` / `ReplaySession::from_source` | `Client::create_backtest_session` | 自定义 replay source 装配退回 crate 内部；公开回测入口统一收敛到 `Client` facade |
 | `InstrumentMetadata` root/prelude export | 无 direct replacement | 该类型不再作为顶层公开 replay API 暴露；它属于内部回放装配细节 |
 | `ReplaySeriesSession` / `session.series().kline(...)` | `ReplaySession::kline(...)` | 单方法 wrapper 被移除，ReplaySession 直接提供 kline 注册入口 |
+| `ReplayQuoteHandle` / `ReplayStep` / `ReplayQuote` / `ReplayHandleId` / `BarState` / `DailySettlementLog` root/prelude export | `tqsdk_rs::replay::{...}` | replay 细节类型仍保留模块级 public，但不再占用 crate root / prelude |
 | `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()` |
 | `runtime::{ExecutionAdapter, MarketAdapter, LiveExecutionAdapter, LiveMarketAdapter, TaskRegistry, TaskId, ChildOrderRunner, ...}` | `ClientBuilder::build_runtime()` / `Client::into_runtime()` / `ReplaySession::runtime()` | runtime 装配层收口为内部实现，公开 API 聚焦 ready-to-use `TqRuntime` 与 Builder task |
 | `websocket::*` 和 raw constructor（`QuoteSubscription::new`、`SeriesAPI::new`、`InsAPI::new`、`TradeSession::new`） | `Client` / `ClientBuilder` / `TradeSession` factory methods | transport wiring 收回 crate 内部；公开连接入口统一走高层 facade |
@@ -35,6 +36,7 @@
 | `compat::TargetPosScheduler` | `runtime.account(\"...\").target_pos_scheduler(\"...\").steps(...).build()` | 调度器同样走 Builder |
 | `quote_channel` / `on_quote` | `client.tqapi().quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
 | `DataManager::{on_data, on_data_register, off_data}` | `subscribe_epoch()` + `get_path_epoch()` + `watch/unwatch` | merge 通知改为 coalesced state signal，不再提供全局 callback plumbing |
+| `MergeSemanticsConfig` root/prelude export | `tqsdk_rs::datamanager::MergeSemanticsConfig` | 进阶 merge 语义调优收回到 `datamanager` 命名空间，避免污染顶层入口 |
 | `SeriesSubscription` callback / stream fan-out | `SeriesSubscription` snapshot / window state API | 迁移方向是 pull-model，不再新增 callback/channel 用法 |
 
 ## Quote Lifecycle Note
@@ -129,4 +131,5 @@ let scheduler = account
 - 已收口：`HistoricalSource` 与 `ReplaySession::from_source` 只保留为 crate 内部回放装配点，不再作为公开扩展入口暴露。
 - 已收口：`TqRuntime::new/with_id`、runtime adapter/registry/planning types、以及 `TqRuntime::{market,execution,registry,engine}` 等装配接口都退回 crate 内部。
 - 已收口：`websocket` transport 模块与 raw constructor 不再作为公开装配入口，连接生命周期统一走 `Client` / `TradeSession` / `ReplaySession`。
+- 已收口：`ReplayQuoteHandle`、`ReplayStep`、`ReplayQuote`、`ReplayHandleId`、`BarState`、`DailySettlementLog` 与 `MergeSemanticsConfig` 不再从 crate root / prelude 直接导出；需要显式类型名时请从对应模块导入。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。
