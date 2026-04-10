@@ -238,10 +238,7 @@ use tqsdk_rs::prelude::*;
 let config = ReplayConfig::new(start_dt, end_dt)?;
 let mut session = client.create_backtest_session(config).await?;
 let quote = session.quote("SHFE.rb2605").await?;
-let klines = {
-    let mut series = session.series();
-    series.kline("SHFE.rb2605", Duration::from_secs(60), 64).await?
-};
+let klines = session.kline("SHFE.rb2605", Duration::from_secs(60), 64).await?;
 let runtime = session.runtime(["TQSIM"]).await?;
 let account = runtime.account("TQSIM").expect("configured account should exist");
 let task = account.target_pos("SHFE.rb2605").build()?;

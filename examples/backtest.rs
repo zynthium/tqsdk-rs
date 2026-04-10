@@ -101,10 +101,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         .create_backtest_session(ReplayConfig::new(start_dt, end_dt)?)
         .await?;
     let quote = session.quote(&symbol).await?;
-    let bars = {
-        let mut series = session.series();
-        series.kline(&symbol, KLINE_DURATION, DEFAULT_KLINE_WIDTH).await?
-    };
+    let bars = session.kline(&symbol, KLINE_DURATION, DEFAULT_KLINE_WIDTH).await?;
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
     let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
     let task = account.target_pos(&symbol).build()?;

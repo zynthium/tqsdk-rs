@@ -101,11 +101,7 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
     .unwrap();
 
     let _quote = session.quote("SHFE.rb2605").await.unwrap();
-    let _klines = session
-        .series()
-        .kline("SHFE.rb2605", Duration::from_secs(60), 32)
-        .await
-        .unwrap();
+    let _klines = session.kline("SHFE.rb2605", Duration::from_secs(60), 32).await.unwrap();
 
     let runtime = session.runtime(["TQSIM"]).await.unwrap();
     let account = runtime.account("TQSIM").expect("configured account should exist");

@@ -33,27 +33,6 @@ impl ReplayQuoteHandle {
     }
 }
 
-pub struct ReplaySeriesSession<'a> {
-    session: &'a mut ReplaySession,
-}
-
-impl<'a> ReplaySeriesSession<'a> {
-    pub async fn kline(&mut self, symbol: &str, duration: Duration, width: usize) -> Result<ReplayKlineHandle> {
-        let metadata = self.session.ensure_symbol(symbol).await?;
-        let duration_nanos = duration_nanos(duration)?;
-        self.session
-            .ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
-            .await?;
-
-        let handle = {
-            let mut kernel = self.session.kernel.lock().await;
-            kernel.register_kline(symbol, duration_nanos, width, metadata.clone())
-        };
-
-        Ok(handle)
-    }
-}
-
 pub struct ReplaySession {
     config: ReplayConfig,
     source: Arc<dyn HistoricalSource>,
@@ -77,10 +56,6 @@ impl ReplaySession {
         })
     }
 
-    pub fn series(&mut self) -> ReplaySeriesSession<'_> {
-        ReplaySeriesSession { session: self }
-    }
-
     pub async fn quote(&mut self, symbol: &str) -> Result<ReplayQuoteHandle> {
         let metadata = self.ensure_symbol(symbol).await?;
         self.ensure_kline_feed(
@@ -94,6 +69,20 @@ impl ReplaySession {
             symbol: symbol.to_string(),
             market: Arc::clone(&self.market),
         })
+    }
+
+    pub async fn kline(&mut self, symbol: &str, duration: Duration, width: usize) -> Result<ReplayKlineHandle> {
+        let metadata = self.ensure_symbol(symbol).await?;
+        let duration_nanos = duration_nanos(duration)?;
+        self.ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
+            .await?;
+
+        let handle = {
+            let mut kernel = self.kernel.lock().await;
+            kernel.register_kline(symbol, duration_nanos, width, metadata.clone())
+        };
+
+        Ok(handle)
     }
 
     pub async fn runtime<I, S>(&mut self, accounts: I) -> Result<Arc<TqRuntime>>
