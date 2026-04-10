@@ -126,6 +126,58 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
     assert_eq!(position.volume_long, 1);
 }
 
+#[tokio::test]
+async fn replay_session_quote_uses_implicit_minute_feed() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(
+            "SHFE.rb2605".to_string(),
+            InstrumentMetadata {
+                symbol: "SHFE.rb2605".to_string(),
+                exchange_id: "SHFE".to_string(),
+                instrument_id: "rb2605".to_string(),
+                class: "FUTURE".to_string(),
+                price_tick: 1.0,
+                ..InstrumentMetadata::default()
+            },
+        )]),
+        klines: HashMap::from([(
+            ("SHFE.rb2605".to_string(), 60_000_000_000),
+            vec![Kline {
+                id: 1,
+                datetime: 1_000,
+                open: 10.0,
+                high: 12.0,
+                low: 9.0,
+                close: 11.0,
+                open_oi: 10,
+                close_oi: 11,
+                volume: 5,
+                epoch: None,
+            }],
+        )]),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    let quote = session.quote("SHFE.rb2605").await.unwrap();
+
+    let first_step = session.step().await.unwrap().expect("implicit minute feed should advance");
+    assert_eq!(first_step.updated_quotes, vec!["SHFE.rb2605".to_string()]);
+
+    let snapshot = quote.snapshot().await.unwrap();
+    assert_eq!(snapshot.last_price, 10.0);
+    assert_eq!(snapshot.ask_price1, 11.0);
+}
+
 #[test]
 fn replay_config_rejects_inverted_range() {
     let start_dt = DateTime::<Utc>::from_timestamp(1_700_000_100, 0).unwrap();

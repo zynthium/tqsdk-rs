@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +12,8 @@ use crate::replay::{
 use crate::runtime::{RuntimeMode, TqRuntime};
 
 use super::runtime::{ReplayExecutionAdapter, ReplayExecutionState, ReplayMarketAdapter, ReplayMarketState};
+
+const IMPLICIT_QUOTE_DURATION: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone)]
 pub struct ReplayQuoteHandle {
@@ -35,34 +38,16 @@ pub struct ReplaySeriesSession<'a> {
 impl<'a> ReplaySeriesSession<'a> {
     pub async fn kline(&mut self, symbol: &str, duration: Duration, width: usize) -> Result<ReplayKlineHandle> {
         let metadata = self.session.ensure_symbol(symbol).await?;
-        let rows = self
-            .session
-            .source
-            .load_klines(
-                symbol,
-                duration,
-                self.session.config.start_dt,
-                self.session.config.end_dt,
-            )
+        let duration_nanos = duration_nanos(duration)?;
+        self.session
+            .ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
             .await?;
-        let duration_nanos = duration.as_nanos() as i64;
 
         let handle = {
             let mut kernel = self.session.kernel.lock().await;
             let handle = kernel.register_kline(symbol, duration_nanos, width, metadata.clone());
-            kernel.push_feed(
-                symbol.to_string(),
-                FeedCursor::from_kline_rows(symbol, duration_nanos, rows.clone()),
-            );
             handle
         };
-
-        if let Some(first) = rows.first() {
-            self.session
-                .market
-                .update_quote(preview_bar_open_quote(symbol, &metadata, first))
-                .await;
-        }
 
         Ok(handle)
     }
@@ -73,6 +58,7 @@ pub struct ReplaySession {
     source: Arc<dyn HistoricalSource>,
     kernel: Arc<Mutex<ReplayKernel>>,
     market: Arc<ReplayMarketState>,
+    registered_feeds: HashSet<(String, i64)>,
     execution: Option<Arc<ReplayExecutionState>>,
     runtime: Option<Arc<TqRuntime>>,
 }
@@ -84,6 +70,7 @@ impl ReplaySession {
             source,
             kernel: Arc::new(Mutex::new(ReplayKernel::default())),
             market: Arc::new(ReplayMarketState::default()),
+            registered_feeds: HashSet::new(),
             execution: None,
             runtime: None,
         })
@@ -94,7 +81,14 @@ impl ReplaySession {
     }
 
     pub async fn quote(&mut self, symbol: &str) -> Result<ReplayQuoteHandle> {
-        self.ensure_symbol(symbol).await?;
+        let metadata = self.ensure_symbol(symbol).await?;
+        self.ensure_kline_feed(
+            symbol,
+            IMPLICIT_QUOTE_DURATION,
+            duration_nanos(IMPLICIT_QUOTE_DURATION)?,
+            &metadata,
+        )
+        .await?;
         Ok(ReplayQuoteHandle {
             symbol: symbol.to_string(),
             market: Arc::clone(&self.market),
@@ -170,6 +164,39 @@ impl ReplaySession {
         self.kernel.lock().await.register_quote(symbol, metadata.clone());
         Ok(metadata)
     }
+
+    async fn ensure_kline_feed(
+        &mut self,
+        symbol: &str,
+        duration: Duration,
+        duration_nanos: i64,
+        metadata: &InstrumentMetadata,
+    ) -> Result<()> {
+        let key = (symbol.to_string(), duration_nanos);
+        if self.registered_feeds.contains(&key) {
+            return Ok(());
+        }
+
+        let rows = self
+            .source
+            .load_klines(symbol, duration, self.config.start_dt, self.config.end_dt)
+            .await?;
+        self.kernel.lock().await.push_feed(
+            symbol.to_string(),
+            FeedCursor::from_kline_rows(symbol, duration_nanos, rows.clone()),
+        );
+        self.registered_feeds.insert(key);
+
+        if self.market.replay_quote(symbol).await.is_none()
+            && let Some(first) = rows.first()
+        {
+            self.market
+                .update_quote(preview_bar_open_quote(symbol, metadata, first))
+                .await;
+        }
+
+        Ok(())
+    }
 }
 
 fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &crate::types::Kline) -> ReplayQuote {
@@ -194,4 +221,9 @@ fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &cra
         amount: 0.0,
         open_interest: bar.open_oi,
     }
+}
+
+fn duration_nanos(duration: Duration) -> Result<i64> {
+    i64::try_from(duration.as_nanos())
+        .map_err(|_| TqError::InvalidParameter(format!("duration is too large: {:?}", duration)))
 }
