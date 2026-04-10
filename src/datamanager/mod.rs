@@ -21,13 +21,6 @@ use std::sync::atomic::AtomicI64;
 use std::sync::{Arc, RwLock};
 use tokio::sync::watch::Sender as WatchSender;
 
-struct DataCallbackEntry {
-    id: i64,
-    f: Arc<dyn Fn() + Send + Sync>,
-}
-
-type DataCallbacks = Arc<RwLock<Vec<DataCallbackEntry>>>;
-
 #[derive(Debug, Clone, Default)]
 pub struct MergeSemanticsConfig {
     pub persist: bool,
@@ -82,10 +75,6 @@ pub struct DataManager {
     config: DataManagerConfig,
     /// 路径监听器
     watchers: Arc<RwLock<HashMap<String, Vec<PathWatcher>>>>,
-    /// 数据更新回调（使用 Arc 以支持异步触发）
-    on_data_callbacks: DataCallbacks,
-    /// 回调 ID 生成器
-    next_callback_id: AtomicI64,
     /// watcher ID 生成器
     next_watcher_id: AtomicI64,
 }

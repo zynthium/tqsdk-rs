@@ -60,7 +60,7 @@ examples/
 - WebSocket 层使用 I/O actor 模式，避免跨 `await` 持锁。
 - `ReplaySession` 是唯一推荐的公开回测入口；不要为新代码重新引入 `BacktestHandle` 风格的 facade。
 - `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
-- `DataManager` 的 merge 通知优先使用 `subscribe_epoch()`；除非是在迁移旧代码，不要继续扩散 `on_data_register` 依赖。
+- `DataManager` 的 merge 通知统一使用 `subscribe_epoch()`；旧的 `on_data` / `on_data_register` / `off_data` callback plumbing 已删除，不要重新引入。
 - `QuoteSubscription` 和 `SeriesSubscription` 默认是延迟启动的，创建后需要显式 `start()`。
 - `QuoteSubscription` 只负责订阅生命周期；读取 Quote 请走 `client.tqapi().quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`；不要重新引入 `on_update`、`on_new_bar`、`data_stream()` 一类 fan-out API。

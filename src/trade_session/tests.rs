@@ -68,20 +68,6 @@ fn position_json() -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn trade_session_start_watching_uses_epoch_subscription_instead_of_datamanager_callbacks() {
-    let dm = build_dm();
-    let session = build_session(Arc::clone(&dm));
-
-    session.running.store(true, Ordering::SeqCst);
-    assert_eq!(dm.callback_count_for_test(), 0);
-
-    session.start_watching().await;
-
-    assert_eq!(dm.callback_count_for_test(), 0);
-    session.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn trade_session_epoch_watcher_still_delivers_snapshot_and_reliable_event_updates() {
     let dm = build_dm();
     let session = build_session(Arc::clone(&dm));

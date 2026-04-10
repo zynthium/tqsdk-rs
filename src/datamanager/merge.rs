@@ -103,14 +103,8 @@ impl DataManager {
             self.apply_python_data_semantics(&mut data, current_epoch);
             drop(data);
 
-            let callbacks = self.on_data_callbacks.read().unwrap();
-            for entry in callbacks.iter() {
-                (entry.f)();
-            }
-            drop(callbacks);
-
-            // Callbacks may synchronously trigger nested merges. Publish the latest
-            // completed epoch so watch receivers never observe a regressing value.
+            // Publish the latest completed epoch after merge so watch receivers always
+            // observe a completed state snapshot.
             let completed_epoch = self.epoch.load(Ordering::SeqCst);
             self.epoch_tx.send_replace(completed_epoch);
 

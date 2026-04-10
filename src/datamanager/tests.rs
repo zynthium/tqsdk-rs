@@ -1,9 +1,6 @@
 use super::*;
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::time::Instant;
 
 #[test]
 fn test_merge_data() {
@@ -207,55 +204,6 @@ async fn subscribe_epoch_slow_consumer_can_reconcile_with_path_epoch() {
     assert_eq!(path_epoch, 2);
     assert_eq!(account.balance, 1002.0);
     assert_eq!(account.available, 901.0);
-}
-
-#[tokio::test]
-async fn subscribe_epoch_remains_monotonic_across_nested_callback_merges() {
-    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
-    let mut rx = dm.subscribe_epoch();
-    let nested_once = Arc::new(AtomicUsize::new(0));
-
-    {
-        let dm_for_callback = Arc::clone(&dm);
-        let nested_once = Arc::clone(&nested_once);
-        dm.on_data(move || {
-            if nested_once.fetch_add(1, AtomicOrdering::SeqCst) == 0 {
-                dm_for_callback.merge_data(
-                    json!({
-                        "quotes": {
-                            "SHFE.au2602": {
-                                "instrument_id": "SHFE.au2602",
-                                "datetime": "2024-01-01 09:00:01.000000",
-                                "last_price": 501.0
-                            }
-                        }
-                    }),
-                    true,
-                    true,
-                );
-            }
-        });
-    }
-
-    dm.merge_data(
-        json!({
-            "quotes": {
-                "SHFE.au2602": {
-                    "instrument_id": "SHFE.au2602",
-                    "datetime": "2024-01-01 09:00:00.000000",
-                    "last_price": 500.0
-                }
-            }
-        }),
-        true,
-        true,
-    );
-
-    rx.changed().await.unwrap();
-
-    assert_eq!(*rx.borrow(), 2);
-    assert_eq!(dm.get_epoch(), 2);
-    assert_eq!(dm.get_quote_data("SHFE.au2602").unwrap().last_price, 501.0);
 }
 
 #[test]
@@ -700,67 +648,5 @@ fn test_notify_watchers_prunes_closed_receivers() {
     assert!(
         !dm.watchers.read().unwrap().contains_key(&path_key),
         "closed receivers should be pruned after notify_watchers"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_on_data_spawn_layer_overhead_profile() {
-    let rounds = 10000usize;
-    let callback_count = 6usize;
-    let payload = json!({
-        "quotes": {
-            "SHFE.au2602": {
-                "last_price": 500.0,
-                "volume": 1000
-            }
-        }
-    });
-
-    let direct_counter = Arc::new(AtomicUsize::new(0));
-    let direct_dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
-    for _ in 0..callback_count {
-        let counter = Arc::clone(&direct_counter);
-        direct_dm.on_data(move || {
-            counter.fetch_add(1, AtomicOrdering::Relaxed);
-        });
-    }
-
-    let direct_start = Instant::now();
-    for _ in 0..rounds {
-        direct_dm.merge_data(payload.clone(), true, true);
-    }
-    let direct_elapsed = direct_start.elapsed();
-    let direct_total = direct_counter.load(AtomicOrdering::Relaxed);
-
-    let spawned_counter = Arc::new(AtomicUsize::new(0));
-    let spawned_dm = DataManager::new(HashMap::new(), DataManagerConfig::default());
-    for _ in 0..callback_count {
-        let counter = Arc::clone(&spawned_counter);
-        spawned_dm.on_data(move || {
-            let counter = Arc::clone(&counter);
-            tokio::spawn(async move {
-                counter.fetch_add(1, AtomicOrdering::Relaxed);
-            });
-        });
-    }
-
-    let spawned_start = Instant::now();
-    for _ in 0..rounds {
-        spawned_dm.merge_data(payload.clone(), true, true);
-    }
-    tokio::task::yield_now().await;
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    let spawned_elapsed = spawned_start.elapsed();
-    let spawned_total = spawned_counter.load(AtomicOrdering::Relaxed);
-
-    assert_eq!(direct_total, rounds * callback_count);
-    assert_eq!(spawned_total, rounds * callback_count);
-
-    println!(
-        "on_data_profile rounds={} callbacks={} direct_us={} spawned_us={}",
-        rounds,
-        callback_count,
-        direct_elapsed.as_micros(),
-        spawned_elapsed.as_micros()
     );
 }
