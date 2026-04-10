@@ -1,5 +1,6 @@
 use super::QuoteSubscription;
 use crate::datamanager::{DataManager, DataManagerConfig};
+use crate::marketdata::MarketDataState;
 use crate::websocket::{TqQuoteWebsocket, WebSocketConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ async fn start_failure_rolls_back_quote_callback_registration() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
@@ -29,6 +31,7 @@ async fn quote_channel_is_bounded_and_drops_overflow_updates() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig {
             message_queue_capacity: 1,
             ..WebSocketConfig::default()
@@ -79,6 +82,7 @@ async fn quote_channel_overflow_still_invokes_callback_for_each_update() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig {
             message_queue_capacity: 1,
             ..WebSocketConfig::default()

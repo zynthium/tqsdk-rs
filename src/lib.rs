@@ -41,6 +41,7 @@ pub mod utils;
 // 数据结构
 pub mod types;
 
+pub mod marketdata;
 pub mod prelude;
 pub mod replay;
 
@@ -88,6 +89,7 @@ pub use datamanager::{DataManager, DataManagerConfig, MergeSemanticsConfig};
 pub use errors::{Result, TqError};
 pub use ins::InsAPI;
 pub use logger::{create_logger_layer, init_logger};
+pub use marketdata::{KlineKey, KlineRef, MarketDataState, MarketDataUpdates, QuoteRef, SymbolId, TickRef, TqApi};
 pub use quote::QuoteSubscription;
 pub use replay::{
     BacktestResult, BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayHandleId, ReplayQuote,

@@ -2,6 +2,7 @@ use super::{Client, ClientBuilder, ClientConfig, EndpointConfig};
 use crate::auth::{Authenticator, TqAuth};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::Result;
+use crate::marketdata::MarketDataState;
 use crate::runtime::TqRuntime;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -179,6 +180,7 @@ impl ClientBuilder {
             ..DataManagerConfig::default()
         };
         let dm = Arc::new(DataManager::new(HashMap::new(), dm_config));
+        let market_state = Arc::new(MarketDataState::default());
 
         Ok(Client {
             username: self.username,
@@ -186,6 +188,7 @@ impl ClientBuilder {
             endpoints: self.endpoints,
             auth,
             dm,
+            market_state,
             quotes_ws: None,
             series_api: None,
             ins_api: None,

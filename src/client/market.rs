@@ -98,8 +98,15 @@ impl Client {
         }
 
         let mut payload = Map::new();
+        let quote_symbols = quotes.keys().cloned().collect::<Vec<_>>();
         payload.insert("quotes".to_string(), Value::Object(quotes));
         self.dm.merge_data(Value::Object(payload), true, true);
+        for symbol in quote_symbols {
+            if let Ok(mut quote) = self.dm.get_quote_data(&symbol) {
+                quote.update_change();
+                self.market_state.update_quote(symbol.into(), quote).await;
+            }
+        }
         Ok(())
     }
 
@@ -165,6 +172,7 @@ impl Client {
         let quotes_ws = Arc::new(TqQuoteWebsocket::new(
             bootstrap.md_url,
             Arc::clone(&self.dm),
+            Arc::clone(&self.market_state),
             ws_config.clone(),
         ));
         quotes_ws.init(false).await?;

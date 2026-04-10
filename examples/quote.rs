@@ -1,23 +1,22 @@
-//! Quote 行情订阅示例
-//!
-//! 演示以下功能：
-//! - Quote 实时行情订阅（Channel 和 Callback 两种模式）
-//! - 单合约 K线订阅（延迟启动模式，推荐）
-//! - 多合约 K线订阅（自动对齐）
-//! - Tick 订阅
-
+use std::env;
 use std::time::Duration;
-use std::{env, vec};
+
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
-fn get_credentials() -> (String, String) {
+fn credentials() -> (String, String) {
     let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
     let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
     (username, password)
 }
 
-async fn build_client(username: &str, password: &str, config: ClientConfig) -> Result<Client> {
+async fn build_client(username: &str, password: &str) -> Result<Client> {
+    let config = ClientConfig {
+        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        view_width: 10000,
+        ..Default::default()
+    };
+
     Client::builder(username, password)
         .config(config)
         .endpoints(EndpointConfig::from_env())
@@ -25,414 +24,98 @@ async fn build_client(username: &str, password: &str, config: ClientConfig) -> R
         .await
 }
 
-/// Quote 订阅示例
-#[allow(dead_code)]
-async fn quote_subscription_example() {
-    info!("==================== Quote 订阅示例 ====================");
-
-    let (username, password) = get_credentials();
-
-    // 创建客户端
-    let config = ClientConfig {
-        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-        view_width: 10000,
-        development: true,
-        stock: false,
-        ..Default::default()
-    };
-
-    let mut client = build_client(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
-
-    // 初始化行情功能
-    client.init_market().await.expect("初始化行情功能失败");
-
-    info!("等待客户端初始化完成...");
-    tokio::time::sleep(Duration::from_secs(2)).await;
-
-    // 订阅多个合约
-    info!("开始订阅合约...");
-    let ins_list = vec!["SHFE.au2602", "SHFE.ag2512", "DCE.m2512"];
-
-    // let quote_sub = client
-    //     .subscribe_quote(&["SHFE.au2602", "SHFE.ag2512", "DCE.m2512"])
-    //     .await
-    //     .expect("订阅失败");
-    let quote_sub = client.subscribe_quote(&ins_list).await.expect("订阅失败");
-
-    // 方式 1: 使用 Channel 接收（async-channel 支持多个订阅者）
-    let quote_rx = quote_sub.quote_channel();
-    tokio::spawn(async move {
-        let mut count = 0;
-        loop {
-            match quote_rx.recv().await {
-                Ok(quote) => {
-                    count += 1;
-                    info!("收到 Quote 更新 #{}: {}", count, quote.instrument_id);
-
-                    // 用户自行过滤合约
-                    if quote.instrument_id == "SHFE.au2602" {
-                        info!(
-                            "📊 沪金: 最新价={:.2}, 涨跌={:.2}, 买一={:.2}, 卖一={:.2}",
-                            quote.last_price, quote.change, quote.bid_price1, quote.ask_price1
-                        );
-                    }
-                }
-                Err(_) => {
-                    info!("Quote Channel 已关闭");
-                    break;
-                }
-            }
-        }
-    });
-
-    // 方式 2: 使用回调接口（参数是 Arc<Quote>）
-    quote_sub
-        .on_quote(|quote| {
-            // quote 是 Arc<Quote>，可以直接使用
-            if quote.instrument_id == "SHFE.ag2512" {
-                info!(
-                    "📊 沪银: 最新价={:.2}, 涨跌={:.2}, 买一={:.2}, 卖一={:.2}",
-                    quote.last_price, quote.change, quote.bid_price1, quote.ask_price1
-                );
-            }
-            info!("[回调] {}: 最新价={:.2}", quote.instrument_id, quote.last_price);
-        })
-        .await;
-
-    quote_sub.start().await.expect("启动监听失败");
-
-    // 运行 30 秒
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    info!("Quote 订阅示例结束");
-}
-
-/// 单合约 K线订阅示例（推荐用法：延迟启动模式）
-#[allow(dead_code)]
-async fn single_kline_subscription_example() {
-    info!("==================== 单合约 K线订阅示例 ====================");
-
-    let (username, password) = get_credentials();
-
-    let config = ClientConfig {
-        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-        view_width: 20000,
-        stock: false,
-        ..Default::default()
-    };
-
-    // let symbol = "SHFE.au2602";
-    let symbol = "CFFEX.IF2512";
-
-    let mut client = build_client(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
-
-    client.init_market().await.expect("初始化行情功能失败");
-
-    // 创建订阅（延迟启动，推荐方式）
-    let series_api = client.series().expect("获取 series API 失败");
-    let sub = series_api
-        .kline(symbol, Duration::from_secs(60), 3010)
-        .await
-        .expect("订阅失败");
-
-    let symbol2 = symbol;
-    // 方式 1: 使用通用更新回调（包含更新信息）
-    sub.on_update(|data, info| {
-        if let Some(sym_data) = data.get_symbol_klines(symbol2) {
-            if info.has_new_bar {
-                // 新增了一根 K线
-                info!(
-                    "🆕 新 K线! ID={:?}, 数据量={}",
-                    info.new_bar_ids.get(symbol2),
-                    sym_data.data.len()
-                );
-
-                if let Some(latest) = sym_data.data.last() {
-                    info!(
-                        "   时间={} O:{:.2} H:{:.2} L:{:.2} C:{:.2} V:{}",
-                        chrono::DateTime::from_timestamp_nanos(latest.datetime).format("%H:%M:%S"),
-                        latest.open,
-                        latest.high,
-                        latest.low,
-                        latest.close,
-                        latest.volume
-                    );
-                }
-            }
-
-            if info.has_bar_update && !info.has_new_bar {
-                // 更新了最后一根 K线
-                info!("🔄 K线更新 (LastID={})", sym_data.last_id);
-
-                if let Some(latest) = sym_data.data.last() {
-                    info!(
-                        "   当前价:{:.2} (L:{:.2} H:{:.2} V:{})",
-                        latest.close, latest.low, latest.high, latest.volume
-                    );
-                }
-            }
-
-            if info.chart_range_changed {
-                info!(
-                    "📊 Chart 范围变化: [{},{}] -> [{},{}]",
-                    info.old_left_id, info.old_right_id, info.new_left_id, info.new_right_id
-                );
-            }
-
-            if info.has_chart_sync
-                && let Some(single) = &data.single
-                && let Some(chart) = &single.chart
-            {
-                info!("✅ Chart 同步完成! 范围: [{},{}]", chart.left_id, chart.right_id);
-            }
-        }
-    })
-    .await;
-
-    let symbol3 = symbol;
-    // 方式 2: 使用专门的新 K线回调
-    sub.on_new_bar(|data| {
-        if let Some(sym_data) = data.get_symbol_klines(symbol3)
-            && let Some(latest) = sym_data.data.last()
-        {
-            info!(
-                "🎯 新 K线: [{}] C={:.2} V={} (序列长度={})",
-                latest.id,
-                latest.close,
-                latest.volume,
-                sym_data.data.len()
-            );
-
-            // 示例：计算最近5根K线的平均价格
-            if sym_data.data.len() >= 5 {
-                let sum: f64 = sym_data.data[sym_data.data.len() - 5..].iter().map(|k| k.close).sum();
-                let ma5 = sum / 5.0;
-                info!("   MA5={:.2}", ma5);
-            }
-        }
-    })
-    .await;
-
-    sub.on_bar_update(|data| {
-        if let Some(sym_data) = data.get_symbol_klines(symbol)
-            && let Some(latest) = sym_data.data.last()
-        {
-            info!("⏰ K线更新: [{}] C={:.2} (实时)", latest.id, latest.close);
-        }
-    })
-    .await;
-
-    // 所有回调注册完成后，启动监听（不会错过数据）
-    sub.start().await.expect("启动监听失败");
-    info!("✅ 订阅已启动");
-
-    // 运行 50 秒
-    tokio::time::sleep(Duration::from_secs(50)).await;
-    info!("单合约 K线订阅示例结束");
-}
-
-/// 多合约 K线订阅示例（自动对齐）
-async fn multi_kline_subscription_example() {
-    info!("==================== 多合约 K线订阅示例 ====================");
-
-    let (username, password) = get_credentials();
-
-    let config = ClientConfig {
-        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-        view_width: 500,
-        ..Default::default()
-    };
-
-    let mut client = build_client(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
-
-    client.init_market().await.expect("初始化行情功能失败");
-
-    // 订阅多个合约的 1分钟 K线
-    let series_api = client.series().expect("获取 series API 失败");
-    let symbols = vec!["SHFE.au2605", "SHFE.ag2605", "INE.sc2605"];
-    let sub = series_api
-        .kline(symbols, Duration::from_secs(60), 1000)
-        .await
-        .expect("订阅失败");
-
-    sub.on_update(|data, info| {
-        if info.has_new_bar {
-            info!("\n🆕 新 K线产生!");
-            for (symbol, bar_id) in &info.new_bar_ids {
-                info!("  - {}: ID={}", symbol, bar_id);
-            }
-
-            // 显示对齐的数据
-            if let Some(multi) = &data.multi
-                && let Some(latest) = multi.data.last()
-            {
-                info!(
-                    "\n时间: {} (MainID={})",
-                    latest.timestamp.format("%H:%M:%S"),
-                    latest.main_id
-                );
-
-                for (symbol, kline) in &latest.klines {
-                    info!(
-                        "  {}: O={:.2} C={:.2} H={:.2} L={:.2} V={}",
-                        symbol, kline.open, kline.close, kline.high, kline.low, kline.volume
-                    );
-                }
-            }
-        }
-
-        if info.has_chart_sync
-            && let Some(multi) = &data.multi
-        {
-            info!("✅ 多合约 Chart 同步完成!");
-            info!("主合约: {}, 合约数: {}", multi.main_symbol, multi.symbols.len());
-            info!(
-                "数据范围: [{}, {}], 总共 {} 根K线",
-                multi.left_id,
-                multi.right_id,
-                multi.data.len()
-            );
-        }
-    })
-    .await;
-
-    sub.start().await.expect("启动监听失败");
-
-    // 运行 30 秒
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    info!("多合约 K线订阅示例结束");
-}
-
-/// Tick 订阅示例（推荐用法：延迟启动模式）
-#[allow(dead_code)]
-async fn tick_subscription_example() {
-    info!("==================== Tick 订阅示例 ====================");
-
-    let (username, password) = get_credentials();
-
-    let config = ClientConfig {
-        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-        development: true,
-        view_width: 500,
-        ..Default::default()
-    };
-
-    let mut client = build_client(&username, &password, config)
-        .await
-        .expect("创建客户端失败");
-
-    client.init_market().await.expect("初始化行情功能失败");
-
-    // 创建订阅（延迟启动，推荐方式）
-    let series_api = client.series().expect("获取 series API 失败");
-    let sub = series_api.tick("SHFE.au2602", 5).await.expect("订阅失败");
-
-    // 先注册所有回调函数
-    sub.on_new_bar(|data| {
-        if let Some(tick_data) = &data.tick_data
-            && let Some(tick) = tick_data.data.last()
-        {
-            info!(
-                "📈 新 Tick: [{}] 最新价={:.2} 买一={:.2}({}) 卖一={:.2}({}) 成交量={} (序列长度={})",
-                tick.id,
-                tick.last_price,
-                tick.bid_price1,
-                tick.bid_volume1,
-                tick.ask_price1,
-                tick.ask_volume1,
-                tick.volume,
-                tick_data.data.len()
-            );
-        }
-    })
-    .await;
-
-    sub.on_bar_update(|data| {
-        if let Some(tick_data) = &data.tick_data
-            && let Some(tick) = tick_data.data.last()
-        {
-            info!("🔄 Tick 更新: [{}] 最新价={:.2}", tick.id, tick.last_price);
-        }
-    })
-    .await;
-
-    // 所有回调注册完成后，启动监听（不会错过数据）
-    sub.start().await.expect("启动监听失败");
-    info!("✅ 订阅已启动");
-
-    // 运行 20 秒
-    tokio::time::sleep(Duration::from_secs(20)).await;
-    info!("Tick 订阅示例结束");
-}
-
 #[tokio::main]
-async fn main() {
-    // 初始化日志：同时输出到终端和文件
-    let log_level = env::var("TQ_LOG").unwrap_or_else(|_| "quote=info,tqsdk_rs=debug".to_string());
-    init_logger_with_file(&log_level, false);
+async fn main() -> Result<()> {
+    init_logger(&env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()), false);
 
-    // 运行各个示例（取消注释以运行）
-    // quote_subscription_example().await;
-    // single_kline_subscription_example().await;
-    multi_kline_subscription_example().await;
-    // tick_subscription_example().await;
+    let (username, password) = credentials();
+    let mut client = build_client(&username, &password).await?;
+    client.init_market().await?;
 
-    info!("所有示例运行完成!");
-}
+    let tqapi = client.tqapi();
 
-/// 初始化日志系统：同时输出到终端和文件
-fn init_logger_with_file(level: &str, filter_crate_only: bool) {
-    use std::fs;
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+    let au = env::var("TQ_QUOTE_AU").unwrap_or_else(|_| "SHFE.au2602".to_string());
+    let ag = env::var("TQ_QUOTE_AG").unwrap_or_else(|_| "SHFE.ag2512".to_string());
+    let m = env::var("TQ_QUOTE_M").unwrap_or_else(|_| "DCE.m2512".to_string());
 
-    // 创建日志目录
-    fs::create_dir_all("logs").expect("无法创建日志目录");
+    let quote_sub = client.subscribe_quote(&[au.as_str(), ag.as_str(), m.as_str()]).await?;
+    quote_sub.start().await?;
 
-    // 生成日志文件名（带时间戳）
-    let log_file = format!("logs/quote_{}.log", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let file = fs::File::create(&log_file).expect("无法创建日志文件");
+    let series = client.series()?;
+    let kline_duration = Duration::from_secs(60);
+    let kline_sub = series.kline(au.as_str(), kline_duration, 256).await?;
+    kline_sub.start().await?;
 
-    // 构建过滤器
-    let filter = if filter_crate_only {
-        EnvFilter::new(format!("tqsdk_rs={}", level))
-    } else {
-        EnvFilter::new(level)
-    };
+    let tick_sub = series.tick(au.as_str(), 256).await?;
+    tick_sub.start().await?;
 
-    // Layer 1: 终端输出（带颜色）
-    let console_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_line_number(true)
-        .with_file(true)
-        .with_ansi(true) // 启用颜色
-        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
-        .compact();
+    let au_quote = tqapi.quote(au.as_str());
+    let ag_quote = tqapi.quote(ag.as_str());
+    let au_kline = tqapi.kline(au.as_str(), kline_duration);
+    let au_tick = tqapi.tick(au.as_str());
 
-    // Layer 2: 文件输出（无颜色）
-    let file_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_line_number(true)
-        .with_file(true)
-        .with_ansi(false) // 禁用颜色
-        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
-        .with_writer(file)
-        .compact();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
 
-    // 组合两个 Layer
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console_layer)
-        .with(file_layer)
-        .init();
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
 
-    println!("日志已初始化，输出到终端和文件: {}", log_file);
+        let updates = tqapi.wait_update_and_drain().await?;
+
+        for symbol in updates.quotes {
+            if symbol.as_str() == au.as_str() {
+                let q = au_quote.load().await;
+                info!(
+                    "Quote {} last={:.2} change={:.2} bid1={:.2} ask1={:.2}",
+                    q.instrument_id, q.last_price, q.change, q.bid_price1, q.ask_price1
+                );
+            } else if symbol.as_str() == ag.as_str() {
+                let q = ag_quote.load().await;
+                info!(
+                    "Quote {} last={:.2} change={:.2} bid1={:.2} ask1={:.2}",
+                    q.instrument_id, q.last_price, q.change, q.bid_price1, q.ask_price1
+                );
+            }
+        }
+
+        for key in updates.klines {
+            if key.symbol.as_str() == au.as_str() && key.duration_nanos == au_kline.duration_nanos() {
+                let k = au_kline.load().await;
+                info!(
+                    "Kline {} id={} O={:.2} H={:.2} L={:.2} C={:.2} V={}",
+                    au_kline.symbol(),
+                    k.id,
+                    k.open,
+                    k.high,
+                    k.low,
+                    k.close,
+                    k.volume
+                );
+            }
+        }
+
+        for symbol in updates.ticks {
+            if symbol.as_str() == au.as_str() {
+                let t = au_tick.load().await;
+                info!(
+                    "Tick {} id={} last={:.2} bid1={:.2}({}) ask1={:.2}({}) V={}",
+                    au_tick.symbol(),
+                    t.id,
+                    t.last_price,
+                    t.bid_price1,
+                    t.bid_volume1,
+                    t.ask_price1,
+                    t.ask_volume1,
+                    t.volume
+                );
+            }
+        }
+    }
+
+    tick_sub.close().await?;
+    kline_sub.close().await?;
+    quote_sub.close().await?;
+    client.close().await?;
+    Ok(())
 }

@@ -70,6 +70,7 @@ polars = ["dep:polars"]
 
 [dev-dependencies]
 tracing-appender = "0.2.4"
+criterion = { version = "0.5.1", features = ["async_tokio"] }
 
 [[example]]
 name = "quote"
@@ -86,3 +87,7 @@ path = "examples/trade.rs"
 [[example]]
 name = "backtest"
 path = "examples/backtest.rs"
+
+[[bench]]
+name = "marketdata_state"
+harness = false

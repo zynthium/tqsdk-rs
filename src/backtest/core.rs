@@ -127,6 +127,7 @@ impl Drop for BacktestHandle {
 mod tests {
     use super::*;
     use crate::datamanager::{DataManager, DataManagerConfig};
+    use crate::marketdata::MarketDataState;
     use crate::websocket::WebSocketConfig;
     use chrono::Duration as ChronoDuration;
     use std::collections::HashMap;
@@ -137,6 +138,7 @@ mod tests {
         let ws = Arc::new(crate::websocket::TqQuoteWebsocket::new(
             "wss://example.com".to_string(),
             Arc::clone(&dm),
+            Arc::new(MarketDataState::default()),
             WebSocketConfig::default(),
         ));
 

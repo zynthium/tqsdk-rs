@@ -1,330 +1,102 @@
-//! 历史数据订阅示例
-//!
-//! 演示以下功能：
-//! - 使用 left_kline_id 订阅历史 K线
-//! - 使用 focus_datetime + focus_position 订阅历史 K线
-//! - 大数据量分片传输监控
-
-use chrono::NaiveDate;
 use std::env;
+use std::pin::pin;
 use std::time::Duration;
+
+use futures::StreamExt;
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
-async fn build_client(username: &str, password: &str, config: ClientConfig) -> Result<Client> {
+async fn build_client(username: &str, password: &str) -> Result<Client> {
     Client::builder(username, password)
-        .config(config)
+        .config(ClientConfig {
+            log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            view_width: 10000,
+            ..Default::default()
+        })
         .endpoints(EndpointConfig::from_env())
         .build()
         .await
 }
 
-/// 使用 left_kline_id 订阅历史 K线
-async fn history_kline_with_left_id_example() {
-    info!("==================== 历史 K线订阅示例（使用 left_kline_id） ====================");
-
-    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
-    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
-
-    let mut client = build_client(
-        &username,
-        &password,
-        ClientConfig {
-            view_width: 100000,
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("创建客户端失败");
-
-    client.init_market().await.expect("初始化行情功能失败");
-
-    // 从指定的 K线 ID 开始订阅 8000 根历史 K线
-    // 注意：数据会分片返回（每片最多 3000 根）
-    let left_kline_id = 105761i64;
-    let series_api = client.series().expect("获取 SeriesAPI 失败");
-    let sub = series_api
-        .kline_history("SHFE.au2512", Duration::from_secs(60), 8000, left_kline_id)
-        .await
-        .expect("订阅失败");
-
-    // 监听数据更新
-    sub.on_update(|data, info| {
-        if let Some(sym_data) = data.get_symbol_klines("SHFE.au2512") {
-            if info.has_chart_sync {
-                info!("✅ Chart 初次同步完成");
-                if let Some(single) = &data.single {
-                    if let Some(chart) = &single.chart {
-                        info!("   范围: [{}, {}]", chart.left_id, chart.right_id);
-                    }
-                    info!("   数据量: {} 根K线", sym_data.data.len());
-                    if let Some(first) = sym_data.data.first() {
-                        info!("   第一根 Bar: {:?}", first);
-                    }
-                }
-            }
-
-            if info.chart_range_changed {
-                info!(
-                    "📊 Chart 范围变化: [{},{}] -> [{},{}]",
-                    info.old_left_id, info.old_right_id, info.new_left_id, info.new_right_id
-                );
-                info!("   当前数据量: {} 根K线", sym_data.data.len());
-            }
-
-            // 检测分片数据传输完成
-            if info.chart_ready {
-                info!("\n🎉 所有历史数据传输完成！");
-                if let Some(single) = &data.single {
-                    if let Some(chart) = &single.chart {
-                        info!("   最终范围: [{}, {}]", chart.left_id, chart.right_id);
-                        info!("   总数据量: {} 根K线", sym_data.data.len());
-                        info!("   Chart More Data: {}, Ready: {}", chart.more_data, chart.ready);
-
-                        // 验证数据范围是否正确
-                        if let (Some(first), Some(last)) = (sym_data.data.first(), sym_data.data.last()) {
-                            info!("\n数据范围验证:");
-                            info!("   首根 K线 ID: {} (应该 >= left_id: {})", first.id, chart.left_id);
-                            info!("   末根 K线 ID: {} (应该 <= right_id: {})", last.id, chart.right_id);
-
-                            if last.id <= chart.right_id && first.id >= chart.left_id {
-                                info!("   ✓ 数据范围正确！");
-                            } else {
-                                info!("   ❌ 数据范围异常！");
-                            }
-                        }
-                    }
-
-                    // 显示前几根和后几根K线
-                    if !sym_data.data.is_empty() {
-                        info!("\n前3根K线:");
-                        for k in sym_data.data.iter().take(3) {
-                            let dt = chrono::DateTime::from_timestamp(
-                                k.datetime / 1_000_000_000,
-                                (k.datetime % 1_000_000_000) as u32,
-                            )
-                            .unwrap();
-                            info!(
-                                "  [{}] {} O:{:.2} H:{:.2} L:{:.2} C:{:.2} V:{}",
-                                k.id,
-                                dt.format("%Y-%m-%d %H:%M:%S"),
-                                k.open,
-                                k.high,
-                                k.low,
-                                k.close,
-                                k.volume
-                            );
-                        }
-
-                        info!("\n后3根K线:");
-                        let start = if sym_data.data.len() > 3 {
-                            sym_data.data.len() - 3
-                        } else {
-                            0
-                        };
-                        for k in &sym_data.data[start..] {
-                            let dt = chrono::DateTime::from_timestamp(
-                                k.datetime / 1_000_000_000,
-                                (k.datetime % 1_000_000_000) as u32,
-                            )
-                            .unwrap();
-                            info!(
-                                "  [{}] {} O:{:.2} H:{:.2} L:{:.2} C:{:.2} V:{}",
-                                k.id,
-                                dt.format("%Y-%m-%d %H:%M:%S"),
-                                k.open,
-                                k.high,
-                                k.low,
-                                k.close,
-                                k.volume
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    })
-    .await;
-    // 所有回调注册完成后，启动监听（不会错过数据）
-    sub.start().await.expect("启动监听失败");
-    info!("✅ 订阅已启动");
-    // 等待数据传输完成
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    info!("\n历史 K线订阅示例结束");
-}
-
-/// 使用 focus_datetime + focus_position 订阅历史 K线
-#[allow(dead_code)]
-async fn history_kline_with_focus_example() {
-    info!("==================== 历史 K线订阅示例（使用 focus_datetime） ====================");
-
-    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
-    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
-
-    let mut client = Client::builder(&username, &password)
-        .log_level("info")
-        .view_width(500)
-        .build()
-        .await
-        .expect("创建客户端失败");
-
-    client.init_market().await.expect("初始化行情功能失败");
-
-    // 从指定时间点开始订阅（focus_position=1 表示从该时间向右扩展）
-    let focus_time = NaiveDate::from_ymd_opt(2025, 9, 1)
-        .unwrap()
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc();
-
-    let series_api = client.series().expect("获取 SeriesAPI 失败");
-    let sub = series_api
-        .kline_history_with_focus("SHFE.au2512", Duration::from_secs(60), 8000, focus_time, 1)
-        .await
-        .expect("订阅失败");
-
-    sub.on_update(move |data, info| {
-        if info.chart_ready
-            && let Some(sym_data) = data.get_symbol_klines("SHFE.au2512")
-        {
-            info!("\n🎉 历史数据传输完成！");
-            info!("   焦点时间: {}", focus_time.format("%Y-%m-%d %H:%M:%S"));
-
-            if let Some(single) = &data.single {
-                if let Some(chart) = &single.chart {
-                    info!("   范围: [{}, {}]", chart.left_id, chart.right_id);
-                }
-                info!("   数据量: {} 根K线", sym_data.data.len());
-            }
-        }
-    })
-    .await;
-    // 所有回调注册完成后，启动监听（不会错过数据）
-    sub.start().await.expect("启动监听失败");
-    info!("✅ 订阅已启动");
-
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    info!("\n历史 K线订阅示例结束");
-}
-
-async fn interface_live_test_example() {
-    let user = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
-    let pass = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
-    let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.cu2605".to_string());
-
-    let mut client = build_client(&user, &pass, ClientConfig::default())
-        .await
-        .expect("创建客户端失败");
-    client.init_market().await.expect("初始化行情功能失败");
-
-    match client.query_cont_quotes(Some("GFEX"), Some("lc"), None).await {
-        Ok(list) => info!("query_cont_quotes: {:?}", list),
-        Err(err) => info!("query_cont_quotes error: {}", err),
-    }
-
-    match client.query_symbol_info(&["GFEX.lc2605"]).await {
-        Ok(info_list) => info!("query_symbol_info: {:?}", info_list),
-        Err(err) => info!("query_symbol_info error: {}", err),
-    }
-
-    match client.query_symbol_settlement(&[&symbol], 1, None).await {
-        Ok(settlement) => info!("query_symbol_settlement: {:?}", settlement),
-        Err(err) => info!("query_symbol_settlement error: {}", err),
-    }
-
-    match client.query_symbol_ranking(&symbol, "VOLUME", 1, None, None).await {
-        Ok(ranking) => info!("query_symbol_ranking: {:?}", ranking),
-        Err(err) => info!("query_symbol_ranking error: {}", err),
-    }
-
-    match client.query_edb_data(&[1, 2], 5, Some("day"), Some("ffill")).await {
-        Ok(edb) => info!("query_edb_data: {:?}", edb),
-        Err(err) => info!("query_edb_data error: {}", err),
-    }
-
-    let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-    let end = NaiveDate::from_ymd_opt(2024, 1, 5).unwrap();
-    match client.get_trading_calendar(start, end).await {
-        Ok(calendar) => info!("get_trading_calendar: {:?}", calendar),
-        Err(err) => info!("get_trading_calendar error: {}", err),
-    }
-
-    match client.get_trading_status(&symbol).await {
-        Ok(rx) => {
-            let recv = tokio::time::timeout(Duration::from_secs(15), rx.recv()).await;
-            match recv {
-                Ok(Ok(status)) => info!("get_trading_status: {:?}", status),
-                Ok(Err(err)) => info!("get_trading_status recv error: {}", err),
-                Err(_) => info!("get_trading_status timeout"),
-            }
-        }
-        Err(err) => info!("get_trading_status error: {}", err),
-    }
-
-    client.close().await.expect("关闭客户端失败");
-}
-
 #[tokio::main]
-async fn main() {
-    init_logger_with_file("history=info,tqsdk_rs=debug", false);
+async fn main() -> Result<()> {
+    init_logger(&env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()), false);
 
-    interface_live_test_example().await;
-    let has_shinny_env = env::var("TQ_AUTH_USER").is_ok() && env::var("TQ_AUTH_PASS").is_ok();
-    if has_shinny_env {
-        history_kline_with_left_id_example().await;
+    let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
+    let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
+
+    let mut client = build_client(&username, &password).await?;
+    client.init_market().await?;
+
+    let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.au2512".to_string());
+    let duration = Duration::from_secs(60);
+    let left_kline_id = env::var("TQ_LEFT_KLINE_ID")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(105761);
+
+    let tqapi = client.tqapi();
+    let kline_ref = tqapi.kline(symbol.as_str(), duration);
+
+    let series = client.series()?;
+    let sub = series
+        .kline_history(symbol.as_str(), duration, 8000, left_kline_id)
+        .await?;
+    sub.start().await?;
+
+    let mut stream = pin!(sub.data_stream().await);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+
+        tokio::select! {
+            update = kline_ref.wait_update() => {
+                update?;
+                let k = kline_ref.load().await;
+                if k.id > 0 {
+                    info!(
+                        "Kline {} id={} O={:.2} H={:.2} L={:.2} C={:.2} V={}",
+                        kline_ref.symbol(),
+                        k.id,
+                        k.open,
+                        k.high,
+                        k.low,
+                        k.close,
+                        k.volume
+                    );
+                }
+            }
+            item = stream.next() => {
+                let Some(series_data) = item else { break; };
+                if let Some(single) = &series_data.single
+                    && let Some(chart) = &single.chart
+                    && chart.ready
+                {
+                    info!(
+                        "历史窗口同步完成 {} range=[{},{}] view_width={}",
+                        symbol,
+                        chart.left_id,
+                        chart.right_id,
+                        chart.view_width
+                    );
+                    if let (Some(first), Some(last)) = (single.data.first(), single.data.last()) {
+                        info!(
+                            "样本 first_id={} last_id={} count={}",
+                            first.id,
+                            last.id,
+                            single.data.len()
+                        );
+                    }
+                    break;
+                }
+            }
+        }
     }
 
-    info!("\n所有示例运行完成!");
-}
-
-/// 初始化日志系统：同时输出到终端和文件
-fn init_logger_with_file(level: &str, filter_crate_only: bool) {
-    use std::fs;
-    use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
-    // 创建日志目录
-    fs::create_dir_all("logs").expect("无法创建日志目录");
-
-    // 生成日志文件名（带时间戳）
-    let log_file = format!("logs/quote_{}.log", chrono::Local::now().format("%Y%m%d_%H%M%S"));
-    let file = fs::File::create(&log_file).expect("无法创建日志文件");
-
-    // 构建过滤器
-    let filter = if filter_crate_only {
-        EnvFilter::new(format!("tqsdk_rs={}", level))
-    } else {
-        EnvFilter::new(level)
-    };
-
-    // Layer 1: 终端输出（带颜色）
-    let console_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_line_number(true)
-        .with_file(true)
-        .with_ansi(true) // 启用颜色
-        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
-        .compact();
-
-    // Layer 2: 文件输出（无颜色）
-    let file_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_line_number(true)
-        .with_file(true)
-        .with_ansi(false) // 禁用颜色
-        .with_timer(fmt::time::OffsetTime::local_rfc_3339().expect("无法获取本地时区"))
-        .with_writer(file)
-        .compact();
-
-    // 组合两个 Layer
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console_layer)
-        .with(file_layer)
-        .init();
-
-    println!("日志已初始化，输出到终端和文件: {}", log_file);
+    sub.close().await?;
+    client.close().await?;
+    Ok(())
 }

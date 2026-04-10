@@ -13,6 +13,7 @@ mod tests;
 use crate::auth::Authenticator;
 use crate::datamanager::DataManager;
 use crate::ins::InsAPI;
+use crate::marketdata::{MarketDataState, TqApi};
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
 use crate::websocket::TqQuoteWebsocket;
@@ -78,9 +79,20 @@ pub struct Client {
     endpoints: EndpointConfig,
     auth: Arc<RwLock<dyn Authenticator>>,
     dm: Arc<DataManager>,
+    market_state: Arc<MarketDataState>,
     quotes_ws: Option<Arc<TqQuoteWebsocket>>,
     series_api: Option<Arc<SeriesAPI>>,
     ins_api: Option<Arc<InsAPI>>,
     market_active: AtomicBool,
     trade_sessions: Arc<RwLock<HashMap<String, Arc<TradeSession>>>>,
+}
+
+impl Client {
+    pub fn tqapi(&self) -> TqApi {
+        TqApi::new(Arc::clone(&self.market_state))
+    }
+
+    pub fn market_state(&self) -> Arc<MarketDataState> {
+        Arc::clone(&self.market_state)
+    }
 }

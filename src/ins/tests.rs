@@ -8,6 +8,7 @@ use crate::auth::Authenticator;
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
+use crate::marketdata::MarketDataState;
 use crate::websocket::WebSocketConfig;
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket};
 use crate::{Client, ClientConfig};
@@ -419,6 +420,7 @@ fn build_ins_api(features: &[&str]) -> InsAPI {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     let mut feature_set = HashSet::new();
@@ -441,6 +443,7 @@ fn build_ins_api_with_trading_status(features: &[&str]) -> (Arc<DataManager>, In
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     let ts_ws = Arc::new(TqTradingStatusWebsocket::new(

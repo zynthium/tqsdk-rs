@@ -2,6 +2,7 @@ use super::*;
 use crate::cache::data_series::DataSeriesCache;
 use crate::datamanager::DataManagerConfig;
 use crate::errors::{Result, TqError};
+use crate::marketdata::MarketDataState;
 use crate::types::{Kline, SeriesData, Tick, UpdateInfo};
 use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
@@ -145,6 +146,7 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig {
             message_queue_capacity,
             ..WebSocketConfig::default()
@@ -173,6 +175,7 @@ async fn kline_returns_unstarted_subscription() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
@@ -190,6 +193,7 @@ async fn start_failure_rolls_back_series_callback_registration() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
@@ -220,6 +224,7 @@ async fn kline_data_series_by_datetime_returns_cached_data_without_network() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
@@ -272,6 +277,7 @@ async fn kline_data_series_by_datetime_cache_miss_should_trigger_fetch_path() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
@@ -297,6 +303,7 @@ async fn tick_data_series_returns_cached_data_without_network() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
@@ -346,6 +353,7 @@ async fn tick_data_series_cache_miss_should_trigger_fetch_path() {
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();

@@ -1,6 +1,7 @@
 use super::*;
 use crate::auth::Authenticator;
 use crate::errors::{Result, TqError};
+use crate::marketdata::MarketDataState;
 use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
@@ -57,10 +58,12 @@ fn build_client_with_market() -> Client {
         HashMap::new(),
         crate::datamanager::DataManagerConfig::default(),
     ));
+    let market_state = Arc::new(MarketDataState::default());
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
     let quotes_ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
+        Arc::clone(&market_state),
         WebSocketConfig::default(),
     ));
     let series_api = Arc::new(SeriesAPI::new(
@@ -83,6 +86,7 @@ fn build_client_with_market() -> Client {
         endpoints: EndpointConfig::default(),
         auth,
         dm,
+        market_state,
         quotes_ws: Some(quotes_ws),
         series_api: Some(series_api),
         ins_api: Some(ins_api),
