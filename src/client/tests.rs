@@ -164,9 +164,30 @@ async fn create_trade_session_allows_td_url_override() {
             "password",
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade".to_string()),
+                reliable_events_max_retained: 32,
             },
         )
         .await;
 
     assert!(session.is_ok());
+}
+
+#[tokio::test]
+async fn create_trade_session_plumbs_reliable_event_retention() {
+    let client = build_client_with_market();
+
+    let session = client
+        .create_trade_session_with_options(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade".to_string()),
+                reliable_events_max_retained: 32,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(session.reliable_events_max_retained_for_test(), 32);
 }

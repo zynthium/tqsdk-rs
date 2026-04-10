@@ -1,9 +1,9 @@
 //! 交易操作示例
 //!
 //! 演示以下功能：
-//! - 实盘交易（回调模式）
-//! - 实盘交易（Channel 流式模式）
-//! - 混合模式（回调 + Channel）
+//! - 实盘交易（可靠事件流）
+//! - 账户 / 持仓快照查询
+//! - `wait_order_update_reliable()` 的推荐用法
 //!
 //! 说明：
 //! - 本示例聚焦底层 `TradeSession` 交易接口。
@@ -23,18 +23,15 @@ async fn build_client(username: &str, password: &str, config: ClientConfig) -> R
         .await
 }
 
-/// 使用回调模式的交易示例（实盘交易）
-async fn trade_callback_example() {
-    info!("==================== 交易回调模式示例（实盘）====================");
+/// 使用可靠事件流的交易示例（实盘交易）
+async fn trade_reliable_event_example() {
+    info!("==================== 交易可靠事件流示例（实盘）====================");
 
     let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
     let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
 
     let sim_user_id = env::var("SIMNOW_USER_0").expect("请设置 SIMNOW_USER_0 环境变量");
     let sim_password = env::var("SIMNOW_PASS_0").expect("请设置 SIMNOW_PASS_0 环境变量");
-
-    // let sim_user_id = "68823183".to_string();
-    // let sim_password = "zhangyu816".to_string();
 
     // 创建客户端
     let config = ClientConfig {
@@ -57,6 +54,7 @@ async fn trade_callback_example() {
                 &sim_password,
                 TradeSessionOptions {
                     td_url_override: (!td_url.is_empty()).then_some(td_url),
+                    reliable_events_max_retained: 8_192,
                 },
             )
             .await
@@ -93,39 +91,43 @@ async fn trade_callback_example() {
         })
         .await;
 
-    // 注册委托单更新回调
-    trader
-        .on_order(|order| {
-            info!(
-                "📝 订单 {}: {}.{} {} {}@{:.2}, 状态={}, 剩余={}",
-                order.order_id,
-                order.exchange_id,
-                order.instrument_id,
-                order.direction,
-                order.offset,
-                order.price(),
-                order.status,
-                order.volume_left
-            );
-        })
-        .await;
+    let mut order_events = trader.subscribe_order_events();
+    tokio::spawn(async move {
+        while let Ok(event) = order_events.recv().await {
+            if let TradeSessionEventKind::OrderUpdated { order_id, order } = event.kind {
+                info!(
+                    "📝 订单 {}: {}.{} {} {}@{:.2}, 状态={}, 剩余={}",
+                    order_id,
+                    order.exchange_id,
+                    order.instrument_id,
+                    order.direction,
+                    order.offset,
+                    order.price(),
+                    order.status,
+                    order.volume_left
+                );
+            }
+        }
+    });
 
-    // 注册成交回调
-    trader
-        .on_trade(|trade| {
-            info!(
-                "✅ 成交 {}: {}.{} {} {}@{:.2} x{}, 手续费={:.2}",
-                trade.trade_id,
-                trade.exchange_id,
-                trade.instrument_id,
-                trade.direction,
-                trade.offset,
-                trade.price,
-                trade.volume,
-                trade.commission
-            );
-        })
-        .await;
+    let mut trade_events = trader.subscribe_trade_events();
+    tokio::spawn(async move {
+        while let Ok(event) = trade_events.recv().await {
+            if let TradeSessionEventKind::TradeCreated { trade_id, trade } = event.kind {
+                info!(
+                    "✅ 成交 {}: {}.{} {} {}@{:.2} x{}, 手续费={:.2}",
+                    trade_id,
+                    trade.exchange_id,
+                    trade.instrument_id,
+                    trade.direction,
+                    trade.offset,
+                    trade.price,
+                    trade.volume,
+                    trade.commission
+                );
+            }
+        }
+    });
 
     trader
         .on_notification(|notification| {
@@ -133,7 +135,7 @@ async fn trade_callback_example() {
         })
         .await;
 
-    // 所有回调注册完毕后，再连接交易服务器（避免丢失消息）
+    // 所有回调和事件流注册完毕后，再连接交易服务器（避免丢失订阅后的更新）
     info!("连接交易服务器...");
     trader.connect().await.expect("连接失败");
 
@@ -175,12 +177,13 @@ async fn trade_callback_example() {
     info!("\n准备下单...");
     let order_id = trader.insert_order(&InsertOrderRequest {
         symbol: "SHFE.au2512".to_string(),
-        direction: Direction::Buy,
-        offset: Offset::Open,
-        price_type: PriceType::Limit,
+        exchange_id: None,
+        instrument_id: None,
+        direction: "BUY".to_string(),
+        offset: "OPEN".to_string(),
+        price_type: "LIMIT".to_string(),
         limit_price: 500.0,
         volume: 1,
-        ..Default::default()
     }).await;
 
     if let Ok(order_id) = order_id {
@@ -199,10 +202,16 @@ async fn trade_callback_example() {
     }
     */
 
+    /*
+    // 如果策略只关心某个订单后续是否发生了任何状态变化或成交，
+    // 可以直接等待可靠事件而不是自己拼接 channel/select。
+    trader.wait_order_update_reliable(&order_id).await.unwrap();
+    */
+
     // 运行 30 秒
     info!("\n监听交易数据更新...");
     tokio::time::sleep(Duration::from_secs(300)).await;
-    info!("回调模式示例结束\n");
+    info!("可靠事件流示例结束\n");
 
     info!("开始关闭交易会话...");
     trader.close().await.ok();
@@ -219,7 +228,7 @@ async fn main() {
     tqsdk_rs::init_logger("debug", false);
 
     // 运行交易示例
-    trade_callback_example().await; // 实盘交易 - 回调模式
+    trade_reliable_event_example().await;
 
     info!("\n交易示例运行完成!");
 }

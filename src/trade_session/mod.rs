@@ -3,6 +3,7 @@
 //! 实现实盘交易功能
 
 mod core;
+mod events;
 mod ops;
 mod watch;
 
@@ -10,7 +11,7 @@ mod watch;
 mod tests;
 
 use crate::datamanager::DataManager;
-use crate::types::{Account, Notification, Order, Position, PositionUpdate, Trade};
+use crate::types::{Account, Notification, Position, PositionUpdate};
 use crate::websocket::TqTradeWebsocket;
 use async_channel::{Receiver, Sender};
 use std::sync::Arc;
@@ -19,10 +20,14 @@ use tokio::sync::RwLock;
 
 type AccountCallback = Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>;
 type PositionCallback = Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>;
-type OrderCallback = Arc<RwLock<Option<Arc<dyn Fn(Order) + Send + Sync>>>>;
-type TradeCallback = Arc<RwLock<Option<Arc<dyn Fn(Trade) + Send + Sync>>>>;
 type NotificationCallback = Arc<RwLock<Option<Arc<dyn Fn(Notification) + Send + Sync>>>>;
 type ErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>;
+
+pub(crate) use events::TradeEventHub;
+pub use events::{
+    OrderEventStream, TradeEventRecvError, TradeEventStream, TradeOnlyEventStream, TradeSessionEvent,
+    TradeSessionEventKind,
+};
 
 /// 交易会话
 #[allow(unused)]
@@ -32,22 +37,17 @@ pub struct TradeSession {
     password: String,
     dm: Arc<DataManager>,
     ws: Arc<TqTradeWebsocket>,
+    trade_events: Arc<TradeEventHub>,
 
     account_tx: Sender<Account>,
     account_rx: Receiver<Account>,
     position_tx: Sender<PositionUpdate>,
     position_rx: Receiver<PositionUpdate>,
-    order_tx: Sender<Order>,
-    order_rx: Receiver<Order>,
-    trade_tx: Sender<Trade>,
-    trade_rx: Receiver<Trade>,
     notification_tx: Sender<Notification>,
     notification_rx: Receiver<Notification>,
 
     on_account: AccountCallback,
     on_position: PositionCallback,
-    on_order: OrderCallback,
-    on_trade: TradeCallback,
     on_notification: NotificationCallback,
     on_error: ErrorCallback,
 

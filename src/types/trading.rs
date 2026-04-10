@@ -210,6 +210,29 @@ impl Order {
     }
 }
 
+impl PartialEq for Order {
+    fn eq(&self, other: &Self) -> bool {
+        self.seqno == other.seqno
+            && self.user_id == other.user_id
+            && self.order_id == other.order_id
+            && self.exchange_id == other.exchange_id
+            && self.instrument_id == other.instrument_id
+            && self.direction == other.direction
+            && self.offset == other.offset
+            && self.volume_orign == other.volume_orign
+            && self.price_type == other.price_type
+            && self.limit_price == other.limit_price
+            && self.time_condition == other.time_condition
+            && self.volume_condition == other.volume_condition
+            && self.insert_date_time == other.insert_date_time
+            && self.exchange_order_id == other.exchange_order_id
+            && self.status == other.status
+            && self.volume_left == other.volume_left
+            && self.frozen_margin == other.frozen_margin
+            && self.last_msg == other.last_msg
+    }
+}
+
 /// 成交记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trade {
@@ -243,6 +266,24 @@ pub struct Trade {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "_epoch")]
     pub epoch: Option<i64>,
+}
+
+impl PartialEq for Trade {
+    fn eq(&self, other: &Self) -> bool {
+        self.seqno == other.seqno
+            && self.user_id == other.user_id
+            && self.trade_id == other.trade_id
+            && self.exchange_id == other.exchange_id
+            && self.instrument_id == other.instrument_id
+            && self.order_id == other.order_id
+            && self.exchange_trade_id == other.exchange_trade_id
+            && self.direction == other.direction
+            && self.offset == other.offset
+            && self.volume == other.volume
+            && self.price == other.price
+            && self.trade_date_time == other.trade_date_time
+            && self.commission == other.commission
+    }
 }
 
 /// 通知事件

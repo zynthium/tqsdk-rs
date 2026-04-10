@@ -108,29 +108,10 @@ impl ExecutionAdapter for LiveExecutionAdapter {
 
     async fn wait_order_update(&self, account_key: &str, order_id: &str) -> RuntimeResult<()> {
         let session = self.session(account_key).await?;
-        let order_rx = session.order_channel();
-        let trade_rx = session.trade_channel();
-
-        loop {
-            tokio::select! {
-                order = order_rx.recv() => {
-                    let order = order.map_err(|_| RuntimeError::AdapterChannelClosed {
-                        resource: "trade session order channel",
-                    })?;
-                    if order.order_id == order_id {
-                        return Ok(());
-                    }
-                }
-                trade = trade_rx.recv() => {
-                    let trade = trade.map_err(|_| RuntimeError::AdapterChannelClosed {
-                        resource: "trade session trade channel",
-                    })?;
-                    if trade.order_id == order_id {
-                        return Ok(());
-                    }
-                }
-            }
-        }
+        session
+            .wait_order_update_reliable(order_id)
+            .await
+            .map_err(RuntimeError::Tq)
     }
 }
 

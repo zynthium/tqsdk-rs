@@ -102,7 +102,10 @@ pub use runtime::{
     TargetPosSchedulerConfig, TargetPosSchedulerHandle, TqRuntime, VolumeSplitPolicy,
 };
 pub use series::{SeriesAPI, SeriesCachePolicy, SeriesSubscription};
-pub use trade_session::TradeSession;
+pub use trade_session::{
+    OrderEventStream, TradeEventRecvError, TradeEventStream, TradeOnlyEventStream, TradeSession, TradeSessionEvent,
+    TradeSessionEventKind,
+};
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
 pub use websocket::TqWebsocket;
 

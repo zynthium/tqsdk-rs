@@ -1,7 +1,10 @@
-use super::{ErrorCallback, NotificationCallback, TradeSession};
+use super::{
+    ErrorCallback, NotificationCallback, OrderEventStream, TradeEventHub, TradeEventRecvError, TradeEventStream,
+    TradeOnlyEventStream, TradeSession, TradeSessionEventKind,
+};
 use crate::datamanager::DataManager;
-use crate::errors::Result;
-use crate::types::{Account, Notification, Order, Position, PositionUpdate, Trade};
+use crate::errors::{Result, TqError};
+use crate::types::{Account, Notification, Position, PositionUpdate};
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
 use async_channel::{Receiver, TrySendError, bounded};
 use std::sync::Arc;
@@ -18,13 +21,13 @@ impl TradeSession {
         dm: Arc<DataManager>,
         ws_url: String,
         ws_config: WebSocketConfig,
+        reliable_events_max_retained: usize,
     ) -> Self {
         let trade_channel_capacity = ws_config.message_queue_capacity.max(1);
+        let trade_events = Arc::new(TradeEventHub::new(reliable_events_max_retained));
 
         let (account_tx, account_rx) = bounded(trade_channel_capacity);
         let (position_tx, position_rx) = bounded(trade_channel_capacity);
-        let (order_tx, order_rx) = bounded(trade_channel_capacity);
-        let (trade_tx, trade_rx) = bounded(trade_channel_capacity);
         let (notification_tx, notification_rx) = bounded(trade_channel_capacity);
 
         let ws = Arc::new(TqTradeWebsocket::new(ws_url, Arc::clone(&dm), ws_config));
@@ -70,20 +73,15 @@ impl TradeSession {
             password,
             dm,
             ws,
+            trade_events,
             account_tx,
             account_rx,
             position_tx,
             position_rx,
-            order_tx,
-            order_rx,
-            trade_tx,
-            trade_rx,
             notification_tx,
             notification_rx,
             on_account: Arc::new(RwLock::new(None)),
             on_position: Arc::new(RwLock::new(None)),
-            on_order: Arc::new(RwLock::new(None)),
-            on_trade: Arc::new(RwLock::new(None)),
             on_notification,
             on_error,
             logged_in: Arc::new(AtomicBool::new(false)),
@@ -137,24 +135,6 @@ impl TradeSession {
         *guard = Some(Arc::new(handler));
     }
 
-    /// 注册委托单更新回调
-    pub async fn on_order<F>(&self, handler: F)
-    where
-        F: Fn(Order) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_order.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
-    /// 注册成交记录回调
-    pub async fn on_trade<F>(&self, handler: F)
-    where
-        F: Fn(Trade) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_trade.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
     /// 注册通知回调
     pub async fn on_notification<F>(&self, handler: F)
     where
@@ -183,18 +163,55 @@ impl TradeSession {
         self.position_rx.clone()
     }
 
-    /// 获取委托单更新 Channel（克隆接收端）
-    pub fn order_channel(&self) -> Receiver<Order> {
-        self.order_rx.clone()
+    /// 订阅可靠交易事件流（仅接收订阅之后产生的事件）
+    pub fn subscribe_events(&self) -> TradeEventStream {
+        self.trade_events.subscribe_tail()
     }
 
-    /// 获取成交记录 Channel（克隆接收端）
-    pub fn trade_channel(&self) -> Receiver<Trade> {
-        self.trade_rx.clone()
+    /// 仅订阅订单状态变更事件
+    pub fn subscribe_order_events(&self) -> OrderEventStream {
+        self.trade_events.subscribe_orders()
+    }
+
+    /// 仅订阅成交创建事件
+    pub fn subscribe_trade_events(&self) -> TradeOnlyEventStream {
+        self.trade_events.subscribe_trades()
+    }
+
+    /// 等待指定订单出现后续可靠更新
+    pub async fn wait_order_update_reliable(&self, order_id: &str) -> Result<()> {
+        let mut stream = self.subscribe_events();
+        loop {
+            match stream.recv().await {
+                Ok(event) => match event.kind {
+                    TradeSessionEventKind::OrderUpdated {
+                        order_id: updated_order_id,
+                        ..
+                    } if updated_order_id == order_id => return Ok(()),
+                    TradeSessionEventKind::TradeCreated { trade, .. } if trade.order_id == order_id => {
+                        return Ok(());
+                    }
+                    _ => {}
+                },
+                Err(TradeEventRecvError::Closed) => {
+                    return Err(TqError::InternalError("trade event stream closed".to_string()));
+                }
+                Err(TradeEventRecvError::Lagged { missed_before_seq }) => {
+                    return Err(TqError::InternalError(format!(
+                        "trade event stream lagged before seq {missed_before_seq}"
+                    )));
+                }
+            }
+        }
     }
 
     /// 获取通知 Channel（克隆接收端）
     pub fn notification_channel(&self) -> Receiver<Notification> {
         self.notification_rx.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reliable_events_max_retained_for_test(&self) -> usize {
+        self.trade_events.max_retained_events_for_test()
     }
 }

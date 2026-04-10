@@ -1,4 +1,4 @@
-use super::{OrderCallback, PositionCallback, TradeCallback, TradeSession};
+use super::{PositionCallback, TradeEventHub, TradeSession};
 use crate::datamanager::DataManager;
 use crate::types::{Order, PositionUpdate, Trade};
 use async_channel::{Sender, TrySendError};
@@ -15,12 +15,9 @@ impl TradeSession {
         let running = Arc::clone(&self.running);
         let account_tx = self.account_tx.clone();
         let position_tx = self.position_tx.clone();
-        let order_tx = self.order_tx.clone();
-        let trade_tx = self.trade_tx.clone();
+        let trade_events = Arc::clone(&self.trade_events);
         let on_account = Arc::clone(&self.on_account);
         let on_position = Arc::clone(&self.on_position);
-        let on_order = Arc::clone(&self.on_order);
-        let on_trade = Arc::clone(&self.on_trade);
         let worker_running = Arc::new(AtomicBool::new(false));
         let worker_dirty = Arc::new(AtomicBool::new(false));
         let last_processed_epoch = Arc::new(std::sync::Mutex::new(0i64));
@@ -39,12 +36,9 @@ impl TradeSession {
             let running = Arc::clone(&running);
             let account_tx = account_tx.clone();
             let position_tx = position_tx.clone();
-            let order_tx = order_tx.clone();
-            let trade_tx = trade_tx.clone();
+            let trade_events = Arc::clone(&trade_events);
             let on_account = Arc::clone(&on_account);
             let on_position = Arc::clone(&on_position);
-            let on_order = Arc::clone(&on_order);
-            let on_trade = Arc::clone(&on_trade);
             let worker_running = Arc::clone(&worker_running);
             let worker_dirty = Arc::clone(&worker_dirty);
             let last_processed_epoch = Arc::clone(&last_processed_epoch);
@@ -95,11 +89,11 @@ impl TradeSession {
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_epoch {
-                            Self::process_order_update(&dm, &user_id, &order_tx, &on_order, last_epoch).await;
+                            Self::process_order_update(&dm, &user_id, &trade_events, last_epoch).await;
                         }
 
                         if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_epoch {
-                            Self::process_trade_update(&dm, &user_id, &trade_tx, &on_trade, last_epoch).await;
+                            Self::process_trade_update(&dm, &user_id, &trade_events, last_epoch).await;
                         }
 
                         *last_processed_epoch.lock().unwrap() = current_global_epoch;
@@ -167,8 +161,7 @@ impl TradeSession {
     pub(crate) async fn process_order_update(
         dm: &Arc<DataManager>,
         user_id: &str,
-        order_tx: &Sender<Order>,
-        on_order: &OrderCallback,
+        trade_events: &Arc<TradeEventHub>,
         last_epoch: i64,
     ) {
         if let Some(serde_json::Value::Object(orders_map)) = dm.get_by_path(&["trade", user_id, "orders"]) {
@@ -177,23 +170,16 @@ impl TradeSession {
                     continue;
                 }
 
-                if dm.get_path_epoch(&["trade", user_id, "orders", order_id]) > last_epoch {
-                    if let Ok(order) = serde_json::from_value::<Order>(order_data.clone()) {
+                if dm.get_path_epoch(&["trade", user_id, "orders", order_id]) <= last_epoch {
+                    continue;
+                }
+
+                match serde_json::from_value::<Order>(order_data.clone()) {
+                    Ok(order) => {
                         debug!("订单更新: order_id={}", order_id);
-
-                        match order_tx.try_send(order.clone()) {
-                            Ok(()) => {}
-                            Err(TrySendError::Full(_)) => {
-                                warn!("TradeSession 订单队列已满，丢弃一次更新");
-                            }
-                            Err(TrySendError::Closed(_)) => {}
-                        }
-
-                        let callback = on_order.read().await.clone();
-                        if let Some(callback) = callback {
-                            callback(order);
-                        }
-                    } else {
+                        let _ = trade_events.publish_order(order_id.clone(), order);
+                    }
+                    Err(_) => {
                         warn!("订单数据解析失败: order_id={}", order_id);
                     }
                 }
@@ -202,11 +188,10 @@ impl TradeSession {
     }
 
     /// 处理成交更新
-    async fn process_trade_update(
+    pub(crate) async fn process_trade_update(
         dm: &Arc<DataManager>,
         user_id: &str,
-        trade_tx: &Sender<Trade>,
-        on_trade: &TradeCallback,
+        trade_events: &Arc<TradeEventHub>,
         last_epoch: i64,
     ) {
         if let Some(serde_json::Value::Object(trades_map)) = dm.get_by_path(&["trade", user_id, "trades"]) {
@@ -215,22 +200,17 @@ impl TradeSession {
                     continue;
                 }
 
-                if dm.get_path_epoch(&["trade", user_id, "trades", trade_id]) > last_epoch
-                    && let Ok(trade) = serde_json::from_value::<Trade>(trade_data.clone())
-                {
-                    debug!("成交更新: trade_id={}", trade_id);
+                if dm.get_path_epoch(&["trade", user_id, "trades", trade_id]) <= last_epoch {
+                    continue;
+                }
 
-                    match trade_tx.try_send(trade.clone()) {
-                        Ok(()) => {}
-                        Err(TrySendError::Full(_)) => {
-                            warn!("TradeSession 成交队列已满，丢弃一次更新");
-                        }
-                        Err(TrySendError::Closed(_)) => {}
+                match serde_json::from_value::<Trade>(trade_data.clone()) {
+                    Ok(trade) => {
+                        debug!("成交更新: trade_id={}", trade_id);
+                        let _ = trade_events.publish_trade(trade_id.clone(), trade);
                     }
-
-                    let callback = on_trade.read().await.clone();
-                    if let Some(callback) = callback {
-                        callback(trade);
+                    Err(_) => {
+                        warn!("成交数据解析失败: trade_id={}", trade_id);
                     }
                 }
             }

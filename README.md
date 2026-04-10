@@ -393,15 +393,7 @@ quote_sub.start().await?;
 #### 创建交易会话
 
 ```rust
-let session = client
-    .create_trade_session("simnow", &sim_user_id, &sim_password)
-    .await?;
-```
-
-如需覆盖交易地址，可以使用 `TradeSessionOptions`：
-
-```rust
-use tqsdk_rs::TradeSessionOptions;
+use tqsdk_rs::{TradeSessionEventKind, TradeSessionOptions};
 
 let session = client
     .create_trade_session_with_options(
@@ -410,6 +402,7 @@ let session = client
         &sim_password,
         TradeSessionOptions {
             td_url_override: Some("wss://example.com/trade".to_string()),
+            reliable_events_max_retained: 8_192,
         },
     )
     .await?;
@@ -430,11 +423,23 @@ session
     })
     .await;
 
-session
-    .on_order(|order| {
-        println!("订单 {} 状态={}", order.order_id, order.status);
-    })
-    .await;
+let mut order_events = session.subscribe_order_events();
+tokio::spawn(async move {
+    while let Ok(event) = order_events.recv().await {
+        if let TradeSessionEventKind::OrderUpdated { order_id, order } = event.kind {
+            println!("订单 {} 状态={}", order_id, order.status);
+        }
+    }
+});
+
+let mut trade_events = session.subscribe_trade_events();
+tokio::spawn(async move {
+    while let Ok(event) = trade_events.recv().await {
+        if let TradeSessionEventKind::TradeCreated { trade_id, trade } = event.kind {
+            println!("成交 {} 对应订单={}", trade_id, trade.order_id);
+        }
+    }
+});
 
 session.connect().await?;
 
@@ -448,7 +453,10 @@ while !session.is_ready() {
 
 说明：
 
-- 交易会话同样推荐先注册所有回调，再 `connect()`。
+- 交易会话同样推荐先注册账户/持仓回调并先订阅可靠事件流，再 `connect()`。
+- `order` / `trade` 的 public canonical API 是 `subscribe_events()` / `subscribe_order_events()` / `subscribe_trade_events()`。
+- 可靠事件流只会看到订阅之后产生的事件；账户、持仓仍然按最新快照读取或回调消费。
+- 需要等待某个订单出现后续更新时，优先使用 `wait_order_update_reliable(order_id)`。
 - `connect()` 失败时会清理本次连接产生的后台状态，不会继续残留重连任务。
 
 #### 下单操作

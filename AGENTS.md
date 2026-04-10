@@ -59,8 +59,9 @@ examples/
 - WebSocket 层使用 I/O actor 模式，避免跨 `await` 持锁。
 - `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
 - `QuoteSubscription` 和 `SeriesSubscription` 默认是延迟启动的，创建后需要显式 `start()`。
+- `TradeSession` 对外分为两层：账户/持仓等仍以最新状态读取为主，`order` / `trade` 则使用可靠事件流 API。
 - 重连逻辑包含完整性校验，不要为了“简化”而破坏临时缓冲再合并的策略。
-- 多个通道已改为有界缓冲，慢消费者下允许丢弃旧更新，这是刻意设计，不是 bug。
+- 行情与非关键状态更新存在有界缓冲和丢弃策略；但 `TradeSession` 的 `order` / `trade` 公开接口不再走 best-effort channel。
 
 ## 环境准备
 
@@ -133,9 +134,10 @@ examples/
 ## 修改代码时的工作准则
 
 - 优先保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
-- 修改公开 API 时，同时检查 `README.md`、示例代码、`prelude` re-export 是否需要同步。
+- 修改公开 API 时，同时检查 `README.md`、`AGENTS.md`、示例代码、`prelude` re-export 是否需要同步。
 - 修改 `DataManager` merge/query/watch 语义时，要特别关注向后兼容性；这部分会影响多个上层模块。
 - 修改重连、背压、消息队列时，要明确说明是否改变了丢弃策略、顺序语义或完整性保证。
+- `TradeSession` 的 `order` / `trade` 事件以可靠事件流为 canonical API；不要新增或恢复 `on_order`、`on_trade`、`order_channel`、`trade_channel` 这类 best-effort public surface。
 - 新增错误类型时，优先复用 `TqError`，保持错误边界集中。
 - 示例代码是对外接口的一部分；如果 API 变了，示例必须同步更新。
 

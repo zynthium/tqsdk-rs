@@ -338,6 +338,7 @@ impl Client {
             Arc::clone(&self.dm),
             td_url,
             ws_config,
+            options.reliable_events_max_retained,
         ));
 
         let key = format!("{}:{}", broker, user_id);

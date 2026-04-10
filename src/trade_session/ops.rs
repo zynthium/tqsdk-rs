@@ -196,6 +196,7 @@ impl TradeSession {
         info!("关闭交易会话");
         self.logged_in.store(false, Ordering::SeqCst);
         self.detach_data_callback();
+        self.trade_events.close();
         self.ws.close().await?;
         Ok(())
     }

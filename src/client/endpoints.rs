@@ -44,7 +44,17 @@ impl Default for EndpointConfig {
 }
 
 /// 交易会话选项
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TradeSessionOptions {
     pub td_url_override: Option<String>,
+    pub reliable_events_max_retained: usize,
+}
+
+impl Default for TradeSessionOptions {
+    fn default() -> Self {
+        Self {
+            td_url_override: None,
+            reliable_events_max_retained: 8_192,
+        }
+    }
 }
