@@ -111,6 +111,7 @@ tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3" }
 
 ```rust
 use std::env;
+use std::time::Duration;
 use tqsdk_rs::prelude::*;
 
 #[tokio::main]
@@ -125,16 +126,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     client.init_market().await?;
 
-    let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-
-    quote_sub
-        .on_quote(|quote| {
-            println!("{} 最新价 = {}", quote.instrument_id, quote.last_price);
-        })
-        .await;
-
+    let tqapi = client.tqapi();
+    let symbol = "SHFE.au2602";
+    
+    let quote_sub = client.subscribe_quote(&[symbol]).await?;
     quote_sub.start().await?;
-    tokio::signal::ctrl_c().await?;
+
+    let quote_ref = tqapi.quote(symbol);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+        
+        quote_ref.wait_update().await?;
+        let q = quote_ref.load().await;
+        println!("{} 最新价 = {}", q.instrument_id, q.last_price);
+    }
+
     Ok(())
 }
 ```
@@ -301,21 +311,73 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 核心功能详解
 
-### 1. 行情订阅
+### 1. 行情数据 (状态驱动 API - 推荐)
+
+`tqsdk-rs` 提供高性能的状态驱动行情订阅。通过 `TqApi` 获取数据引用（`QuoteRef`/`KlineRef`/`TickRef`），并使用 `wait_update()` 驱动策略循环。
 
 #### Quote 订阅 - 实时行情
+
+```rust
+let tqapi = client.tqapi();
+let symbol = "SHFE.au2602";
+
+let quote_sub = client.subscribe_quote(&[symbol]).await?;
+quote_sub.start().await?;
+
+let quote_ref = tqapi.quote(symbol);
+
+loop {
+    // 等待任意数据更新，并获取本次变化的集合
+    let updates = tqapi.wait_update_and_drain().await?;
+    
+    if updates.quotes.contains(&symbol.into()) {
+        let q = quote_ref.load().await;
+        println!("{} 最新价: {}", q.instrument_id, q.last_price);
+    }
+}
+```
+
+#### K 线订阅 - 单合约
+
+```rust
+use std::time::Duration;
+
+let tqapi = client.tqapi();
+let symbol = "SHFE.au2602";
+let duration = Duration::from_secs(60);
+
+let series_api = client.series()?;
+let sub = series_api.kline(symbol, duration, 300).await?;
+sub.start().await?;
+
+let kline_ref = tqapi.kline(symbol, duration);
+
+loop {
+    kline_ref.wait_update().await?;
+    let k = kline_ref.load().await;
+    println!("最新 K 线: id={} close={}", k.id, k.close);
+}
+```
+
+### 2. 回调与通道 (兼容模式)
+
+虽然推荐使用状态驱动 API，但 `tqsdk-rs` 仍保留了回调和通道模式，适用于简单的异步分发场景。
+
+#### Quote 回调与通道
 
 ```rust
 let quote_sub = client
     .subscribe_quote(&["SHFE.au2602", "SHFE.ag2512"])
     .await?;
 
+// 回调模式
 quote_sub
     .on_quote(|quote| {
         println!("{} 最新价: {}", quote.instrument_id, quote.last_price);
     })
     .await;
 
+// 通道模式
 let quote_rx = quote_sub.quote_channel();
 tokio::spawn(async move {
     while let Ok(quote) = quote_rx.recv().await {
@@ -324,146 +386,6 @@ tokio::spawn(async move {
 });
 
 quote_sub.start().await?;
-quote_sub.add_symbols(&["DCE.m2505"]).await?;
-quote_sub.remove_symbols(&["SHFE.ag2512"]).await?;
-```
-
-说明：
-
-- 先注册回调，再 `start()`。
-- `quote_channel()` 现在是有界通道；消费者长期跟不上时，旧更新可能被丢弃。
-- 默认容量由 `ClientBuilder::message_queue_capacity()` 控制。
-
-#### K 线订阅 - 单合约
-
-```rust
-use std::time::Duration;
-
-let series_api = client.series()?;
-let sub = series_api
-    .kline("SHFE.au2602", Duration::from_secs(60), 300)
-    .await?;
-
-sub.on_update(|data, info| {
-    if let Some(klines) = data.get_symbol_klines("SHFE.au2602") {
-        if info.has_new_bar && let Some(last) = klines.data.last() {
-            println!("新 K 线: id={} close={}", last.id, last.close);
-        }
-
-        if info.has_bar_update {
-            println!("最新 bar 已更新，当前总数={}", klines.data.len());
-        }
-    }
-})
-.await;
-
-sub.start().await?;
-```
-
-补充：
-
-- `SeriesSubscription::on_update()` 仍然是单回调语义，后注册会覆盖先注册。
-- `SeriesSubscription::data_stream()` 现在是独立流接口，可与 `on_update()` 同时使用。
-- `data_stream()` 也是有界缓冲；如果处理速度跟不上，会丢弃部分更新并输出告警。
-
-#### 多合约对齐 K 线
-
-```rust
-use std::time::Duration;
-
-let symbols = vec!["SHFE.au2602".to_string(), "SHFE.ag2512".to_string()];
-let sub = series_api.kline(&symbols, Duration::from_secs(60), 120).await?;
-
-sub.on_update(|data, info| {
-    if info.has_new_bar && let Some(multi) = &data.multi {
-        println!("主合约: {}", multi.main_symbol);
-        if let Some(row) = multi.data.last() {
-            for (symbol, kline) in &row.klines {
-                println!("{} close={}", symbol, kline.close);
-            }
-        }
-    }
-})
-.await;
-
-sub.start().await?;
-```
-
-#### Tick 订阅 - 逐笔成交
-
-```rust
-let sub = series_api.tick("SHFE.au2602", 200).await?;
-
-sub.on_update(|data, _info| {
-    if let Some(tick_data) = &data.tick_data
-        && let Some(last_tick) = tick_data.data.last()
-    {
-        println!(
-            "tick id={} last_price={} volume={}",
-            last_tick.id, last_tick.last_price, last_tick.volume
-        );
-    }
-})
-.await;
-
-sub.start().await?;
-```
-
-#### 历史数据获取
-
-```rust
-use chrono::Utc;
-use std::time::Duration;
-
-let sub = series_api
-    .kline_history("SHFE.au2602", Duration::from_secs(60), 8000, 105761)
-    .await?;
-
-sub.on_update(|data, info| {
-    if info.chart_ready && let Some(klines) = data.get_symbol_klines("SHFE.au2602") {
-        println!("历史数据加载完成，共 {} 根", klines.data.len());
-    }
-})
-.await;
-
-sub.start().await?;
-
-let focus_time = Utc::now() - chrono::Duration::days(7);
-let sub_with_focus = series_api
-    .kline_history_with_focus(
-        "SHFE.au2602",
-        Duration::from_secs(60),
-        1000,
-        focus_time,
-        50,
-    )
-    .await?;
-
-sub_with_focus.start().await?;
-```
-
-常用场景：
-
-- `kline_history(..., left_kline_id)`：按已知 K 线 ID 精确回溯。
-- `kline_history_with_focus(..., focus_datetime, focus_position)`：按时间定位，便于围绕某个时间点取窗口。
-- `kline_data_series(..., start_dt, end_dt)`：按时间区间获取 K 线快照，语义为 `[start_dt, end_dt)`。
-- `tick_data_series(..., start_dt, end_dt)`：按时间区间获取 Tick 快照，语义为 `[start_dt, end_dt)`。
-- 当启用 Series 磁盘缓存时，Rust SDK 会使用与官方 Python SDK 兼容的 `~/.tqsdk/data_series_1` 缓存目录，可直接共用缓存文件。
-
-```rust
-use chrono::Utc;
-
-let end_dt = Utc::now();
-let start_dt = end_dt - chrono::Duration::hours(2);
-let snapshot_by_dt = series_api
-    .kline_data_series("SHFE.au2602", Duration::from_secs(60), start_dt, end_dt)
-    .await?;
-println!("时间窗口快照条数: {}", snapshot_by_dt.len());
-
-let tick_snapshot = series_api
-    .tick_data_series("SHFE.au2602", start_dt, end_dt)
-    .await?;
-println!("Tick 快照条数: {}", tick_snapshot.len());
 ```
 
 ### 2. 交易功能

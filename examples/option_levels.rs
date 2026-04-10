@@ -39,16 +39,15 @@ async fn main() -> Result<()> {
     let mut client = build_client(&user, &pass, config).await?;
     client.init_market().await?;
 
+    let tqapi = client.tqapi();
     let quote_sub = client.subscribe_quote(&[underlying.as_str()]).await?;
-    let quote_rx = quote_sub.quote_channel();
+    let quote_ref = tqapi.quote(underlying.as_str());
     quote_sub.start().await?;
 
     let underlying_price = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
-            let q = quote_rx
-                .recv()
-                .await
-                .map_err(|_| TqError::Other("quote channel closed".to_string()))?;
+            quote_ref.wait_update().await?;
+            let q = quote_ref.load().await;
             if q.instrument_id == underlying && q.last_price.is_finite() && q.last_price > 0.0 {
                 return Ok::<f64, TqError>(q.last_price);
             }
