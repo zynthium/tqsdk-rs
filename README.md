@@ -16,7 +16,7 @@
 - 背压可控：关键通道与离线队列已改为有界缓冲，避免慢消费者无限堆积内存。
 - 零拷贝回调：大量更新路径通过 `Arc<T>` 分发，降低多消费者场景开销。
 - Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
-- 回测支持：支持历史回放、回测推进和 DataManager 直接读取。
+- 回测支持：推荐使用 `ReplaySession` 做历史回放、回测推进与 runtime 驱动，也保留 legacy `BacktestHandle` 兼容路径。
 
 ## 功能模块
 
@@ -50,7 +50,7 @@
 
 - `ClientBuilder` 配置式构建。
 - `tracing` 日志集成和自定义 Layer。
-- 7 个示例程序覆盖主要使用路径。
+- 8 个示例程序覆盖主要使用路径。
 
 ## 近期修复与更新
 
@@ -220,24 +220,47 @@ async fn demo_scheduler(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
 }
 ```
 
-### 回测 Runtime 调仓
+### ReplaySession 回测（推荐）
 
 ```rust
-use std::sync::Arc;
+use std::time::Duration;
 use tqsdk_rs::prelude::*;
-use tqsdk_rs::runtime::LiveMarketAdapter;
 
-fn build_backtest_runtime(backtest: &BacktestHandle) -> Arc<TqRuntime> {
-    Arc::new(TqRuntime::with_id(
-        "backtest-runtime",
-        RuntimeMode::Backtest,
-        Arc::new(LiveMarketAdapter::new(backtest.dm())),
-        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
-    ))
+let config = ReplayConfig::new(start_dt, end_dt)?;
+let mut session = client.create_backtest_session(config).await?;
+let quote = session.quote("SHFE.rb2605").await?;
+let klines = session
+    .series()
+    .kline("SHFE.rb2605", Duration::from_secs(60), 64)
+    .await?;
+let runtime = session.runtime(["TQSIM"]).await?;
+let task = TargetPosTask::new(runtime.clone(), "TQSIM", "SHFE.rb2605", TargetPosTaskOptions::default())
+    .await?;
+
+while let Some(_step) = session.step().await? {
+    let rows = klines.rows().await;
+    if rows.len() >= 2 {
+        let last = &rows[rows.len() - 1];
+        let prev = &rows[rows.len() - 2];
+        if last.state.is_closed() {
+            let target = if last.kline.close > prev.kline.close { 1 } else { 0 };
+            task.set_target_volume(target)?;
+        }
+    }
+
+    if let Some(snapshot) = quote.snapshot().await {
+        println!("replay quote={:.2}", snapshot.last_price);
+    }
 }
+
+let result = session.finish().await?;
+println!("trades={}", result.trades.len());
 ```
 
-`BacktestExecutionAdapter` 当前提供的是 runtime 任务可复用的内存内成交模型，可用于 `TargetPosTask` / `TargetPosScheduler` 回测驱动，不是完整交易所撮合模拟器。
+### Legacy BacktestHandle（兼容）
+
+`BacktestHandle`、`LiveMarketAdapter`、`BacktestExecutionAdapter` 仍然保留，适合已有兼容 facade 或直接 `DataManager` 读取场景。
+新代码优先使用 `Client::create_backtest_session` + `ReplaySession`；只有在需要兼容旧入口时再走 legacy 路径。
 
 ### 覆盖服务端点
 
@@ -559,7 +582,7 @@ println!("orders={}, trades={}", orders.len(), trades.len());
 
 ### 3. 数据管理器（DataManager）
 
-DataManager 是底层 DIFF 合并与数据读取核心。大多数场景不需要直接操作，但回测或高级扩展时可以直接使用：
+DataManager 是底层 DIFF 合并与数据读取核心。大多数场景不需要直接操作，但 legacy 回测或高级扩展时可以直接使用：
 
 ```rust
 use chrono::Utc;
@@ -609,38 +632,40 @@ let epoch = dm.get_epoch();
 println!("当前全局 epoch: {}", epoch);
 ```
 
-### 4. 回测与历史回放
+### 4. 回测与历史回放（推荐）
 
 ```rust
-use chrono::Utc;
-use tqsdk_rs::{BacktestConfig, BacktestEvent};
+use std::time::Duration;
+use tqsdk_rs::prelude::*;
 
 let username = std::env::var("TQ_AUTH_USER")?;
 let password = std::env::var("TQ_AUTH_PASS")?;
 
 let mut client = Client::builder(username, password).build().await?;
-let start = Utc::now() - chrono::Duration::days(7);
-let end = Utc::now();
-
-let backtest = client
-    .init_market_backtest(BacktestConfig::new(start, end))
+let start = chrono::Utc::now() - chrono::Duration::days(7);
+let end = chrono::Utc::now();
+let mut session = client
+    .create_backtest_session(ReplayConfig::new(start, end)?)
     .await?;
 
-let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-quote_sub.start().await?;
+let quote = session.quote("SHFE.au2602").await?;
+let bars = session
+    .series()
+    .kline("SHFE.au2602", Duration::from_secs(60), 32)
+    .await?;
 
-loop {
-    match backtest.next().await? {
-        BacktestEvent::Tick { current_dt } => {
-            println!("推进到 {}", current_dt);
-        }
-        BacktestEvent::Finished { current_dt } => {
-            println!("回测结束 {}", current_dt);
-            break;
-        }
+while let Some(step) = session.step().await? {
+    if let Some(snapshot) = quote.snapshot().await {
+        println!("推进到 {} last_price={}", step.current_dt, snapshot.last_price);
     }
 }
+
+println!("closed bars={}", bars.rows().await.len());
+let result = session.finish().await?;
+println!("final trades={}", result.trades.len());
 ```
+
+如需兼容旧回测接口，仍可使用 `init_market_backtest(BacktestConfig)` 获取 `BacktestHandle`。
 
 ### 5. 合约查询
 
@@ -743,6 +768,9 @@ cargo run --example trade
 # 回测
 cargo run --example backtest
 
+# 枢轴点回放策略
+cargo run --example pivot_point
+
 # DataManager 高级用法
 cargo run --example datamanager
 
@@ -760,7 +788,8 @@ cargo run --example option_levels
 | `quote.rs` | Quote、单合约 K 线、多合约对齐 K 线、Tick | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
 | `history.rs` | 历史 K 线、接口联调、交易状态查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL` |
 | `trade.rs` | 交易回调、账户/持仓/委托/成交监听 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0` |
-| `backtest.rs` | 回测推进、区间参数、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_MAX_UPDATES`、`TQ_POSITION_SIZE` |
+| `backtest.rs` | `ReplaySession` 构建、K 线注册、runtime 驱动、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
+| `pivot_point.rs` | 基于 `ReplaySession` 的日线枢轴点反转策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `datamanager.rs` | `watch` / `unwatch`、路径读取、epoch | 无 |
 | `custom_logger.rs` | `create_logger_layer()` 与业务日志组合 | 无 |
 | `option_levels.rs` | 平值/实值/虚值期权查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_UNDERLYING`、`TQ_LOG_LEVEL` |
@@ -814,6 +843,7 @@ tqsdk-rs/
 │   ├── history.rs
 │   ├── trade.rs
 │   ├── backtest.rs
+│   ├── pivot_point.rs
 │   ├── datamanager.rs
 │   ├── custom_logger.rs
 │   └── option_levels.rs
