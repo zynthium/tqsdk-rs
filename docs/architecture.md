@@ -4,6 +4,11 @@
 
 如果你是要在仓库里执行修改，请优先阅读根目录的 [AGENTS.md](../AGENTS.md)；它包含更适合 agent 执行的验证、边界与提交流程要求。
 
+> Breaking cleanup target:
+> 下一轮 public API 将继续收口为 `Client`、`TradeSession`、`ReplaySession`、`TqRuntime`
+> 四条主路径。当前文档中的模块描述既包含已落地现状，也包含已经冻结的目标方向；
+> 若与 `docs/migration-remove-legacy-compat.md` 冲突，以迁移文档中的目标 public shape 为准。
+
 ## 总体分层
 
 ```text
@@ -81,11 +86,21 @@ Client (facade + builder + market)
 | `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
 | `prelude` | — | 便捷 re-export |
 
+## Breaking Target
+
+- live 入口继续收口：`Client` 将直接暴露行情状态读取、序列订阅和 query facade；`TqApi`、`SeriesAPI`、`InsAPI` 退出 crate root / prelude / README 主路径。
+- Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；下一轮会移除显式 `start()`，改为创建即生效。
+- `TradeSession` 继续按“状态 vs 事件”分层：
+  账户/持仓是 snapshot getter + `wait_update()`。
+  订单/成交/通知/异步错误是可靠事件流。
+- `ReplaySession` 与 `TqRuntime` 保持独立主路径，不为了 live API 对称性而重新缠回 `Client`。
+
 ## 关键设计模式
 
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
-- 延迟启动：`QuoteSubscription`、`SeriesSubscription` 创建后需显式 `start()`。
+- 当前现状：`QuoteSubscription`、`SeriesSubscription` 仍需显式 `start()`。
+- breaking 目标：Quote / Series 订阅改为 auto-start，只保留 `close()` 作为提前释放资源接口。
 - 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
 - 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐/历史窗口状态。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
@@ -98,6 +113,7 @@ Client (facade + builder + market)
 - 回放实现收口：`ReplayKernel`、quote 合成器、`SimBroker` 等回放拼装件属于内部实现细节；公开回测入口聚焦在 `ReplaySession` 与返回的 handles/result。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 交易状态分层：`TradeSession` 以 DataManager epoch 驱动内部 watcher，再用 path epoch 区分账户/持仓快照与可靠订单/成交事件。
+- breaking 目标：`TradeSession` 的通知与异步错误同样并入可靠事件流；账户/持仓相关 callback/channel 不再保留。
 - 初始化鲁棒性：日志层与磁盘缓存初始化优先降级和告警，而不是库级 `panic`。
 - 缓存治理：Series 磁盘缓存默认关闭；开启后写入 `~/.tqsdk/data_series_1`，并支持按总容量上限清理、按保留天数清理。
 

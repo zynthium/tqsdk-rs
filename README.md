@@ -19,6 +19,22 @@
 - 回测支持：`ReplaySession` 是历史回放、回测推进与 runtime 驱动的唯一推荐入口。
 - 连接入口收口：原始 WebSocket transport 保持为内部实现，公开连接路径统一走 `Client`、`TradeSession` 和 `ReplaySession`。
 
+## Breaking Cleanup Direction
+
+下一轮破坏性升级的目标已经冻结，不再考虑兼容层或 deprecated 过渡：
+
+- live API 收口到 `Client` 单入口。
+  `Client` 将直接承载行情状态读取、序列订阅与 query facade；
+  `TqApi`、`SeriesAPI`、`InsAPI` 将退出 crate root / prelude / README 主路径。
+- Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out。
+  `QuoteSubscription` / `SeriesSubscription` 的显式 `start()` 将被移除，改为创建即生效。
+- `TradeSession` 将彻底按“状态 vs 事件”分层。
+  账户/持仓统一走 `wait_update()` + getter；
+  订单/成交/通知/异步错误统一走可靠事件流。
+- 本轮 cleanup 不会引入 `TqClient` 同义 facade，不会保留长期 shim。
+
+当前 README 中的代码示例仍反映仓库现状；随着 breaking slices 落地，这些示例会同步切到新的 canonical API。
+
 ## 功能模块
 
 ### 行情数据

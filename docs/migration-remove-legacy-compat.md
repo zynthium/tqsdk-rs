@@ -1,17 +1,19 @@
 # 迁移指南：收敛到 Canonical State API
 
-本指南说明 `tqsdk-rs` 在 breaking cleanup 中保留哪些主路径、删除哪些 legacy surface，以及现有代码应该如何迁移。
+> Breaking cleanup target:
+> 本文档记录的是下一轮破坏性升级要收敛到的 canonical public model。
+> 某些删除项已经落地，某些仍在推进中；在所有切片完成前，请把这里视为目标接口形状，而不是当前代码的完整现状快照。
+
+本指南说明 `tqsdk-rs` 在 breaking cleanup 中保留哪些主路径、删除哪些 legacy surface，以及 live API 将如何迁移到最终的 state-driven 模型。
 
 ## Canonical Public Model
 
-清理后的公开模型收敛为五条主路径：
+breaking cleanup 完成后的公开模型收敛为四条主路径：
 
 - `Client`
-  负责认证、连接、订阅控制和 high-level session 构造。
-- `TqApi`
-  负责最新行情状态读取，例如 `quote()` / `kline()` / `tick()`。
-- `SeriesSubscription`
-  负责多合约对齐窗口、历史窗口和 `SeriesData` / DataFrame 转换。
+  负责 live 认证、连接、行情状态读取、序列订阅、查询和 high-level session 构造。
+- `TradeSession`
+  负责交易状态读取与可靠交易事件；账户/持仓属于状态，订单/成交/通知/异步错误属于事件。
 - `ReplaySession`
   负责历史回放、回测推进、回测 runtime 和最终结果汇总。
 - `TqRuntime`
@@ -39,24 +41,32 @@
 | `websocket::*` 和 raw constructor（`QuoteSubscription::new`、`SeriesAPI::new`、`InsAPI::new`、`TradeSession::new`） | `Client` / `ClientBuilder` / `TradeSession` factory methods | transport wiring 收回 crate 内部；公开连接入口统一走高层 facade |
 | `compat::TargetPosTask` | `runtime.account(\"...\").target_pos(\"...\").build()` | Builder 是 canonical task 入口 |
 | `compat::TargetPosScheduler` | `runtime.account(\"...\").target_pos_scheduler(\"...\").steps(...).build()` | 调度器同样走 Builder |
-| `quote_channel` / `on_quote` | `client.tqapi().quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
-| `Client::market_state()` | `Client::tqapi()` | 不再暴露底层 `MarketDataState` 容器；状态读取统一走 `TqApi` facade |
+| `quote_channel` / `on_quote` | `client.quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
+| `Client::market_state()` | `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}` | 不再暴露底层 `MarketDataState` 容器，也不再要求先取 `TqApi` facade |
+| `Client::tqapi()` | `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}` | live 市场状态入口收口到 `Client` |
+| `Client::series()` | `Client::{kline,tick,kline_history,kline_history_with_focus}` | live 序列订阅入口收口到 `Client` |
+| `Client::ins()` | `Client` 上的 query facade | 合约与基础数据查询不再通过显式 `InsAPI` 逃生口公开 |
 | `DataManager::{on_data, on_data_register, off_data}` | `subscribe_epoch()` + `get_path_epoch()` + `watch/unwatch` | merge 通知改为 coalesced state signal，不再提供全局 callback plumbing |
 | `MergeSemanticsConfig` root/prelude export | `tqsdk_rs::datamanager::MergeSemanticsConfig` | 进阶 merge 语义调优收回到 `datamanager` 命名空间，避免污染顶层入口 |
 | `SeriesSubscription` callback / stream fan-out | `SeriesSubscription` snapshot / window state API | 迁移方向是 pull-model，不再新增 callback/channel 用法 |
-| `TradeSession::{account_channel, position_channel}` | `get_account()` / `get_position()` / `get_positions()` + `on_account()` / `on_position()` | 账户与持仓属于最新状态读取，不再提供 best-effort snapshot channel |
+| `TradeSession::{account_channel, position_channel}` | `wait_update()` + `get_account()` / `get_position()` / `get_positions()` | 账户与持仓属于最新状态读取，不再提供 best-effort snapshot channel |
+| `TradeSession::{on_account, on_position}` | `wait_update()` + snapshot getters | 交易快照统一走 pull-model，不再保留状态回调 |
+| `TradeSession::{on_notification, on_error, notification_channel}` | `subscribe_events()` | 通知与异步错误并入可靠事件流 |
+| `QuoteSubscription::start()` | `Client::subscribe_quote()` | Quote 订阅将在 breaking cleanup 中改为创建即生效 |
+| `SeriesSubscription::start()` | `Client::{kline,tick,kline_history,kline_history_with_focus}` | Series 订阅将在 breaking cleanup 中改为创建即启动 |
 
 ## Quote Lifecycle Note
 
-- `QuoteSubscription` 只负责向服务端声明订阅生命周期：`start()` / `add_symbols()` / `remove_symbols()` / `close()`。
-- `QuoteRef` 是 `MarketDataState` 上的快照句柄，不拥有订阅本身。
-- 关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态停止继续推进。
+- cleanup 目标下，`QuoteSubscription` 只负责声明订阅生命周期与资源释放：`add_symbols()` / `remove_symbols()` / `close()`。
+- Quote 状态读取统一走 `Client::quote(symbol)` 返回的快照句柄。
+- 关闭 `QuoteSubscription` 后，已有 Quote 引用不会失效，只是状态停止继续推进。
 
 ## Series Snapshot Note
 
 - `SeriesSubscription` 负责窗口态 K 线/Tick 订阅生命周期。
 - `wait_update()` 返回 coalesced `SeriesSnapshot`，其中包含 `SeriesData`、`UpdateInfo` 和完成态 epoch。
 - `load()` 返回当前最新 `SeriesData`；`snapshot()` 可直接读取完整快照。
+- cleanup 目标下，live `SeriesSubscription` 将由 `Client` 直接创建，并默认自动启动。
 
 ## Backtest Migration
 
@@ -146,4 +156,7 @@ let scheduler = account
 - 已收口：`Authenticator`、`ClientOption` 与 `BacktestResult` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::{auth, client, replay}::{...}`。
 - 已收口：`Client::market_state()` 已删除；从 `Client` 读取行情状态请统一通过 `client.tqapi()`。
 - 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 snapshot getter 或回调。
+- 下一轮目标：`Client` 成为唯一 live 入口，`TqApi` / `SeriesAPI` / `InsAPI` 从 crate root / prelude / README 主路径退出。
+- 下一轮目标：Quote / Series 移除显式 `start()`，改为 auto-start；`close()` 仅表示提前释放资源。
+- 下一轮目标：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

@@ -61,11 +61,13 @@ examples/
 - `ReplaySession` 是唯一推荐的公开回测入口；不要为新代码重新引入 `BacktestHandle` 风格的 facade。
 - `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
 - `DataManager` 的 merge 通知统一使用 `subscribe_epoch()`；旧的 `on_data` / `on_data_register` / `off_data` callback plumbing 已删除，不要重新引入。
-- `QuoteSubscription` 和 `SeriesSubscription` 默认是延迟启动的，创建后需要显式 `start()`。
-- `QuoteSubscription` 只负责订阅生命周期；读取 Quote 请走 `client.tqapi().quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
+- breaking target：live API 继续收口到 `Client` 单入口；即使当前代码仍存在 `tqapi()` / `series()` / `ins()`，新改动也不要扩大这些入口的使用面。
+- `QuoteSubscription` 和 `SeriesSubscription` 目前仍是显式 `start()` 模型，但 breaking target 是 auto-start；新代码不要再新增对 `start()` 语义的依赖。
+- `QuoteSubscription` 只负责订阅生命周期；读取 Quote 的长期目标是 `Client::quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`；不要重新引入 `on_update`、`on_new_bar`、`data_stream()` 一类 fan-out API。
 - `TqRuntime` 的目标持仓 canonical 入口是 `runtime.account(\"...\").target_pos(...).build()` 和 scheduler builder；`compat::` facade 已删除，不要重新引入。
 - `TradeSession` 对外分为两层：账户/持仓等仍以最新状态读取为主，`order` / `trade` 则使用可靠事件流 API。
+- breaking target：`TradeSession` 的通知与异步错误也会并入可靠事件流；账户/持仓 callback/channel 会继续清理，不要为新代码新增依赖。
 - `TradeSession` 内部 watcher 已改为监听 DataManager epoch，再按 path epoch 拆分账户快照与可靠订单/成交事件。
 - 重连逻辑包含完整性校验，不要为了“简化”而破坏临时缓冲再合并的策略。
 - 行情与非关键状态更新存在有界缓冲和丢弃策略；但 `TradeSession` 的 `order` / `trade` 公开接口不再走 best-effort channel。
@@ -143,10 +145,12 @@ examples/
 - 优先保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
 - 修改公开 API 时，同时检查 `README.md`、`AGENTS.md`、示例代码、`prelude` re-export 是否需要同步。
 - 如果这次改动删除或替换 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
+- 如果这次改动涉及 live API，优先把入口收口到 `Client`，不要继续把新能力挂到 `TqApi` / `SeriesAPI` / `InsAPI` 上。
 - 修改 `DataManager` merge/query/watch 语义时，要特别关注向后兼容性；这部分会影响多个上层模块。
 - 修改 `DataManager` 通知路径时，优先沿用 `subscribe_epoch()` + `get_path_epoch()` 的状态驱动模式，不要为新逻辑新增 callback plumbing。
 - 修改重连、背压、消息队列时，要明确说明是否改变了丢弃策略、顺序语义或完整性保证。
 - `TradeSession` 的 `order` / `trade` 事件以可靠事件流为 canonical API；不要新增或恢复 `on_order`、`on_trade`、`order_channel`、`trade_channel` 这类 best-effort public surface。
+- 不要为新代码新增或恢复 `Client::tqapi()` / `Client::series()` / `Client::ins()` 依赖、`QuoteSubscription::start()` / `SeriesSubscription::start()` 依赖、以及 `TradeSession` 的 snapshot callback/channel 依赖。
 - 新增错误类型时，优先复用 `TqError`，保持错误边界集中。
 - 示例代码是对外接口的一部分；如果 API 变了，示例必须同步更新。
 
