@@ -21,7 +21,7 @@
 | 概念 | 旧版 Channel/Callback 模型 | 新版 State-driven API |
 |---|---|---|
 | **获取入口** | `Client` | `Client` 直接暴露状态引用与等待接口 |
-| **发起订阅** | `client.subscribe_quote(...)`<br>`client.series()?.kline(...)` | 保持不变（仍作为驱动网络下发的入口） |
+| **发起订阅** | `client.subscribe_quote(...)`<br>`client.kline(...)` / `client.tick(...)` | 保持不变（仍作为驱动网络下发的入口） |
 | **数据读取** | `channel.recv().await`<br>或 callback 消费 | `client.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
 | **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing()` 检测本地是否过期 |
 | **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `client.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
@@ -33,7 +33,7 @@
 
 ### 1. 直接使用 Client 状态入口
 
-`Client` 本身就是访问强类型、一致性状态存储的入口，不再需要先拿到额外的行情 facade。
+`Client` 本身就是访问强类型、一致性状态存储的入口，不再需要先拿到额外的行情 facade 或 `SeriesAPI`。
 
 **旧代码：**
 ```rust
@@ -117,15 +117,13 @@ loop {
 
 **旧代码：**
 ```rust
-let series_api = client.series()?;
-let sub = series_api.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
+let sub = client.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
 sub.start().await?;
 ```
 
 **新代码：**
 ```rust
-let series_api = client.series()?;
-let sub = series_api.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
+let sub = client.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
 sub.start().await?;
 
 loop {

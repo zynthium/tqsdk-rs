@@ -5,7 +5,7 @@ use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
 use crate::replay::{ReplayConfig, ReplaySession};
 use crate::runtime::{LiveExecutionAdapter, LiveMarketAdapter, RuntimeMode, TqRuntime};
-use crate::series::SeriesAPI;
+use crate::series::{KlineSymbols, SeriesAPI, SeriesSubscription};
 use crate::trade_session::TradeSession;
 use crate::types::{EdbIndexData, Kline, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use crate::websocket::WebSocketConfig;
@@ -78,8 +78,7 @@ impl Client {
         auth.get_auth_id().to_string()
     }
 
-    /// 获取 Series API
-    pub fn series(&self) -> Result<Arc<SeriesAPI>> {
+    fn series_api(&self) -> Result<Arc<SeriesAPI>> {
         if !self.market_active.load(Ordering::SeqCst) {
             return Err(TqError::InternalError("Series API 未初始化或已关闭".to_string()));
         }
@@ -254,6 +253,51 @@ impl Client {
         self.ins()?.get_trading_status(symbol).await
     }
 
+    /// 订阅 K 线序列（单合约/多合约对齐）。
+    pub async fn kline<T>(
+        &self,
+        symbols: T,
+        duration: StdDuration,
+        data_length: usize,
+    ) -> Result<Arc<SeriesSubscription>>
+    where
+        T: Into<KlineSymbols>,
+    {
+        self.series_api()?.kline(symbols, duration, data_length).await
+    }
+
+    /// 订阅 Tick 序列。
+    pub async fn tick(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
+        self.series_api()?.tick(symbol, data_length).await
+    }
+
+    /// 订阅按左边界定位的历史 K 线窗口。
+    pub async fn kline_history(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        data_length: usize,
+        left_kline_id: i64,
+    ) -> Result<Arc<SeriesSubscription>> {
+        self.series_api()?
+            .kline_history(symbol, duration, data_length, left_kline_id)
+            .await
+    }
+
+    /// 订阅按时间焦点定位的历史 K 线窗口。
+    pub async fn kline_history_with_focus(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        data_length: usize,
+        focus_time: DateTime<Utc>,
+        focus_position: i32,
+    ) -> Result<Arc<SeriesSubscription>> {
+        self.series_api()?
+            .kline_history_with_focus(symbol, duration, data_length, focus_time, focus_position)
+            .await
+    }
+
     /// 一次性获取按时间窗口的历史 K 线快照（不随行情更新），语义为 `[start_dt, end_dt)`。
     pub async fn get_kline_data_series(
         &self,
@@ -262,7 +306,7 @@ impl Client {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
-        self.series()?
+        self.series_api()?
             .kline_data_series(symbol, duration, start_dt, end_dt)
             .await
     }
@@ -274,7 +318,7 @@ impl Client {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<crate::types::Tick>> {
-        self.series()?.tick_data_series(symbol, start_dt, end_dt).await
+        self.series_api()?.tick_data_series(symbol, start_dt, end_dt).await
     }
 
     /// 订阅 Quote。

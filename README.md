@@ -350,8 +350,7 @@ use std::time::Duration;
 let symbol = "SHFE.au2602";
 let duration = Duration::from_secs(60);
 
-let series_api = client.series()?;
-let sub = series_api.kline(symbol, duration, 300).await?;
+let sub = client.kline(symbol, duration, 300).await?;
 sub.start().await?;
 
 let kline_ref = client.kline_ref(symbol, duration);
@@ -824,7 +823,7 @@ tqsdk-rs/
 ### Canonical 接口
 
 - Quote：`QuoteSubscription` 负责订阅生命周期，`Client::quote()` 负责读取最新状态。
-- Series：`Client::{kline_ref,tick_ref}` 负责 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口，并通过 `wait_update()` / `load()` 暴露快照。
+- Series：`Client::{kline,tick,kline_history,kline_history_with_focus}` 负责发起序列订阅，`Client::{kline_ref,tick_ref}` 负责读取 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口，并通过 `wait_update()` / `load()` 暴露快照。
 - TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
 仍保留的回调接口大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。

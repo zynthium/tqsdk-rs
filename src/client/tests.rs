@@ -166,6 +166,21 @@ async fn client_exposes_market_state_refs_directly() {
 }
 
 #[tokio::test]
+async fn client_exposes_series_subscriptions_directly() {
+    let client = build_client_with_market();
+
+    let kline = client.kline("SHFE.au2602", Duration::from_secs(60), 64).await;
+    let tick = client.tick("SHFE.au2602", 64).await;
+    let history = client
+        .kline_history("SHFE.au2602", Duration::from_secs(60), 64, 42)
+        .await;
+
+    assert!(kline.is_ok());
+    assert!(tick.is_ok());
+    assert!(history.is_ok());
+}
+
+#[tokio::test]
 async fn subscribe_quote_requires_explicit_start() {
     let client = build_client_with_market();
     let sub = client.subscribe_quote(&["SHFE.au2602"]).await.unwrap();
@@ -185,9 +200,10 @@ async fn close_invalidates_market_interfaces() {
     let client = build_client_with_market();
     client.close().await.unwrap();
 
-    assert!(client.series().is_err());
     assert!(client.ins().is_err());
     assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
+    assert!(client.kline("SHFE.au2602", Duration::from_secs(60), 64).await.is_err());
+    assert!(client.tick("SHFE.au2602", 64).await.is_err());
 }
 
 #[tokio::test]

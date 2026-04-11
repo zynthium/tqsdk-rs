@@ -33,8 +33,7 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(105761);
 
-    let series = client.series()?;
-    let sub = series
+    let sub = client
         .kline_history(symbol.as_str(), duration, 8000, left_kline_id)
         .await?;
     sub.start().await?;
