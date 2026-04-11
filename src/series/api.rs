@@ -126,8 +126,8 @@ impl SeriesAPI {
         .await
     }
 
-    /// 订阅历史 K 线（通过 `left_kline_id` 定位窗口左边界）。
-    pub async fn kline_history(
+    /// 创建内部历史 K 线窗口订阅（通过 `left_kline_id` 定位窗口左边界）。
+    async fn subscribe_kline_history_by_id(
         &self,
         symbol: &str,
         duration: StdDuration,
@@ -151,8 +151,8 @@ impl SeriesAPI {
         .await
     }
 
-    /// 订阅历史 K 线（通过时间焦点定位窗口）。
-    pub async fn kline_history_with_focus(
+    /// 创建内部历史 K 线窗口订阅（通过时间焦点定位窗口）。
+    async fn subscribe_kline_history_with_focus(
         &self,
         symbol: &str,
         duration: StdDuration,
@@ -187,6 +187,7 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
+        self.ensure_history_download_grants().await?;
         if symbol.is_empty() {
             return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
@@ -245,6 +246,7 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Tick>> {
+        self.ensure_history_download_grants().await?;
         if symbol.is_empty() {
             return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
@@ -400,7 +402,7 @@ impl SeriesAPI {
         left_kline_id: i64,
     ) -> Result<Vec<Kline>> {
         let sub = self
-            .kline_history(symbol, duration, PAGE_VIEW_WIDTH, left_kline_id)
+            .subscribe_kline_history_by_id(symbol, duration, PAGE_VIEW_WIDTH, left_kline_id)
             .await?;
         match self.fetch_history_page_with_subscription(sub).await? {
             HistoryPage::Kline(rows) => Ok(rows),
@@ -416,7 +418,7 @@ impl SeriesAPI {
     ) -> Result<Vec<Kline>> {
         let focus_position = history_focus_position(self.ws.auto_peek_enabled(), PAGE_VIEW_WIDTH);
         let sub = self
-            .kline_history_with_focus(symbol, duration, PAGE_VIEW_WIDTH, focus_time, focus_position)
+            .subscribe_kline_history_with_focus(symbol, duration, PAGE_VIEW_WIDTH, focus_time, focus_position)
             .await?;
         match self.fetch_history_page_with_subscription(sub).await? {
             HistoryPage::Kline(rows) => Ok(rows),
@@ -509,6 +511,15 @@ impl SeriesAPI {
         Ok(Arc::new(
             SeriesSubscription::new(Arc::clone(&self.dm), Arc::clone(&self.ws), options).await?,
         ))
+    }
+
+    async fn ensure_history_download_grants(&self) -> Result<()> {
+        let auth = self.auth.read().await;
+        if auth.has_feature("tq_dl") {
+            Ok(())
+        } else {
+            Err(TqError::permission_denied_history())
+        }
     }
 }
 

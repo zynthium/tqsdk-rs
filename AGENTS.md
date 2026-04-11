@@ -98,9 +98,8 @@ examples/
 | `TQ_QUOTE_AG` | `quote` 示例中的第二个行情合约 |
 | `TQ_QUOTE_M` | `quote` 示例中的第三个行情合约 |
 | `TQ_TEST_SYMBOL` | live 查询示例/测试使用的合约 |
-| `TQ_LEFT_KLINE_ID` | `history` 示例按左边界定位历史窗口；支持整数或 `auto`，未设置时自动聚焦最近窗口 |
-| `TQ_HISTORY_VIEW_WIDTH` | `history` 示例历史窗口宽度，默认 `8000` |
-| `TQ_HISTORY_FOCUS_POSITION` | `history` 示例按时间焦点定位时的窗口偏移，默认 `0` |
+| `TQ_HISTORY_BAR_SECONDS` | `history` 示例 K 线周期（秒），默认 `60` |
+| `TQ_HISTORY_LOOKBACK_MINUTES` | `history` 示例回看分钟数，默认 `240` |
 | `TQ_START_DT` | `backtest` 示例起始日期 |
 | `TQ_END_DT` | `backtest` 示例结束日期 |
 | `TQ_POSITION_SIZE` | `backtest` / `pivot_point` 示例使用的目标手数 |
@@ -138,7 +137,7 @@ examples/
 以下内容可能联网，甚至接近真实交易环境：
 
 - 被 `#[ignore]` 标记的 live 测试，尤其是 `src/ins/tests.rs` 中依赖 `TQ_AUTH_USER` / `TQ_AUTH_PASS` 的测试
-- `cargo run --example history`
+- `cargo run --example history`（要求账户具备 `tq_dl` 历史下载权限）
 - `cargo run --example quote`
 - `cargo run --example option_levels`
 - `cargo run --example backtest`

@@ -171,13 +171,9 @@ async fn client_exposes_series_subscriptions_directly() {
 
     let kline = client.kline("SHFE.au2602", Duration::from_secs(60), 64).await;
     let tick = client.tick("SHFE.au2602", 64).await;
-    let history = client
-        .kline_history("SHFE.au2602", Duration::from_secs(60), 64, 42)
-        .await;
 
     assert!(kline.is_ok());
     assert!(tick.is_ok());
-    assert!(history.is_ok());
 }
 
 #[tokio::test]

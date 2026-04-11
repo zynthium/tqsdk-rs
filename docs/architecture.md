@@ -43,8 +43,8 @@ Client (facade + builder + market)
 │   └── kline      K线分段磁盘缓存（写锁、去重、区间读取、压缩）
 ├── quote/         Quote 订阅生命周期控制
 │   └── lifecycle  订阅生命周期 (start/stop/add/remove)
-├── series/        K线/Tick 窗口订阅 (单合约 + 多合约对齐)
-│   ├── api        SeriesAPI (K线/Tick 请求 + 历史窗口抓取)
+├── series/        K线/Tick 窗口订阅 + 历史快照下载
+│   ├── api        SeriesAPI (K线/Tick 请求 + one-shot 历史下载)
 │   ├── subscription 生命周期 + snapshot 等待/读取
 │   └── processing   数据处理
 ├── ins/           合约查询与基础数据
@@ -101,7 +101,8 @@ Client (facade + builder + market)
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
 - 当前现状：`QuoteSubscription`、`SeriesSubscription` 已改为 auto-start，只保留 `close()` 作为提前释放资源接口。
 - 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
-- 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐/历史窗口状态。
+- 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐窗口状态。
+- 历史下载收口：`Client::{get_kline_data_series,get_tick_data_series}` 走 one-shot 下载路径，内部复用分页 `set_chart` 协议，并在入口检查 `tq_dl`。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - transport 收口：`TqWebsocket`、`TqQuoteWebsocket`、`TqTradeWebsocket` 等原始连接拼装件保持 crate 内部，外部统一从 `Client` / `TradeSession` / `ReplaySession` 进入。

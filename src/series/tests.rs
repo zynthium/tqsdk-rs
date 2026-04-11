@@ -8,7 +8,7 @@ use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::header::HeaderMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::future::Future;
 use std::pin::Pin;
@@ -40,7 +40,17 @@ fn series_api_should_expose_kline_and_tick_methods() {
 }
 
 #[derive(Default)]
-struct TestAuth;
+struct TestAuth {
+    features: HashSet<String>,
+}
+
+impl TestAuth {
+    fn with_features(features: &[&str]) -> Self {
+        Self {
+            features: features.iter().map(|feature| (*feature).to_string()).collect(),
+        }
+    }
+}
 
 #[async_trait]
 impl Authenticator for TestAuth {
@@ -60,8 +70,8 @@ impl Authenticator for TestAuth {
         Ok("wss://example.com".to_string())
     }
 
-    fn has_feature(&self, _feature: &str) -> bool {
-        false
+    fn has_feature(&self, feature: &str) -> bool {
+        self.features.contains(feature)
     }
 
     fn has_md_grants(&self, _symbols: &[&str]) -> Result<()> {
@@ -196,7 +206,7 @@ async fn kline_returns_started_subscription() {
         Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
     let api = SeriesAPI::new(dm, ws, auth);
 
     let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await.unwrap();
@@ -218,7 +228,7 @@ async fn kline_creation_failure_rolls_back_series_watch_task() {
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
     let api = SeriesAPI::new(Arc::clone(&dm), Arc::clone(&ws), auth);
 
     let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await;
@@ -236,7 +246,7 @@ async fn kline_data_series_by_datetime_returns_cached_data_without_network() {
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
     let mut api = SeriesAPI::new_with_cache_policy(
         dm,
         ws,
@@ -289,7 +299,7 @@ async fn kline_data_series_by_datetime_cache_miss_should_trigger_fetch_path() {
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
     let api = SeriesAPI::new(dm, ws, auth);
 
     let start_dt = DateTime::<Utc>::from_timestamp_nanos(2_000_000_000);
@@ -315,7 +325,7 @@ async fn tick_data_series_returns_cached_data_without_network() {
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
     let mut api = SeriesAPI::new_with_cache_policy(
         dm,
         ws,
@@ -365,7 +375,7 @@ async fn tick_data_series_cache_miss_should_trigger_fetch_path() {
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
     let api = SeriesAPI::new(dm, ws, auth);
 
     let err = api
@@ -390,6 +400,96 @@ async fn load_returns_error_before_first_snapshot() {
     assert!(sub.snapshot().await.is_none());
     assert!(matches!(sub.load().await, Err(TqError::DataNotFound(_))));
     assert!(timeout(Duration::from_millis(50), sub.wait_update()).await.is_err());
+}
+
+#[tokio::test]
+async fn kline_data_series_requires_tq_dl_even_when_cache_hits() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
+
+    let symbol = "SHFE.au2602";
+    let duration = 1_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("data_series_requires_tq_dl");
+    let data_series_cache = Arc::new(DataSeriesCache::new(Some(test_cache_dir.clone())));
+    data_series_cache
+        .write_kline_segment(symbol, duration, &[sample_kline(1000, 10.0), sample_kline(1001, 11.0)])
+        .expect("prepare cache should succeed");
+    api.data_series_cache = Arc::clone(&data_series_cache);
+
+    let err = api
+        .kline_data_series(
+            symbol,
+            StdDuration::from_secs(1),
+            DateTime::<Utc>::from_timestamp_nanos(1000 * 1_000_000_000),
+            DateTime::<Utc>::from_timestamp_nanos(1002 * 1_000_000_000),
+        )
+        .await
+        .expect_err("history api should reject when tq_dl is missing");
+
+    assert!(matches!(err, TqError::PermissionDenied(_)));
+    assert!(err.to_string().contains("专业版"));
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
+async fn tick_data_series_requires_tq_dl_even_when_cache_hits() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
+
+    let symbol = "SHFE.au2602";
+    let test_cache_dir = unique_test_cache_dir("tick_data_series_requires_tq_dl");
+    let data_series_cache = Arc::new(DataSeriesCache::new(Some(test_cache_dir.clone())));
+    data_series_cache
+        .write_tick_segment(symbol, &[sample_tick(1000, 10.0), sample_tick(1001, 11.0)])
+        .expect("prepare tick cache should succeed");
+    api.data_series_cache = Arc::clone(&data_series_cache);
+
+    let err = api
+        .tick_data_series(
+            symbol,
+            DateTime::<Utc>::from_timestamp_nanos(1000 * 100),
+            DateTime::<Utc>::from_timestamp_nanos(1002 * 100),
+        )
+        .await
+        .expect_err("history api should reject when tq_dl is missing");
+
+    assert!(matches!(err, TqError::PermissionDenied(_)));
+    assert!(err.to_string().contains("专业版"));
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
 }
 
 #[tokio::test]

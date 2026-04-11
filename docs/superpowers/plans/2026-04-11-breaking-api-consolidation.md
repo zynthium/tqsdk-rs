@@ -138,8 +138,10 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
 
 - [x] 给 `Client` 增加直达 live 状态方法：
   `quote(symbol)`, `kline_ref(symbol, duration)`, `tick_ref(symbol)`, `wait_update()`, `wait_update_and_drain()`。
-- [x] 给 `Client` 增加直达序列订阅方法：
-  `kline(symbols, duration, data_length)`, `tick(symbol, data_length)`, `kline_history(...)`, `kline_history_with_focus(...)`。
+- [x] 给 `Client` 增加直达序列入口：
+  实时窗口订阅走 `kline(symbols, duration, data_length)`, `tick(symbol, data_length)`；
+  一次性历史快照下载走 `get_kline_data_series(...)`, `get_tick_data_series(...)`。
+- [x] 删除 `Client::{kline_history,kline_history_with_focus}`，不再把内部历史窗口 `set_chart` 协议作为公开稳定接口。
 - [ ] 保留当前已有的 query facade，删除 `Client::ins()` 与 `Client::series()` 两个公开逃生口。
 - [x] 删除 `Client::tqapi()`，不再要求用户先取出 `TqApi` 再读状态。
 - [ ] 收紧 root/prelude export：`TqApi`、`SeriesAPI`、`InsAPI` 不再作为默认导出和文档主路径。
@@ -166,7 +168,8 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
 - Test: `src/series/tests.rs`
 
 - [x] 让 `Client::subscribe_quote()` 返回已生效的 `QuoteSubscription`，删除 `QuoteSubscription::start()`。
-- [x] 让 live `kline/tick/history` 返回已启动的 `SeriesSubscription`，删除 `SeriesSubscription::start()`。
+- [x] 让 live `kline/tick` 返回已启动的 `SeriesSubscription`，删除 `SeriesSubscription::start()`。
+- [x] 历史下载不再走公开 `SeriesSubscription`；统一改为 one-shot `get_*_data_series`。
 - [x] 保留 `Drop` 自动清理和显式 `close()`，但把 `close()` 定义为“提前释放资源”，不是“正式完成启动流程”。
 - [x] 调整失败回滚测试：
   之前验证 `start()` 失败回滚。

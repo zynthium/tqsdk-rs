@@ -271,33 +271,6 @@ impl Client {
         self.series_api()?.tick(symbol, data_length).await
     }
 
-    /// 订阅按左边界定位的历史 K 线窗口。
-    pub async fn kline_history(
-        &self,
-        symbol: &str,
-        duration: StdDuration,
-        data_length: usize,
-        left_kline_id: i64,
-    ) -> Result<Arc<SeriesSubscription>> {
-        self.series_api()?
-            .kline_history(symbol, duration, data_length, left_kline_id)
-            .await
-    }
-
-    /// 订阅按时间焦点定位的历史 K 线窗口。
-    pub async fn kline_history_with_focus(
-        &self,
-        symbol: &str,
-        duration: StdDuration,
-        data_length: usize,
-        focus_time: DateTime<Utc>,
-        focus_position: i32,
-    ) -> Result<Arc<SeriesSubscription>> {
-        self.series_api()?
-            .kline_history_with_focus(symbol, duration, data_length, focus_time, focus_position)
-            .await
-    }
-
     /// 一次性获取按时间窗口的历史 K 线快照（不随行情更新），语义为 `[start_dt, end_dt)`。
     pub async fn get_kline_data_series(
         &self,

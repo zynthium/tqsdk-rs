@@ -126,9 +126,8 @@ tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3" }
 | `TQ_START_DT` | 否 | `backtest` 示例起始日期，格式 `YYYY-MM-DD` |
 | `TQ_END_DT` | 否 | `backtest` 示例结束日期，格式 `YYYY-MM-DD` |
 | `TQ_TEST_SYMBOL` | 否 | `history` 示例联调用的测试合约 |
-| `TQ_LEFT_KLINE_ID` | 否 | `history` 示例按左边界定位历史窗口；支持整数或 `auto`，未设置时会自动聚焦最近窗口 |
-| `TQ_HISTORY_VIEW_WIDTH` | 否 | `history` 示例历史窗口宽度，默认 `8000` |
-| `TQ_HISTORY_FOCUS_POSITION` | 否 | `history` 示例按时间焦点定位时的窗口偏移，默认 `0` |
+| `TQ_HISTORY_BAR_SECONDS` | 否 | `history` 示例 K 线周期（秒），默认 `60` |
+| `TQ_HISTORY_LOOKBACK_MINUTES` | 否 | `history` 示例回看分钟数，默认 `240` |
 | `TQ_POSITION_SIZE` | 否 | `backtest` / `pivot_point` 示例使用的目标手数 |
 | `TQ_UNDERLYING` | 否 | `option_levels` 示例的标的合约 |
 
@@ -732,7 +731,7 @@ cargo run --example option_levels
 | 示例文件 | 主要内容 | 额外环境变量 |
 |------|------|------|
 | `quote.rs` | Quote、单合约 K 线、多合约对齐 K 线、Tick | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
-| `history.rs` | 历史 K 线、接口联调、交易状态查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL`、`TQ_LEFT_KLINE_ID`、`TQ_HISTORY_VIEW_WIDTH`、`TQ_HISTORY_FOCUS_POSITION` |
+| `history.rs` | 一次性历史 K 线下载、接口联调 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL`、`TQ_HISTORY_BAR_SECONDS`、`TQ_HISTORY_LOOKBACK_MINUTES`；要求账户具备 `tq_dl` 历史下载权限 |
 | `trade.rs` | 可靠事件流、账户/持仓监听、订单等待 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0`，可选 `TQ_TRADE_EXAMPLE_DURATION_SECS` |
 | `backtest.rs` | `ReplaySession` 构建、K 线注册、runtime 驱动、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `pivot_point.rs` | 基于 `ReplaySession` 的日线枢轴点反转策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
@@ -821,7 +820,7 @@ tqsdk-rs/
 ### Canonical 接口
 
 - Quote：`QuoteSubscription` 负责订阅生命周期，`Client::quote()` 负责读取最新状态。
-- Series：`Client::{kline,tick,kline_history,kline_history_with_focus}` 负责发起序列订阅，`Client::{kline_ref,tick_ref}` 负责读取 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口，并通过 `wait_update()` / `load()` 暴露快照。
+- Series：`Client::{kline,tick}` 负责发起实时窗口订阅，`Client::{get_kline_data_series,get_tick_data_series}` 负责一次性历史快照下载，`Client::{kline_ref,tick_ref}` 负责读取 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口并通过 `wait_update()` / `load()` 暴露快照。
 - TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
 仍保留的回调接口大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。

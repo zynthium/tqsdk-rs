@@ -2,7 +2,6 @@ use super::SeriesSubscription;
 use super::processing::process_series_update;
 use crate::errors::{Result, TqError};
 use crate::types::{ChartInfo, SeriesData, SeriesSnapshot};
-use chrono::{DateTime, Utc};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
@@ -65,27 +64,6 @@ impl SeriesSubscription {
             chart_id, self.options.symbols, view_width, self.options.duration
         );
 
-        self.ws.send(&chart_req).await?;
-        Ok(())
-    }
-
-    /// 在已存在的图表订阅上更新历史焦点位置。
-    pub async fn update_focus(&self, focus_time: DateTime<Utc>, focus_position: i32) -> Result<()> {
-        let view_width = if self.options.view_width > 10000 {
-            10000
-        } else {
-            self.options.view_width
-        };
-        let chart_id = self.options.chart_id.as_deref().unwrap_or("");
-        let chart_req = serde_json::json!({
-            "aid": "set_chart",
-            "chart_id": chart_id,
-            "ins_list": self.options.symbols.join(","),
-            "duration": self.options.duration,
-            "view_width": view_width,
-            "focus_datetime": focus_time.timestamp_nanos_opt(),
-            "focus_position": focus_position
-        });
         self.ws.send(&chart_req).await?;
         Ok(())
     }
