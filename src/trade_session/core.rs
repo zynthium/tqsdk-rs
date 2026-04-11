@@ -6,7 +6,7 @@ use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::info;
 
 impl TradeSession {
@@ -20,18 +20,22 @@ impl TradeSession {
         ws_config: WebSocketConfig,
         reliable_events_max_retained: usize,
     ) -> Self {
-        let trade_events = Arc::new(TradeEventHub::new(reliable_events_max_retained));
+        let trade_events = Arc::new(std::sync::RwLock::new(Arc::new(TradeEventHub::new(
+            reliable_events_max_retained,
+        ))));
         let (snapshot_epoch_tx, _) = tokio::sync::watch::channel(Some(0i64));
 
         let ws = Arc::new(TqTradeWebsocket::new(ws_url, Arc::clone(&dm), ws_config));
         let trade_events_for_notify = Arc::clone(&trade_events);
         ws.on_notify(move |noti| {
-            let _ = trade_events_for_notify.publish_notification(noti);
+            let trade_events = trade_events_for_notify.read().unwrap().clone();
+            let _ = trade_events.publish_notification(noti);
         });
 
         let trade_events_for_error = Arc::clone(&trade_events);
         ws.on_error(move |msg| {
-            let _ = trade_events_for_error.publish_transport_error(msg);
+            let trade_events = trade_events_for_error.read().unwrap().clone();
+            let _ = trade_events.publish_transport_error(msg);
         });
 
         Self {
@@ -41,11 +45,36 @@ impl TradeSession {
             dm,
             ws,
             trade_events,
+            reliable_events_max_retained,
             snapshot_epoch_tx,
+            snapshot_seen_epoch: AtomicI64::new(0),
             logged_in: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
             watch_task: Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    pub(super) fn current_trade_events(&self) -> Arc<TradeEventHub> {
+        self.trade_events.read().unwrap().clone()
+    }
+
+    pub(super) fn reset_trade_events(&self) -> Arc<TradeEventHub> {
+        let next_hub = Arc::new(TradeEventHub::new(self.reliable_events_max_retained));
+        let previous_hub = {
+            let mut guard = self.trade_events.write().unwrap();
+            std::mem::replace(&mut *guard, Arc::clone(&next_hub))
+        };
+        previous_hub.close();
+        next_hub
+    }
+
+    pub(super) fn reset_snapshot_epoch(&self) {
+        self.snapshot_seen_epoch.store(0, Ordering::SeqCst);
+        let _ = self.snapshot_epoch_tx.send_replace(Some(0));
+    }
+
+    pub(super) fn close_snapshot_epoch(&self) {
+        let _ = self.snapshot_epoch_tx.send_replace(None);
     }
 
     pub(super) async fn send_login(&self) -> Result<()> {
@@ -77,17 +106,17 @@ impl TradeSession {
 
     /// 订阅可靠交易事件流（仅接收订阅之后产生的事件）
     pub fn subscribe_events(&self) -> TradeEventStream {
-        self.trade_events.subscribe_tail()
+        self.current_trade_events().subscribe_tail()
     }
 
     /// 仅订阅订单状态变更事件
     pub fn subscribe_order_events(&self) -> OrderEventStream {
-        self.trade_events.subscribe_orders()
+        self.current_trade_events().subscribe_orders()
     }
 
     /// 仅订阅成交创建事件
     pub fn subscribe_trade_events(&self) -> TradeOnlyEventStream {
-        self.trade_events.subscribe_trades()
+        self.current_trade_events().subscribe_trades()
     }
 
     /// 等待交易快照在本会话下推进至少一次。
@@ -96,18 +125,20 @@ impl TradeSession {
             return Err(TqError::InternalError("交易会话未连接或已关闭".to_string()));
         }
 
+        let seen_epoch = self.snapshot_seen_epoch.load(Ordering::SeqCst);
         let mut rx = self.snapshot_epoch_tx.subscribe();
-        let baseline = *rx.borrow_and_update();
         loop {
-            if rx.changed().await.is_err() {
-                return Err(TqError::InternalError("交易快照订阅已关闭".to_string()));
-            }
-
-            let current = *rx.borrow_and_update();
-            match current {
-                Some(epoch) if Some(epoch) > baseline => return Ok(()),
+            match *rx.borrow_and_update() {
+                Some(epoch) if epoch > seen_epoch => {
+                    self.snapshot_seen_epoch.store(epoch, Ordering::SeqCst);
+                    return Ok(());
+                }
                 None => return Err(TqError::InternalError("交易会话已关闭".to_string())),
                 _ => {}
+            }
+
+            if rx.changed().await.is_err() {
+                return Err(TqError::InternalError("交易快照订阅已关闭".to_string()));
             }
         }
     }
@@ -141,6 +172,6 @@ impl TradeSession {
 
     #[cfg(test)]
     pub(crate) fn reliable_events_max_retained_for_test(&self) -> usize {
-        self.trade_events.max_retained_events_for_test()
+        self.current_trade_events().max_retained_events_for_test()
     }
 }

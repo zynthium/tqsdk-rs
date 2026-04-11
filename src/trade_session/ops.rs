@@ -6,6 +6,15 @@ use std::sync::atomic::Ordering;
 use tracing::{info, warn};
 
 impl TradeSession {
+    async fn cleanup_after_disconnect(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        self.logged_in.store(false, Ordering::SeqCst);
+        self.close_snapshot_epoch();
+        self.stop_watch_task();
+        self.reset_trade_events();
+        let _ = self.ws.close().await;
+    }
+
     /// 下单（返回委托单号）
     pub async fn insert_order(&self, req: &InsertOrderRequest) -> Result<String> {
         if !self.is_ready() {
@@ -157,30 +166,23 @@ impl TradeSession {
         }
 
         self.logged_in.store(false, Ordering::SeqCst);
-        let _ = self.snapshot_epoch_tx.send_replace(Some(0));
+        self.reset_snapshot_epoch();
 
         info!("连接交易服务器: broker={}, user_id={}", self.broker, self.user_id);
 
         if let Err(e) = self.ws.init(false).await {
-            self.running.store(false, Ordering::SeqCst);
-            self.logged_in.store(false, Ordering::SeqCst);
+            self.cleanup_after_disconnect().await;
             return Err(e);
         }
 
         self.start_watching().await;
 
         if let Err(e) = self.send_login().await {
-            self.running.store(false, Ordering::SeqCst);
-            self.logged_in.store(false, Ordering::SeqCst);
-            self.stop_watch_task();
-            let _ = self.ws.close().await;
+            self.cleanup_after_disconnect().await;
             return Err(e);
         }
         if let Err(e) = self.send_confirm_settlement().await {
-            self.running.store(false, Ordering::SeqCst);
-            self.logged_in.store(false, Ordering::SeqCst);
-            self.stop_watch_task();
-            let _ = self.ws.close().await;
+            self.cleanup_after_disconnect().await;
             return Err(e);
         }
 
@@ -194,20 +196,19 @@ impl TradeSession {
 
     /// 关闭交易会话
     pub async fn close(&self) -> Result<()> {
-        if self
+        let was_running = self
             .running
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            self.logged_in.store(false, Ordering::SeqCst);
-            return Ok(());
+            .is_ok();
+
+        if was_running {
+            info!("关闭交易会话");
         }
 
-        info!("关闭交易会话");
         self.logged_in.store(false, Ordering::SeqCst);
-        let _ = self.snapshot_epoch_tx.send_replace(None);
+        self.close_snapshot_epoch();
         self.stop_watch_task();
-        self.trade_events.close();
+        self.reset_trade_events();
         self.ws.close().await?;
         Ok(())
     }

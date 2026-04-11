@@ -87,9 +87,10 @@ impl TradeSession {
     pub(crate) async fn process_order_update(
         dm: &Arc<DataManager>,
         user_id: &str,
-        trade_events: &Arc<TradeEventHub>,
+        trade_events: &Arc<std::sync::RwLock<Arc<TradeEventHub>>>,
         last_epoch: i64,
     ) {
+        let trade_events = trade_events.read().unwrap().clone();
         if let Some(serde_json::Value::Object(orders_map)) = dm.get_by_path(&["trade", user_id, "orders"]) {
             for (order_id, order_data) in &orders_map {
                 if order_id.starts_with('_') {
@@ -117,9 +118,10 @@ impl TradeSession {
     pub(crate) async fn process_trade_update(
         dm: &Arc<DataManager>,
         user_id: &str,
-        trade_events: &Arc<TradeEventHub>,
+        trade_events: &Arc<std::sync::RwLock<Arc<TradeEventHub>>>,
         last_epoch: i64,
     ) {
+        let trade_events = trade_events.read().unwrap().clone();
         if let Some(serde_json::Value::Object(trades_map)) = dm.get_by_path(&["trade", user_id, "trades"]) {
             for (trade_id, trade_data) in &trades_map {
                 if trade_id.starts_with('_') {

@@ -137,6 +137,69 @@ async fn trade_session_wait_update_still_delivers_snapshot_and_reliable_event_up
 }
 
 #[tokio::test]
+async fn trade_session_wait_update_consumes_snapshot_epochs_that_arrived_between_calls() {
+    let dm = build_dm();
+    let session = Arc::new(build_session(Arc::clone(&dm)));
+
+    session.running.store(true, Ordering::SeqCst);
+    session.start_watching().await;
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "accounts": {
+                        "CNY": account_json(1000.0, 900.0)
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+    timeout(Duration::from_secs(1), session.wait_update())
+        .await
+        .unwrap()
+        .unwrap();
+    let first_seen_epoch = (*session.snapshot_epoch_tx.borrow()).unwrap();
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "accounts": {
+                        "CNY": account_json(1001.0, 901.0)
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    timeout(Duration::from_secs(1), async {
+        loop {
+            let current = *session.snapshot_epoch_tx.borrow();
+            if current.is_some_and(|epoch| epoch > first_seen_epoch) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    timeout(Duration::from_millis(200), session.wait_update())
+        .await
+        .unwrap()
+        .unwrap();
+    let account = session.get_account().await.unwrap();
+    assert_eq!(account.balance, 1001.0);
+
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn trade_session_emits_order_then_trade_events() {
     let dm = build_dm();
     let session = build_session(Arc::clone(&dm));
@@ -356,6 +419,44 @@ async fn trade_session_failed_connect_clears_stale_logged_in_state() {
 }
 
 #[tokio::test]
+async fn trade_session_failed_connect_resets_event_hub_for_existing_and_future_subscribers() {
+    let dm = build_dm();
+    let session = TradeSession::new(
+        "simnow".to_string(),
+        "u".to_string(),
+        "p".to_string(),
+        dm,
+        "not-a-valid-url".to_string(),
+        WebSocketConfig::default(),
+        8,
+    );
+    let old_hub = session.trade_events.read().unwrap().clone();
+    let mut stale_stream = session.subscribe_events();
+
+    assert!(session.connect().await.is_err());
+
+    let err = timeout(Duration::from_secs(1), stale_stream.recv())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(err, TradeEventRecvError::Closed));
+
+    let new_hub = session.trade_events.read().unwrap().clone();
+    assert!(!Arc::ptr_eq(&old_hub, &new_hub));
+
+    let mut fresh_stream = session.subscribe_events();
+    let _ = new_hub.publish_transport_error("after-failed-connect".to_string());
+    let event = timeout(Duration::from_secs(1), fresh_stream.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        event.kind,
+        TradeSessionEventKind::TransportError { ref message } if message == "after-failed-connect"
+    ));
+}
+
+#[tokio::test]
 async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background() {
     let dm = build_dm();
     let session = TradeSession::new(
@@ -387,7 +488,46 @@ async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background()
             TradeSessionEventKind::TransportError { .. } | TradeSessionEventKind::NotificationReceived { .. }
         ));
     }
-    assert!(timeout(Duration::from_millis(50), events.recv()).await.is_err());
+
+    let stale_end = timeout(Duration::from_millis(50), events.recv())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(stale_end, TradeEventRecvError::Closed));
+
+    let mut fresh_events = session.subscribe_events();
+    assert!(timeout(Duration::from_millis(50), fresh_events.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn trade_session_close_resets_event_hub_for_existing_and_future_subscribers() {
+    let dm = build_dm();
+    let session = build_session(dm);
+    let old_hub = session.trade_events.read().unwrap().clone();
+    let mut stale_stream = session.subscribe_events();
+
+    session.running.store(true, Ordering::SeqCst);
+    session.close().await.unwrap();
+
+    let err = timeout(Duration::from_secs(1), stale_stream.recv())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(err, TradeEventRecvError::Closed));
+
+    let new_hub = session.trade_events.read().unwrap().clone();
+    assert!(!Arc::ptr_eq(&old_hub, &new_hub));
+
+    let mut fresh_stream = session.subscribe_events();
+    let _ = new_hub.publish_transport_error("after-close".to_string());
+    let event = timeout(Duration::from_secs(1), fresh_stream.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        event.kind,
+        TradeSessionEventKind::TransportError { ref message } if message == "after-close"
+    ));
 }
 
 #[tokio::test]
