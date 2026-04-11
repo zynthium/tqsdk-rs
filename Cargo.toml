@@ -91,3 +91,7 @@ path = "examples/backtest.rs"
 [[bench]]
 name = "marketdata_state"
 harness = false
+
+[[bench]]
+name = "marketdata_state_stress"
+harness = false

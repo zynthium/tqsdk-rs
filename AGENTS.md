@@ -52,7 +52,10 @@ examples/
 ├── pivot_point.rs
 ├── datamanager.rs
 ├── option_levels.rs
-├── custom_logger.rs
+└── custom_logger.rs
+
+benches/
+├── marketdata_state.rs
 └── marketdata_state_stress.rs
 ```
 
@@ -163,6 +166,7 @@ examples/
 - 不要为新代码新增或恢复 `Client::tqapi()` / `Client::series()` / `Client::ins()` 依赖、`QuoteSubscription::start()` / `SeriesSubscription::start()` 依赖、以及 `TradeSession` 的 snapshot callback/channel 依赖。
 - 新增错误类型时，优先复用 `TqError`，保持错误边界集中。
 - 示例代码是对外接口的一部分；如果 API 变了，示例必须同步更新。
+- `benches/` 下的文件是内部性能验证工件，不属于公开 canonical API 示例；不要把依赖 advanced/internal path 的压测脚本重新放回 `examples/`。
 
 ## 测试与示例约定
 
