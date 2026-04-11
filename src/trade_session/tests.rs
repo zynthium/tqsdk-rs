@@ -1,12 +1,11 @@
 use super::*;
 use crate::datamanager::{DataManager, DataManagerConfig};
-use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LIMIT};
+use crate::types::{DIRECTION_BUY, InsertOrderRequest, Notification, OFFSET_OPEN, PRICE_TYPE_LIMIT};
 use crate::websocket::WebSocketConfig;
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use tokio::sync::Notify;
 use tokio::time::{Duration, sleep, timeout};
 
 fn build_dm() -> Arc<DataManager> {
@@ -69,38 +68,24 @@ fn position_json() -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn trade_session_epoch_watcher_still_delivers_snapshot_and_reliable_event_updates() {
+async fn trade_session_wait_update_still_delivers_snapshot_and_reliable_event_updates() {
     let dm = build_dm();
-    let session = build_session(Arc::clone(&dm));
-    let account_balance = Arc::new(Mutex::new(None));
-    let account_ready = Arc::new(Notify::new());
-    let position_symbol = Arc::new(Mutex::new(None));
-    let position_ready = Arc::new(Notify::new());
+    let session = Arc::new(build_session(Arc::clone(&dm)));
     let mut events = session.subscribe_events();
-
-    session
-        .on_account({
-            let account_balance = Arc::clone(&account_balance);
-            let account_ready = Arc::clone(&account_ready);
-            move |account| {
-                *account_balance.lock().unwrap() = Some(account.balance);
-                account_ready.notify_one();
-            }
-        })
-        .await;
-    session
-        .on_position({
-            let position_symbol = Arc::clone(&position_symbol);
-            let position_ready = Arc::clone(&position_ready);
-            move |symbol, _position| {
-                *position_symbol.lock().unwrap() = Some(symbol);
-                position_ready.notify_one();
-            }
-        })
-        .await;
 
     session.running.store(true, Ordering::SeqCst);
     session.start_watching().await;
+
+    let snapshot_waiter = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move {
+            session.wait_update().await.unwrap();
+            let account = session.get_account().await.unwrap();
+            let positions = session.get_positions().await.unwrap();
+            (account.balance, positions["SHFE.au2602"].volume_long)
+        })
+    };
+    tokio::task::yield_now().await;
 
     dm.merge_data(
         json!({
@@ -128,17 +113,14 @@ async fn trade_session_epoch_watcher_still_delivers_snapshot_and_reliable_event_
         true,
     );
 
-    timeout(Duration::from_secs(1), account_ready.notified()).await.unwrap();
-    timeout(Duration::from_secs(1), position_ready.notified())
-        .await
-        .unwrap();
+    let (balance, volume_long) = timeout(Duration::from_secs(1), snapshot_waiter).await.unwrap().unwrap();
     let first = timeout(Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
     let second = timeout(Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
     let account = session.get_account().await.unwrap();
     let positions = session.get_positions().await.unwrap();
 
-    assert_eq!(*account_balance.lock().unwrap(), Some(1000.0));
-    assert_eq!(position_symbol.lock().unwrap().as_deref(), Some("SHFE.au2602"));
+    assert_eq!(balance, 1000.0);
+    assert_eq!(volume_long, 1);
     assert_eq!(account.balance, 1000.0);
     assert_eq!(positions["SHFE.au2602"].volume_long, 1);
     assert!(session.logged_in.load(Ordering::SeqCst));
@@ -388,23 +370,63 @@ async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background()
         },
         8,
     );
-
-    let errors = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    {
-        let errors = Arc::clone(&errors);
-        session
-            .on_error(move |_msg| {
-                errors.fetch_add(1, Ordering::SeqCst);
-            })
-            .await;
-    }
+    let mut events = session.subscribe_events();
 
     session.ws.force_send_failure_for_test();
     assert!(session.connect().await.is_err());
 
     sleep(Duration::from_millis(120)).await;
 
-    assert_eq!(errors.load(Ordering::SeqCst), 0);
+    for _ in 0..2 {
+        let next = timeout(Duration::from_millis(20), events.recv()).await;
+        let Ok(Ok(event)) = next else {
+            break;
+        };
+        assert!(matches!(
+            event.kind,
+            TradeSessionEventKind::TransportError { .. } | TradeSessionEventKind::NotificationReceived { .. }
+        ));
+    }
+    assert!(timeout(Duration::from_millis(50), events.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn trade_session_emits_notification_events_on_unified_stream() {
+    let dm = build_dm();
+    let session = build_session(dm);
+    let mut stream = session.subscribe_events();
+    let notification = Notification {
+        code: "2019112901".to_string(),
+        level: "INFO".to_string(),
+        r#type: "MESSAGE".to_string(),
+        content: "connected".to_string(),
+        bid: "simnow".to_string(),
+        user_id: "u".to_string(),
+    };
+
+    session.ws.emit_notify_for_test(notification.clone());
+
+    let event = timeout(Duration::from_secs(1), stream.recv()).await.unwrap().unwrap();
+    assert!(matches!(
+        event.kind,
+        TradeSessionEventKind::NotificationReceived { notification: ref got }
+            if got.content == notification.content
+    ));
+}
+
+#[tokio::test]
+async fn trade_session_emits_transport_errors_on_unified_stream() {
+    let dm = build_dm();
+    let session = build_session(dm);
+    let mut stream = session.subscribe_events();
+
+    session.ws.emit_error_for_test("transport failed".to_string());
+
+    let event = timeout(Duration::from_secs(1), stream.recv()).await.unwrap().unwrap();
+    assert!(matches!(
+        event.kind,
+        TradeSessionEventKind::TransportError { ref message } if message == "transport failed"
+    ));
 }
 
 #[tokio::test]

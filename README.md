@@ -404,36 +404,23 @@ let session = client
     )
     .await?;
 
-session
-    .on_account(|account| {
-        println!("权益={} 可用={}", account.balance, account.available);
-    })
-    .await;
-session
-    .on_position(|symbol, position| {
-        println!(
-            "{} 多={} 空={}",
-            symbol,
-            position.volume_long_today + position.volume_long_his,
-            position.volume_short_today + position.volume_short_his
-        );
-    })
-    .await;
-
-let mut order_events = session.subscribe_order_events();
+let mut events = session.subscribe_events();
 tokio::spawn(async move {
-    while let Ok(event) = order_events.recv().await {
-        if let TradeSessionEventKind::OrderUpdated { order_id, order } = event.kind {
-            println!("订单 {} 状态={}", order_id, order.status);
-        }
-    }
-});
-
-let mut trade_events = session.subscribe_trade_events();
-tokio::spawn(async move {
-    while let Ok(event) = trade_events.recv().await {
-        if let TradeSessionEventKind::TradeCreated { trade_id, trade } = event.kind {
-            println!("成交 {} 对应订单={}", trade_id, trade.order_id);
+    while let Ok(event) = events.recv().await {
+        match event.kind {
+            TradeSessionEventKind::OrderUpdated { order_id, order } => {
+                println!("订单 {} 状态={}", order_id, order.status);
+            }
+            TradeSessionEventKind::TradeCreated { trade_id, trade } => {
+                println!("成交 {} 对应订单={}", trade_id, trade.order_id);
+            }
+            TradeSessionEventKind::NotificationReceived { notification } => {
+                println!("通知: {}", notification.content);
+            }
+            TradeSessionEventKind::TransportError { message } => {
+                eprintln!("异步错误: {}", message);
+            }
+            _ => {}
         }
     }
 });
@@ -443,6 +430,12 @@ session.connect().await?;
 while !session.is_ready() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
+
+session.wait_update().await?;
+let account = session.get_account().await?;
+let positions = session.get_positions().await?;
+println!("权益={} 可用={}", account.balance, account.available);
+println!("持仓数={}", positions.len());
 ```
 
 优先级为：`TradeSessionOptions.td_url_override` > `ClientBuilder::td_url` /
@@ -450,9 +443,9 @@ while !session.is_ready() {
 
 说明：
 
-- 交易会话同样推荐先注册账户/持仓回调并先订阅可靠事件流，再 `connect()`。
-- `order` / `trade` 的 public canonical API 是 `subscribe_events()` / `subscribe_order_events()` / `subscribe_trade_events()`。
-- 可靠事件流只会看到订阅之后产生的事件；账户、持仓仍然按最新快照读取或回调消费。
+- 交易会话推荐先建立 `wait_update()` 与 `subscribe_events()` 的消费路径，再 `connect()`。
+- `subscribe_events()` 是交易侧唯一 canonical push-style 入口；`subscribe_order_events()` / `subscribe_trade_events()` 只是过滤视图。
+- 可靠事件流只会看到订阅之后产生的事件；账户、持仓统一按最新快照读取。
 - 需要等待某个订单出现后续更新时，优先使用 `wait_order_update_reliable(order_id)`。
 - `connect()` 失败时会清理本次连接产生的后台状态，不会继续残留重连任务。
 

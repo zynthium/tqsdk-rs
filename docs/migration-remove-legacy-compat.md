@@ -158,5 +158,5 @@ let scheduler = account
 - 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 snapshot getter 或回调。
 - 下一轮目标：`Client` 成为唯一 live 入口，`TqApi` / `SeriesAPI` / `InsAPI` 从 crate root / prelude / README 主路径退出。
 - 已收口：Quote / Series 已移除显式 `start()`；`close()` 仅表示提前释放资源。
-- 下一轮目标：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`。
+- 已收口：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

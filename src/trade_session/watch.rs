@@ -1,9 +1,9 @@
-use super::{PositionCallback, TradeEventHub, TradeSession};
+use super::{TradeEventHub, TradeSession};
 use crate::datamanager::DataManager;
 use crate::types::{Order, Trade};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 impl TradeSession {
     /// 启动数据监听
@@ -18,8 +18,7 @@ impl TradeSession {
         let logged_in = Arc::clone(&self.logged_in);
         let running = Arc::clone(&self.running);
         let trade_events = Arc::clone(&self.trade_events);
-        let on_account = Arc::clone(&self.on_account);
-        let on_position = Arc::clone(&self.on_position);
+        let snapshot_epoch_tx = self.snapshot_epoch_tx.clone();
         let mut epoch_rx = dm.subscribe_epoch();
 
         info!("TradeSession 开始监听数据更新");
@@ -40,7 +39,15 @@ impl TradeSession {
                     continue;
                 }
 
-                if let Some(serde_json::Value::Object(session_map)) = dm.get_by_path(&["trade", &user_id, "session"])
+                let session_changed = dm.get_path_epoch(&["trade", &user_id, "session"]) > last_processed_epoch;
+                let account_changed = dm.get_path_epoch(&["trade", &user_id, "accounts", "CNY"]) > last_processed_epoch;
+                let positions_changed = dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_processed_epoch;
+                let orders_changed = dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_processed_epoch;
+                let trades_changed = dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_processed_epoch;
+
+                if session_changed
+                    && let Some(serde_json::Value::Object(session_map)) =
+                        dm.get_by_path(&["trade", &user_id, "session"])
                     && session_map
                         .get("trading_day")
                         .is_some_and(|trading_day| !trading_day.is_null())
@@ -51,67 +58,29 @@ impl TradeSession {
                     info!("交易会话已登录: user_id={}", user_id);
                 }
 
-                if dm.get_path_epoch(&["trade", &user_id, "accounts", "CNY"]) > last_processed_epoch {
-                    match dm.get_account_data(&user_id, "CNY") {
-                        Ok(account) => {
-                            debug!("账户更新: balance={}", account.balance);
-                            let callback = on_account.read().await.clone();
-                            if let Some(callback) = callback {
-                                callback(account);
-                            }
-                        }
-                        Err(e) => {
-                            error!("获取账户数据失败（这不应该发生）: {}", e);
-                        }
-                    }
+                if account_changed {
+                    debug!("账户快照已更新: user_id={}", user_id);
                 }
 
-                if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_processed_epoch {
-                    Self::process_position_update(&dm, &user_id, &on_position, last_processed_epoch).await;
+                if positions_changed {
+                    debug!("持仓快照已更新: user_id={}", user_id);
                 }
 
-                if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_processed_epoch {
+                if orders_changed {
                     Self::process_order_update(&dm, &user_id, &trade_events, last_processed_epoch).await;
                 }
 
-                if dm.get_path_epoch(&["trade", &user_id, "trades"]) > last_processed_epoch {
+                if trades_changed {
                     Self::process_trade_update(&dm, &user_id, &trade_events, last_processed_epoch).await;
+                }
+
+                if session_changed || account_changed || positions_changed || orders_changed || trades_changed {
+                    let _ = snapshot_epoch_tx.send_replace(Some(current_global_epoch));
                 }
 
                 last_processed_epoch = current_global_epoch;
             }
         }));
-    }
-
-    /// 处理持仓更新
-    async fn process_position_update(
-        dm: &Arc<DataManager>,
-        user_id: &str,
-        on_position: &PositionCallback,
-        last_epoch: i64,
-    ) {
-        if let Some(serde_json::Value::Object(positions_map)) = dm.get_by_path(&["trade", user_id, "positions"]) {
-            for (symbol, _) in &positions_map {
-                if symbol.starts_with('_') {
-                    continue;
-                }
-
-                if dm.get_path_epoch(&["trade", user_id, "positions", symbol]) > last_epoch {
-                    match dm.get_position_data(user_id, symbol) {
-                        Ok(position) => {
-                            debug!("持仓更新: symbol={}", symbol);
-                            let callback = on_position.read().await.clone();
-                            if let Some(callback) = callback {
-                                callback(symbol.clone(), position);
-                            }
-                        }
-                        Err(e) => {
-                            error!("获取持仓数据失败: symbol={}, error={}", symbol, e);
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// 处理委托单更新

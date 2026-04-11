@@ -11,18 +11,10 @@ mod watch;
 mod tests;
 
 use crate::datamanager::DataManager;
-use crate::types::{Account, Notification, Position};
 use crate::websocket::TqTradeWebsocket;
-use async_channel::{Receiver, Sender};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-
-type AccountCallback = Arc<RwLock<Option<Arc<dyn Fn(Account) + Send + Sync>>>>;
-type PositionCallback = Arc<RwLock<Option<Arc<dyn Fn(String, Position) + Send + Sync>>>>;
-type NotificationCallback = Arc<RwLock<Option<Arc<dyn Fn(Notification) + Send + Sync>>>>;
-type ErrorCallback = Arc<RwLock<Option<Arc<dyn Fn(String) + Send + Sync>>>>;
 
 pub(crate) use events::TradeEventHub;
 pub use events::{
@@ -39,14 +31,7 @@ pub struct TradeSession {
     dm: Arc<DataManager>,
     ws: Arc<TqTradeWebsocket>,
     trade_events: Arc<TradeEventHub>,
-
-    notification_tx: Sender<Notification>,
-    notification_rx: Receiver<Notification>,
-
-    on_account: AccountCallback,
-    on_position: PositionCallback,
-    on_notification: NotificationCallback,
-    on_error: ErrorCallback,
+    snapshot_epoch_tx: tokio::sync::watch::Sender<Option<i64>>,
 
     logged_in: Arc<AtomicBool>,
     running: Arc<AtomicBool>,

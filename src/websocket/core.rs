@@ -991,6 +991,12 @@ fn peek_frame() -> Frame {
 
 #[cfg(test)]
 impl TqWebsocket {
+    pub(crate) fn emit_error_for_test(&self, message: String) {
+        if let Some(callback) = self.on_error.read().unwrap().clone() {
+            callback(message);
+        }
+    }
+
     pub(crate) fn force_send_failure_for_test(&self) {
         *self.status.write().unwrap() = WebSocketStatus::Open;
         let (tx, rx) = tokio::sync::mpsc::channel::<WsIoCommand>(1);

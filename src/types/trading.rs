@@ -298,7 +298,7 @@ pub struct NotifyEvent {
 }
 
 /// 通知
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
     pub code: String,
     pub level: String,

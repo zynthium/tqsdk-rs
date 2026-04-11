@@ -157,6 +157,7 @@ impl TradeSession {
         }
 
         self.logged_in.store(false, Ordering::SeqCst);
+        let _ = self.snapshot_epoch_tx.send_replace(Some(0));
 
         info!("连接交易服务器: broker={}, user_id={}", self.broker, self.user_id);
 
@@ -204,6 +205,7 @@ impl TradeSession {
 
         info!("关闭交易会话");
         self.logged_in.store(false, Ordering::SeqCst);
+        let _ = self.snapshot_epoch_tx.send_replace(None);
         self.stop_watch_task();
         self.trade_events.close();
         self.ws.close().await?;

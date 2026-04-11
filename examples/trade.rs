@@ -64,78 +64,83 @@ async fn trade_reliable_event_example() {
     // .create_trade_session("X兴证期货", &sim_user_id, &sim_password)
     .expect("创建交易会话失败");
 
-    // 先注册账户更新回调（避免丢失消息）
-    trader
-        .on_account(|account| {
-            info!(
-                "💰 账户更新: 权益={:.2}, 可用={:.2}, 风险度={:.2}%",
-                account.balance,
-                account.available,
-                account.risk_ratio * 100.0
-            );
-        })
-        .await;
-
-    // 注册持仓更新回调（单个持仓）
-    trader
-        .on_position(|symbol, pos| {
-            let total_long = pos.volume_long_today + pos.volume_long_his;
-            let total_short = pos.volume_short_today + pos.volume_short_his;
-
-            if total_long > 0 || total_short > 0 {
-                info!(
-                    "📊 {} 持仓更新: 多头={}, 空头={}, 浮动盈亏={:.2}",
-                    symbol, total_long, total_short, pos.float_profit
-                );
-            }
-        })
-        .await;
-
-    let mut order_events = trader.subscribe_order_events();
+    let snapshot_trader = trader.clone();
     tokio::spawn(async move {
-        while let Ok(event) = order_events.recv().await {
-            if let TradeSessionEventKind::OrderUpdated { order_id, order } = event.kind {
-                info!(
-                    "📝 订单 {}: {}.{} {} {}@{:.2}, 状态={}, 剩余={}",
-                    order_id,
-                    order.exchange_id,
-                    order.instrument_id,
-                    order.direction,
-                    order.offset,
-                    order.price(),
-                    order.status,
-                    order.volume_left
-                );
+        loop {
+            match snapshot_trader.wait_update().await {
+                Ok(()) => {
+                    if let Ok(account) = snapshot_trader.get_account().await {
+                        info!(
+                            "💰 账户快照: 权益={:.2}, 可用={:.2}, 风险度={:.2}%",
+                            account.balance,
+                            account.available,
+                            account.risk_ratio * 100.0
+                        );
+                    }
+
+                    if let Ok(positions) = snapshot_trader.get_positions().await {
+                        for (symbol, pos) in positions {
+                            let total_long = pos.volume_long_today + pos.volume_long_his;
+                            let total_short = pos.volume_short_today + pos.volume_short_his;
+                            if total_long > 0 || total_short > 0 {
+                                info!(
+                                    "📊 {} 持仓快照: 多头={}, 空头={}, 浮动盈亏={:.2}",
+                                    symbol, total_long, total_short, pos.float_profit
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    info!("交易快照监听结束: {}", err);
+                    break;
+                }
             }
         }
     });
 
-    let mut trade_events = trader.subscribe_trade_events();
+    let mut events = trader.subscribe_events();
     tokio::spawn(async move {
-        while let Ok(event) = trade_events.recv().await {
-            if let TradeSessionEventKind::TradeCreated { trade_id, trade } = event.kind {
-                info!(
-                    "✅ 成交 {}: {}.{} {} {}@{:.2} x{}, 手续费={:.2}",
-                    trade_id,
-                    trade.exchange_id,
-                    trade.instrument_id,
-                    trade.direction,
-                    trade.offset,
-                    trade.price,
-                    trade.volume,
-                    trade.commission
-                );
+        while let Ok(event) = events.recv().await {
+            match event.kind {
+                TradeSessionEventKind::OrderUpdated { order_id, order } => {
+                    info!(
+                        "📝 订单 {}: {}.{} {} {}@{:.2}, 状态={}, 剩余={}",
+                        order_id,
+                        order.exchange_id,
+                        order.instrument_id,
+                        order.direction,
+                        order.offset,
+                        order.price(),
+                        order.status,
+                        order.volume_left
+                    );
+                }
+                TradeSessionEventKind::TradeCreated { trade_id, trade } => {
+                    info!(
+                        "✅ 成交 {}: {}.{} {} {}@{:.2} x{}, 手续费={:.2}",
+                        trade_id,
+                        trade.exchange_id,
+                        trade.instrument_id,
+                        trade.direction,
+                        trade.offset,
+                        trade.price,
+                        trade.volume,
+                        trade.commission
+                    );
+                }
+                TradeSessionEventKind::NotificationReceived { notification } => {
+                    info!("🔔 通知: {}", notification.content);
+                }
+                TradeSessionEventKind::TransportError { message } => {
+                    info!("⚠️ 异步错误: {}", message);
+                }
+                _ => {}
             }
         }
     });
 
-    trader
-        .on_notification(|notification| {
-            info!("🔔 通知: {}", notification.content);
-        })
-        .await;
-
-    // 所有回调和事件流注册完毕后，再连接交易服务器（避免丢失订阅后的更新）
+    // 先建立 snapshot / event 消费路径，再连接交易服务器
     info!("连接交易服务器...");
     trader.connect().await.expect("连接失败");
 

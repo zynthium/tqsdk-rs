@@ -1,16 +1,13 @@
 use super::{
-    ErrorCallback, NotificationCallback, OrderEventStream, TradeEventHub, TradeEventRecvError, TradeEventStream,
-    TradeOnlyEventStream, TradeSession, TradeSessionEventKind,
+    OrderEventStream, TradeEventHub, TradeEventRecvError, TradeEventStream, TradeOnlyEventStream, TradeSession,
+    TradeSessionEventKind,
 };
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
-use crate::types::{Account, Notification, Position};
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
-use async_channel::{Receiver, TrySendError, bounded};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 impl TradeSession {
     /// 创建交易会话
@@ -23,46 +20,18 @@ impl TradeSession {
         ws_config: WebSocketConfig,
         reliable_events_max_retained: usize,
     ) -> Self {
-        let trade_channel_capacity = ws_config.message_queue_capacity.max(1);
         let trade_events = Arc::new(TradeEventHub::new(reliable_events_max_retained));
-
-        let (notification_tx, notification_rx) = bounded(trade_channel_capacity);
+        let (snapshot_epoch_tx, _) = tokio::sync::watch::channel(Some(0i64));
 
         let ws = Arc::new(TqTradeWebsocket::new(ws_url, Arc::clone(&dm), ws_config));
-
-        let on_notification: NotificationCallback = Arc::new(RwLock::new(None));
-        let on_error: ErrorCallback = Arc::new(RwLock::new(None));
-
-        let noti_tx = notification_tx.clone();
-        let on_notification_for_ws = Arc::clone(&on_notification);
+        let trade_events_for_notify = Arc::clone(&trade_events);
         ws.on_notify(move |noti| {
-            let noti_tx = noti_tx.clone();
-            let on_notification_for_ws = Arc::clone(&on_notification_for_ws);
-            tokio::spawn(async move {
-                match noti_tx.try_send(noti.clone()) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(_)) => {
-                        warn!("TradeSession 通知队列已满，丢弃一条通知");
-                    }
-                    Err(TrySendError::Closed(_)) => {}
-                }
-
-                let callback = on_notification_for_ws.read().await.clone();
-                if let Some(callback) = callback {
-                    callback(noti);
-                }
-            });
+            let _ = trade_events_for_notify.publish_notification(noti);
         });
 
-        let on_error_for_ws = Arc::clone(&on_error);
+        let trade_events_for_error = Arc::clone(&trade_events);
         ws.on_error(move |msg| {
-            let on_error_for_ws = Arc::clone(&on_error_for_ws);
-            tokio::spawn(async move {
-                let callback = on_error_for_ws.read().await.clone();
-                if let Some(callback) = callback {
-                    callback(msg);
-                }
-            });
+            let _ = trade_events_for_error.publish_transport_error(msg);
         });
 
         Self {
@@ -72,12 +41,7 @@ impl TradeSession {
             dm,
             ws,
             trade_events,
-            notification_tx,
-            notification_rx,
-            on_account: Arc::new(RwLock::new(None)),
-            on_position: Arc::new(RwLock::new(None)),
-            on_notification,
-            on_error,
+            snapshot_epoch_tx,
             logged_in: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
             watch_task: Arc::new(std::sync::Mutex::new(None)),
@@ -111,42 +75,6 @@ impl TradeSession {
         }
     }
 
-    /// 注册账户更新回调
-    pub async fn on_account<F>(&self, handler: F)
-    where
-        F: Fn(Account) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_account.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
-    /// 注册持仓更新回调
-    pub async fn on_position<F>(&self, handler: F)
-    where
-        F: Fn(String, Position) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_position.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
-    /// 注册通知回调
-    pub async fn on_notification<F>(&self, handler: F)
-    where
-        F: Fn(Notification) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_notification.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
-    /// 注册错误回调
-    pub async fn on_error<F>(&self, handler: F)
-    where
-        F: Fn(String) + Send + Sync + 'static,
-    {
-        let mut guard = self.on_error.write().await;
-        *guard = Some(Arc::new(handler));
-    }
-
     /// 订阅可靠交易事件流（仅接收订阅之后产生的事件）
     pub fn subscribe_events(&self) -> TradeEventStream {
         self.trade_events.subscribe_tail()
@@ -160,6 +88,28 @@ impl TradeSession {
     /// 仅订阅成交创建事件
     pub fn subscribe_trade_events(&self) -> TradeOnlyEventStream {
         self.trade_events.subscribe_trades()
+    }
+
+    /// 等待交易快照在本会话下推进至少一次。
+    pub async fn wait_update(&self) -> Result<()> {
+        if !self.running.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(TqError::InternalError("交易会话未连接或已关闭".to_string()));
+        }
+
+        let mut rx = self.snapshot_epoch_tx.subscribe();
+        let baseline = *rx.borrow_and_update();
+        loop {
+            if rx.changed().await.is_err() {
+                return Err(TqError::InternalError("交易快照订阅已关闭".to_string()));
+            }
+
+            let current = *rx.borrow_and_update();
+            match current {
+                Some(epoch) if Some(epoch) > baseline => return Ok(()),
+                None => return Err(TqError::InternalError("交易会话已关闭".to_string())),
+                _ => {}
+            }
+        }
     }
 
     /// 等待指定订单出现后续可靠更新
@@ -187,11 +137,6 @@ impl TradeSession {
                 }
             }
         }
-    }
-
-    /// 获取通知 Channel（克隆接收端）
-    pub fn notification_channel(&self) -> Receiver<Notification> {
-        self.notification_rx.clone()
     }
 
     #[cfg(test)]

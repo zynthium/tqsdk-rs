@@ -186,18 +186,18 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
 - Modify: `docs/migration-remove-legacy-compat.md`
 - Test: `src/trade_session/tests.rs`
 
-- [ ] 给 `TradeSession` 增加 `wait_update()`，语义是“等待交易 snapshot epoch 推进”。
-- [ ] 保留 `get_account()` / `get_position()` / `get_positions()` / `get_orders()` / `get_trades()` 作为 snapshot getter。
-- [ ] 删除 `on_account()` 与 `on_position()`；账户和持仓从此只走 `wait_update()` + getter。
-- [ ] 删除 `on_notification()`、`on_error()`、`notification_channel()`。
-- [ ] 扩展 `TradeSessionEventKind`：
+- [x] 给 `TradeSession` 增加 `wait_update()`，语义是“等待交易 snapshot epoch 推进”。
+- [x] 保留 `get_account()` / `get_position()` / `get_positions()` / `get_orders()` / `get_trades()` 作为 snapshot getter。
+- [x] 删除 `on_account()` 与 `on_position()`；账户和持仓从此只走 `wait_update()` + getter。
+- [x] 删除 `on_notification()`、`on_error()`、`notification_channel()`。
+- [x] 扩展 `TradeSessionEventKind`：
   `NotificationReceived { notification }`
   `TransportError { message }`
-- [ ] 统一规定：`subscribe_events()` 是交易侧唯一 push-style 公共入口；订单、成交、通知、异步错误都通过事件流消费。
-- [ ] 更新 `examples/trade.rs`：
+- [x] 统一规定：`subscribe_events()` 是交易侧唯一 push-style 公共入口；订单、成交、通知、异步错误都通过事件流消费。
+- [x] 更新 `examples/trade.rs`：
   用 `session.wait_update().await?` 后读取账户/持仓快照。
   用 `subscribe_order_events()` / `subscribe_trade_events()` 或 `subscribe_events()` 读取事件。
-- [ ] 删除所有 README 中“先注册回调再 connect”的叙述。
+- [x] 删除所有 README 中“先注册回调再 connect”的叙述。
 
 ## Task 5: Tighten Root And Prelude Exports For The Final API Shape
 

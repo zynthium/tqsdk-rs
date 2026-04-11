@@ -360,6 +360,16 @@ impl TqTradeWebsocket {
 
 #[cfg(test)]
 impl TqTradeWebsocket {
+    pub(crate) fn emit_notify_for_test(&self, notification: crate::types::Notification) {
+        if let Some(callback) = self.runtime.on_notify.read().unwrap().clone() {
+            callback(notification);
+        }
+    }
+
+    pub(crate) fn emit_error_for_test(&self, message: String) {
+        self.base.emit_error_for_test(message);
+    }
+
     #[allow(dead_code)]
     pub(crate) fn force_send_failure_for_test(&self) {
         self.base.force_send_failure_for_test();

@@ -1,4 +1,4 @@
-use crate::types::{Order, Trade};
+use crate::types::{Notification, Order, Trade};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -15,6 +15,8 @@ pub struct TradeSessionEvent {
 pub enum TradeSessionEventKind {
     OrderUpdated { order_id: String, order: Order },
     TradeCreated { trade_id: String, trade: Trade },
+    NotificationReceived { notification: Notification },
+    TransportError { message: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,11 +109,7 @@ impl TradeEventHub {
         }
 
         state.last_emitted_orders.insert(order_id.clone(), order.clone());
-        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        state.events.push_back(Arc::new(TradeSessionEvent {
-            seq,
-            kind: TradeSessionEventKind::OrderUpdated { order_id, order },
-        }));
+        let seq = self.push_event_locked(&mut state, TradeSessionEventKind::OrderUpdated { order_id, order });
         self.trim_locked(&mut state);
         drop(state);
         self.notify.notify_waiters();
@@ -128,11 +126,33 @@ impl TradeEventHub {
             return None;
         }
 
-        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
-        state.events.push_back(Arc::new(TradeSessionEvent {
-            seq,
-            kind: TradeSessionEventKind::TradeCreated { trade_id, trade },
-        }));
+        let seq = self.push_event_locked(&mut state, TradeSessionEventKind::TradeCreated { trade_id, trade });
+        self.trim_locked(&mut state);
+        drop(state);
+        self.notify.notify_waiters();
+        Some(seq)
+    }
+
+    pub(crate) fn publish_notification(&self, notification: Notification) -> Option<u64> {
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        let mut state = self.state.lock().unwrap();
+        let seq = self.push_event_locked(&mut state, TradeSessionEventKind::NotificationReceived { notification });
+        self.trim_locked(&mut state);
+        drop(state);
+        self.notify.notify_waiters();
+        Some(seq)
+    }
+
+    pub(crate) fn publish_transport_error(&self, message: String) -> Option<u64> {
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+
+        let mut state = self.state.lock().unwrap();
+        let seq = self.push_event_locked(&mut state, TradeSessionEventKind::TransportError { message });
         self.trim_locked(&mut state);
         drop(state);
         self.notify.notify_waiters();
@@ -177,6 +197,12 @@ impl TradeEventHub {
             }
             None => state.events.clear(),
         }
+    }
+
+    fn push_event_locked(&self, state: &mut HubState, kind: TradeSessionEventKind) -> u64 {
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        state.events.push_back(Arc::new(TradeSessionEvent { seq, kind }));
+        seq
     }
 
     #[cfg(test)]
