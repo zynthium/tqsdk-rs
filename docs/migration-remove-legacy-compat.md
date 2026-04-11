@@ -44,6 +44,7 @@
 | `DataManager::{on_data, on_data_register, off_data}` | `subscribe_epoch()` + `get_path_epoch()` + `watch/unwatch` | merge 通知改为 coalesced state signal，不再提供全局 callback plumbing |
 | `MergeSemanticsConfig` root/prelude export | `tqsdk_rs::datamanager::MergeSemanticsConfig` | 进阶 merge 语义调优收回到 `datamanager` 命名空间，避免污染顶层入口 |
 | `SeriesSubscription` callback / stream fan-out | `SeriesSubscription` snapshot / window state API | 迁移方向是 pull-model，不再新增 callback/channel 用法 |
+| `TradeSession::{account_channel, position_channel}` | `get_account()` / `get_position()` / `get_positions()` + `on_account()` / `on_position()` | 账户与持仓属于最新状态读取，不再提供 best-effort snapshot channel |
 
 ## Quote Lifecycle Note
 
@@ -144,4 +145,5 @@ let scheduler = account
 - 已收口：`InsAPI`、`SeriesAPI`、`SeriesCachePolicy`、`KlineKey`、`MarketDataState`、`MarketDataUpdates` 与 `SymbolId` 不再从 crate root 直接导出；显式类型引用请走对应模块命名空间。
 - 已收口：`Authenticator`、`ClientOption` 与 `BacktestResult` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::{auth, client, replay}::{...}`。
 - 已收口：`Client::market_state()` 已删除；从 `Client` 读取行情状态请统一通过 `client.tqapi()`。
+- 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 snapshot getter 或回调。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

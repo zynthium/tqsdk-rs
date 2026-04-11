@@ -4,7 +4,7 @@ use super::{
 };
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
-use crate::types::{Account, Notification, Position, PositionUpdate};
+use crate::types::{Account, Notification, Position};
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
 use async_channel::{Receiver, TrySendError, bounded};
 use std::sync::Arc;
@@ -26,8 +26,6 @@ impl TradeSession {
         let trade_channel_capacity = ws_config.message_queue_capacity.max(1);
         let trade_events = Arc::new(TradeEventHub::new(reliable_events_max_retained));
 
-        let (account_tx, account_rx) = bounded(trade_channel_capacity);
-        let (position_tx, position_rx) = bounded(trade_channel_capacity);
         let (notification_tx, notification_rx) = bounded(trade_channel_capacity);
 
         let ws = Arc::new(TqTradeWebsocket::new(ws_url, Arc::clone(&dm), ws_config));
@@ -74,10 +72,6 @@ impl TradeSession {
             dm,
             ws,
             trade_events,
-            account_tx,
-            account_rx,
-            position_tx,
-            position_rx,
             notification_tx,
             notification_rx,
             on_account: Arc::new(RwLock::new(None)),
@@ -151,16 +145,6 @@ impl TradeSession {
     {
         let mut guard = self.on_error.write().await;
         *guard = Some(Arc::new(handler));
-    }
-
-    /// 获取账户更新 Channel（克隆接收端）
-    pub fn account_channel(&self) -> Receiver<Account> {
-        self.account_rx.clone()
-    }
-
-    /// 获取持仓更新 Channel（克隆接收端）
-    pub fn position_channel(&self) -> Receiver<PositionUpdate> {
-        self.position_rx.clone()
     }
 
     /// 订阅可靠交易事件流（仅接收订阅之后产生的事件）

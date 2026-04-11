@@ -58,6 +58,15 @@ impl TradeSession {
     }
 
     /// 获取账户信息
+    ///
+    /// 最新账户/持仓状态应通过快照 getter 或回调消费，而不是 best-effort channel。
+    ///
+    /// ```compile_fail
+    /// fn removed_snapshot_channels(session: &tqsdk_rs::TradeSession) {
+    ///     let _ = session.account_channel();
+    ///     let _ = session.position_channel();
+    /// }
+    /// ```
     pub async fn get_account(&self) -> Result<Account> {
         self.dm.get_account_data(&self.user_id, "CNY")
     }

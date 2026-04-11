@@ -11,7 +11,7 @@ mod watch;
 mod tests;
 
 use crate::datamanager::DataManager;
-use crate::types::{Account, Notification, Position, PositionUpdate};
+use crate::types::{Account, Notification, Position};
 use crate::websocket::TqTradeWebsocket;
 use async_channel::{Receiver, Sender};
 use std::sync::Arc;
@@ -40,10 +40,6 @@ pub struct TradeSession {
     ws: Arc<TqTradeWebsocket>,
     trade_events: Arc<TradeEventHub>,
 
-    account_tx: Sender<Account>,
-    account_rx: Receiver<Account>,
-    position_tx: Sender<PositionUpdate>,
-    position_rx: Receiver<PositionUpdate>,
     notification_tx: Sender<Notification>,
     notification_rx: Receiver<Notification>,
 

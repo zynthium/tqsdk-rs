@@ -1,7 +1,6 @@
 use super::{PositionCallback, TradeEventHub, TradeSession};
 use crate::datamanager::DataManager;
-use crate::types::{Order, PositionUpdate, Trade};
-use async_channel::{Sender, TrySendError};
+use crate::types::{Order, Trade};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tracing::{debug, error, info, warn};
@@ -18,8 +17,6 @@ impl TradeSession {
         let user_id = self.user_id.clone();
         let logged_in = Arc::clone(&self.logged_in);
         let running = Arc::clone(&self.running);
-        let account_tx = self.account_tx.clone();
-        let position_tx = self.position_tx.clone();
         let trade_events = Arc::clone(&self.trade_events);
         let on_account = Arc::clone(&self.on_account);
         let on_position = Arc::clone(&self.on_position);
@@ -58,13 +55,6 @@ impl TradeSession {
                     match dm.get_account_data(&user_id, "CNY") {
                         Ok(account) => {
                             debug!("账户更新: balance={}", account.balance);
-                            match account_tx.try_send(account.clone()) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(_)) => {
-                                    warn!("TradeSession 账户队列已满，丢弃一次更新");
-                                }
-                                Err(TrySendError::Closed(_)) => {}
-                            }
                             let callback = on_account.read().await.clone();
                             if let Some(callback) = callback {
                                 callback(account);
@@ -77,8 +67,7 @@ impl TradeSession {
                 }
 
                 if dm.get_path_epoch(&["trade", &user_id, "positions"]) > last_processed_epoch {
-                    Self::process_position_update(&dm, &user_id, &position_tx, &on_position, last_processed_epoch)
-                        .await;
+                    Self::process_position_update(&dm, &user_id, &on_position, last_processed_epoch).await;
                 }
 
                 if dm.get_path_epoch(&["trade", &user_id, "orders"]) > last_processed_epoch {
@@ -98,7 +87,6 @@ impl TradeSession {
     async fn process_position_update(
         dm: &Arc<DataManager>,
         user_id: &str,
-        position_tx: &Sender<PositionUpdate>,
         on_position: &PositionCallback,
         last_epoch: i64,
     ) {
@@ -112,20 +100,6 @@ impl TradeSession {
                     match dm.get_position_data(user_id, symbol) {
                         Ok(position) => {
                             debug!("持仓更新: symbol={}", symbol);
-
-                            let update = PositionUpdate {
-                                symbol: symbol.clone(),
-                                position: position.clone(),
-                            };
-
-                            match position_tx.try_send(update) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(_)) => {
-                                    warn!("TradeSession 持仓队列已满，丢弃一次更新");
-                                }
-                                Err(TrySendError::Closed(_)) => {}
-                            }
-
                             let callback = on_position.read().await.clone();
                             if let Some(callback) = callback {
                                 callback(symbol.clone(), position);

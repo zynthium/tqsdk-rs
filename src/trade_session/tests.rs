@@ -4,8 +4,9 @@ use crate::types::{DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, PRICE_TYPE_LI
 use crate::websocket::WebSocketConfig;
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Notify;
 use tokio::time::{Duration, sleep, timeout};
 
 fn build_dm() -> Arc<DataManager> {
@@ -71,9 +72,32 @@ fn position_json() -> serde_json::Value {
 async fn trade_session_epoch_watcher_still_delivers_snapshot_and_reliable_event_updates() {
     let dm = build_dm();
     let session = build_session(Arc::clone(&dm));
-    let account_rx = session.account_channel();
-    let position_rx = session.position_channel();
+    let account_balance = Arc::new(Mutex::new(None));
+    let account_ready = Arc::new(Notify::new());
+    let position_symbol = Arc::new(Mutex::new(None));
+    let position_ready = Arc::new(Notify::new());
     let mut events = session.subscribe_events();
+
+    session
+        .on_account({
+            let account_balance = Arc::clone(&account_balance);
+            let account_ready = Arc::clone(&account_ready);
+            move |account| {
+                *account_balance.lock().unwrap() = Some(account.balance);
+                account_ready.notify_one();
+            }
+        })
+        .await;
+    session
+        .on_position({
+            let position_symbol = Arc::clone(&position_symbol);
+            let position_ready = Arc::clone(&position_ready);
+            move |symbol, _position| {
+                *position_symbol.lock().unwrap() = Some(symbol);
+                position_ready.notify_one();
+            }
+        })
+        .await;
 
     session.running.store(true, Ordering::SeqCst);
     session.start_watching().await;
@@ -104,19 +128,19 @@ async fn trade_session_epoch_watcher_still_delivers_snapshot_and_reliable_event_
         true,
     );
 
-    let account = timeout(Duration::from_secs(1), account_rx.recv())
+    timeout(Duration::from_secs(1), account_ready.notified()).await.unwrap();
+    timeout(Duration::from_secs(1), position_ready.notified())
         .await
-        .unwrap()
-        .unwrap();
-    let position = timeout(Duration::from_secs(1), position_rx.recv())
-        .await
-        .unwrap()
         .unwrap();
     let first = timeout(Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
     let second = timeout(Duration::from_secs(1), events.recv()).await.unwrap().unwrap();
+    let account = session.get_account().await.unwrap();
+    let positions = session.get_positions().await.unwrap();
 
+    assert_eq!(*account_balance.lock().unwrap(), Some(1000.0));
+    assert_eq!(position_symbol.lock().unwrap().as_deref(), Some("SHFE.au2602"));
     assert_eq!(account.balance, 1000.0);
-    assert_eq!(position.symbol, "SHFE.au2602");
+    assert_eq!(positions["SHFE.au2602"].volume_long, 1);
     assert!(session.logged_in.load(Ordering::SeqCst));
     assert!(matches!(
         first.kind,
