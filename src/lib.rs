@@ -81,7 +81,7 @@ pub use client::{Client, ClientBuilder, ClientConfig, EndpointConfig, TradeSessi
 pub use datamanager::{DataManager, DataManagerConfig};
 pub use errors::{Result, TqError};
 pub use logger::{create_logger_layer, init_logger};
-pub use marketdata::{KlineRef, QuoteRef, TickRef, TqApi};
+pub use marketdata::{KlineRef, QuoteRef, TickRef};
 pub use quote::QuoteSubscription;
 pub use replay::{ReplayConfig, ReplaySession};
 pub use runtime::{

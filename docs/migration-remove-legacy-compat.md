@@ -34,7 +34,7 @@ breaking cleanup 完成后的公开模型收敛为四条主路径：
 | `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()` |
 | `runtime::{ExecutionAdapter, MarketAdapter, LiveExecutionAdapter, LiveMarketAdapter, TaskRegistry, TaskId, ChildOrderRunner, ...}` | `ClientBuilder::build_runtime()` / `Client::into_runtime()` / `ReplaySession::runtime()` | runtime 装配层收口为内部实现，公开 API 聚焦 ready-to-use `TqRuntime` 与 Builder task |
 | `TargetPosBuilder` / `TargetPosSchedulerBuilder` / `TargetPosSchedulerConfig` / `TargetPosExecutionReport` / `RuntimeMode` / `RuntimeError` / `PriceResolver` root/prelude export | `tqsdk_rs::runtime::{...}` | runtime 细节类型与显式 builder 名称保留在 `runtime` 命名空间，不再污染 crate root / prelude |
-| `prelude::*` 中的 `DataManager` / `InsAPI` / `SeriesAPI` / 事件流 wrapper / `SeriesData` 等高级类型 | 显式 `use tqsdk_rs::{...}` 或对应模块路径 | prelude 聚焦常用 `Client` / `TqApi` / `ReplaySession` / `TqRuntime` / `TradeSession` 主路径，高级接口改为显式导入 |
+| `prelude::*` 中的 `DataManager` / `InsAPI` / `SeriesAPI` / `TqApi` / 事件流 wrapper / `SeriesData` 等高级类型 | 显式 `use tqsdk_rs::{...}` 或对应模块路径 | prelude 聚焦常用 `Client` / `ReplaySession` / `TqRuntime` / `TradeSession` 主路径，高级接口改为显式导入 |
 | `TradeEventStream` / `OrderEventStream` / `TradeOnlyEventStream` / `TradeEventRecvError` / `TradeSessionEvent` root export | `tqsdk_rs::trade_session::{...}` | 交易可靠事件的显式 stream/event 类型保留在 `trade_session` 命名空间；crate root 只保留常用 `TradeSession` 与 `TradeSessionEventKind` |
 | `InsAPI` / `SeriesAPI` / `SeriesCachePolicy` / `KlineKey` / `MarketDataState` / `MarketDataUpdates` / `SymbolId` root export | `tqsdk_rs::{ins, series, marketdata}::{...}` | query/series/marketdata 的高级类型继续保留模块级 public，crate root 聚焦高频 facade 和直接消费句柄 |
 | `Authenticator` / `ClientOption` / `BacktestResult` root/prelude export | `tqsdk_rs::{auth, client, replay}::{...}` | trait/type alias/result detail 继续保留模块级 public，但不再占用 crate root / prelude |
@@ -157,9 +157,10 @@ let scheduler = account
 - 已收口：`InsAPI`、`SeriesAPI`、`SeriesCachePolicy`、`KlineKey`、`MarketDataState`、`MarketDataUpdates` 与 `SymbolId` 不再从 crate root 直接导出；显式类型引用请走对应模块命名空间。
 - 已收口：`Authenticator`、`ClientOption` 与 `BacktestResult` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::{auth, client, replay}::{...}`。
 - 已收口：`Client::market_state()` 与 `Client::tqapi()` 已删除；从 `Client` 读取行情状态请统一通过 `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}`。
+- 已收口：`Client::ins()` 已删除；query facade 统一直接挂在 `Client` 上。
+- 已收口：`TqApi` 不再从 crate root / prelude 导出；如需进阶引用请显式使用 `tqsdk_rs::marketdata::TqApi`。
 - 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 `wait_update()` + snapshot getter。
 - 已收口：`Client::{kline_history,kline_history_with_focus}` 已删除；历史快照下载统一走 `Client::{get_kline_data_series,get_tick_data_series}`，并在入口检查 `tq_dl`。
-- 下一轮目标：`Client` 成为唯一 live 入口，`TqApi` / `SeriesAPI` / `InsAPI` 从 crate root / prelude / README 主路径退出。
 - 已收口：Quote / Series 已移除显式 `start()`；`close()` 仅表示提前释放资源。
 - 已收口：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`；`subscribe_order_events()` / `subscribe_trade_events()` 维持独立可靠 retention，不受通知/错误事件流量污染。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

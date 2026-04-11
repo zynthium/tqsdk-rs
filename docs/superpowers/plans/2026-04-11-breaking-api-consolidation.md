@@ -142,9 +142,9 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
   实时窗口订阅走 `kline(symbols, duration, data_length)`, `tick(symbol, data_length)`；
   一次性历史快照下载走 `get_kline_data_series(...)`, `get_tick_data_series(...)`。
 - [x] 删除 `Client::{kline_history,kline_history_with_focus}`，不再把内部历史窗口 `set_chart` 协议作为公开稳定接口。
-- [ ] 保留当前已有的 query facade，删除 `Client::ins()` 与 `Client::series()` 两个公开逃生口。
+- [x] 保留当前已有的 query facade，删除 `Client::ins()` 与 `Client::series()` 两个公开逃生口。
 - [x] 删除 `Client::tqapi()`，不再要求用户先取出 `TqApi` 再读状态。
-- [ ] 收紧 root/prelude export：`TqApi`、`SeriesAPI`、`InsAPI` 不再作为默认导出和文档主路径。
+- [x] 收紧 root/prelude export：`TqApi`、`SeriesAPI`、`InsAPI` 不再作为默认导出和文档主路径。
 - [ ] `TqApi` 退回 `marketdata` 内部或 advanced path，不再出现在 crate root、prelude、README 快速开始和 examples 中。
 - [x] 把 README 和 examples 改成只展示 `Client` 单入口路径。
 - [x] 为 `Client` 单入口补一组回归测试：
@@ -214,7 +214,7 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
 
 - [ ] root export 只保留高频 facade 和直接消费类型，不再把已经降级为 advanced/internal 的类型放在顶层。
 - [ ] prelude 只保留当前 README 快速开始真正需要的最短路径类型。
-- [ ] `TqApi` 不再从 crate root / prelude 导出；如果仍保留代码实体，也只作为 `tqsdk_rs::marketdata::TqApi` 的 advanced path。
+- [x] `TqApi` 不再从 crate root / prelude 导出；如果仍保留代码实体，也只作为 `tqsdk_rs::marketdata::TqApi` 的 advanced path。
 - [ ] `SeriesAPI` / `InsAPI` 明确退回模块级 advanced path；主文档不再展示。
 - [ ] 更新迁移文档中的 surface mapping 表和 current status。
 - [ ] 最后做一轮 README / examples / prelude 一致性检查，避免公开 API 和示例脱节。

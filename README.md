@@ -25,7 +25,8 @@
 
 - live API 收口到 `Client` 单入口。
   `Client` 将直接承载行情状态读取、序列订阅与 query facade；
-  `TqApi`、`SeriesAPI`、`InsAPI` 将退出 crate root / prelude / README 主路径。
+  `TqApi` 已退出 crate root / prelude / README 主路径；
+  `SeriesAPI`、`InsAPI` 仅保留模块级 advanced path。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out。
   `QuoteSubscription` / `SeriesSubscription` 已改为创建即生效。
 - `TradeSession` 将彻底按“状态 vs 事件”分层。
@@ -33,7 +34,7 @@
   订单/成交/通知/异步错误统一走可靠事件流。
 - 本轮 cleanup 不会引入 `TqClient` 同义 facade，不会保留长期 shim。
 
-当前 README 中的代码示例反映当前 canonical API；后续 breaking slices 将继续收口 `TradeSession` 与 root exports。
+当前 README 中的代码示例反映当前 canonical API；后续 breaking slices 只继续收口剩余的 advanced surface 与 `TradeSession` 细节。
 
 ## 功能模块
 

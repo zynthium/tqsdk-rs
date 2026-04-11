@@ -87,8 +87,7 @@ impl Client {
             .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))
     }
 
-    /// 获取合约查询 API
-    pub fn ins(&self) -> Result<Arc<InsAPI>> {
+    fn ins_api(&self) -> Result<Arc<InsAPI>> {
         if !self.market_active.load(Ordering::SeqCst) {
             return Err(TqError::InternalError("合约查询 API 未初始化或已关闭".to_string()));
         }
@@ -98,7 +97,7 @@ impl Client {
     }
 
     pub async fn query_graphql(&self, query: &str, variables: Option<serde_json::Value>) -> Result<serde_json::Value> {
-        self.ins()?.query_graphql(query, variables).await
+        self.ins_api()?.query_graphql(query, variables).await
     }
 
     pub async fn query_quotes(
@@ -109,7 +108,7 @@ impl Client {
         expired: Option<bool>,
         has_night: Option<bool>,
     ) -> Result<Vec<String>> {
-        self.ins()?
+        self.ins_api()?
             .query_quotes(ins_class, exchange_id, product_id, expired, has_night)
             .await
     }
@@ -120,7 +119,9 @@ impl Client {
         product_id: Option<&str>,
         has_night: Option<bool>,
     ) -> Result<Vec<String>> {
-        self.ins()?.query_cont_quotes(exchange_id, product_id, has_night).await
+        self.ins_api()?
+            .query_cont_quotes(exchange_id, product_id, has_night)
+            .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -134,7 +135,7 @@ impl Client {
         expired: Option<bool>,
         has_a: Option<bool>,
     ) -> Result<Vec<String>> {
-        self.ins()?
+        self.ins_api()?
             .query_options(
                 underlying_symbol,
                 option_class,
@@ -158,7 +159,7 @@ impl Client {
         exercise_month: Option<i32>,
         has_a: Option<bool>,
     ) -> Result<Vec<Option<String>>> {
-        self.ins()?
+        self.ins_api()?
             .query_atm_options(
                 underlying_symbol,
                 underlying_price,
@@ -180,7 +181,7 @@ impl Client {
         exercise_month: Option<i32>,
         has_a: Option<bool>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-        self.ins()?
+        self.ins_api()?
             .query_all_level_options(
                 underlying_symbol,
                 underlying_price,
@@ -200,13 +201,13 @@ impl Client {
         nearbys: &[i32],
         has_a: Option<bool>,
     ) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
-        self.ins()?
+        self.ins_api()?
             .query_all_level_finance_options(underlying_symbol, underlying_price, option_class, nearbys, has_a)
             .await
     }
 
     pub async fn query_symbol_info(&self, symbols: &[&str]) -> Result<Vec<serde_json::Value>> {
-        self.ins()?.query_symbol_info(symbols).await
+        self.ins_api()?.query_symbol_info(symbols).await
     }
 
     pub async fn query_symbol_settlement(
@@ -215,7 +216,7 @@ impl Client {
         days: i32,
         start_dt: Option<NaiveDate>,
     ) -> Result<Vec<SymbolSettlement>> {
-        self.ins()?.query_symbol_settlement(symbols, days, start_dt).await
+        self.ins_api()?.query_symbol_settlement(symbols, days, start_dt).await
     }
 
     pub async fn query_symbol_ranking(
@@ -226,7 +227,7 @@ impl Client {
         start_dt: Option<NaiveDate>,
         broker: Option<&str>,
     ) -> Result<Vec<SymbolRanking>> {
-        self.ins()?
+        self.ins_api()?
             .query_symbol_ranking(symbol, ranking_type, days, start_dt, broker)
             .await
     }
@@ -238,7 +239,7 @@ impl Client {
         align: Option<&str>,
         fill: Option<&str>,
     ) -> Result<Vec<EdbIndexData>> {
-        self.ins()?.query_edb_data(ids, n, align, fill).await
+        self.ins_api()?.query_edb_data(ids, n, align, fill).await
     }
 
     pub async fn get_trading_calendar(
@@ -246,11 +247,11 @@ impl Client {
         start_dt: NaiveDate,
         end_dt: NaiveDate,
     ) -> Result<Vec<TradingCalendarDay>> {
-        self.ins()?.get_trading_calendar(start_dt, end_dt).await
+        self.ins_api()?.get_trading_calendar(start_dt, end_dt).await
     }
 
     pub async fn get_trading_status(&self, symbol: &str) -> Result<Receiver<TradingStatus>> {
-        self.ins()?.get_trading_status(symbol).await
+        self.ins_api()?.get_trading_status(symbol).await
     }
 
     /// 订阅 K 线序列（单合约/多合约对齐）。

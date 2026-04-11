@@ -88,7 +88,7 @@ Client (facade + builder + market)
 
 ## Breaking Target
 
-- live 入口继续收口：`Client` 将直接暴露行情状态读取、序列订阅和 query facade；`TqApi`、`SeriesAPI`、`InsAPI` 退出 crate root / prelude / README 主路径。
+- live 主路径已收口到 `Client`：行情状态读取、序列订阅和 query facade 都直接挂在 `Client`；`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；当前已改为创建即生效。
 - `TradeSession` 继续按“状态 vs 事件”分层：
   账户/持仓是 snapshot getter + `wait_update()`。

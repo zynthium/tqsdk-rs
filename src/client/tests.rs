@@ -209,7 +209,7 @@ async fn close_invalidates_market_interfaces() {
     let client = build_client_with_market();
     client.close().await.unwrap();
 
-    assert!(client.ins().is_err());
+    assert!(client.query_quotes(None, None, None, None, None).await.is_err());
     assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
     assert!(client.kline("SHFE.au2602", Duration::from_secs(60), 64).await.is_err());
     assert!(client.tick("SHFE.au2602", 64).await.is_err());
