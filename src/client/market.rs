@@ -1,6 +1,8 @@
 use super::Client;
+use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
+use crate::marketdata::MarketDataState;
 use crate::replay::{HistoricalSource, InstrumentMetadata};
 use crate::series::{SeriesAPI, SeriesCachePolicy};
 use crate::types::Kline;
@@ -21,20 +23,124 @@ struct MarketBootstrap {
 
 #[derive(Clone)]
 pub(crate) struct SdkHistoricalSource {
+    state: Arc<SdkHistoricalSourceState>,
+}
+
+struct SdkHistoricalSourceState {
+    auth: Arc<tokio::sync::RwLock<dyn crate::auth::Authenticator>>,
+    config: crate::client::ClientConfig,
+    endpoints: crate::client::EndpointConfig,
+    apis: tokio::sync::Mutex<Option<HistoricalApis>>,
+}
+
+struct HistoricalApis {
+    _dm: Arc<DataManager>,
+    _quotes_ws: Arc<TqQuoteWebsocket>,
     ins: Arc<InsAPI>,
     series: Arc<SeriesAPI>,
 }
 
 impl SdkHistoricalSource {
-    pub(crate) fn new(ins: Arc<InsAPI>, series: Arc<SeriesAPI>) -> Self {
-        Self { ins, series }
+    pub(crate) fn new(
+        auth: Arc<tokio::sync::RwLock<dyn crate::auth::Authenticator>>,
+        config: crate::client::ClientConfig,
+        endpoints: crate::client::EndpointConfig,
+    ) -> Self {
+        Self {
+            state: Arc::new(SdkHistoricalSourceState {
+                auth,
+                config,
+                endpoints,
+                apis: tokio::sync::Mutex::new(None),
+            }),
+        }
+    }
+
+    async fn ensure_apis(&self) -> Result<(Arc<InsAPI>, Arc<SeriesAPI>)> {
+        let mut guard = self.state.apis.lock().await;
+        if let Some(apis) = guard.as_ref() {
+            return Ok((Arc::clone(&apis.ins), Arc::clone(&apis.series)));
+        }
+
+        let dm = Arc::new(DataManager::new(
+            std::collections::HashMap::new(),
+            DataManagerConfig {
+                default_view_width: self.state.config.view_width,
+                enable_auto_cleanup: true,
+                ..DataManagerConfig::default()
+            },
+        ));
+
+        let (md_url, headers) = {
+            let auth = self.state.auth.read().await;
+            let md_url = if let Some(md_url) = self.state.endpoints.md_url.as_deref() {
+                md_url.to_string()
+            } else {
+                auth.get_md_url(self.state.config.stock, true).await?
+            };
+            (md_url, auth.base_header())
+        };
+
+        preload_symbol_info_into_dm(
+            self.state.config.stock,
+            &self.state.endpoints.ins_url,
+            headers.clone(),
+            &dm,
+            None,
+        )
+        .await?;
+
+        let ws_config = WebSocketConfig {
+            headers,
+            auto_peek: false,
+            quote_subscribe_only_add: true,
+            message_queue_capacity: self.state.config.message_queue_capacity,
+            message_backlog_warn_step: self.state.config.message_backlog_warn_step,
+            message_batch_max: self.state.config.message_batch_max,
+            ..Default::default()
+        };
+        let quotes_ws = Arc::new(TqQuoteWebsocket::new(
+            md_url,
+            Arc::clone(&dm),
+            Arc::new(MarketDataState::default()),
+            ws_config,
+        ));
+        quotes_ws.init(false).await?;
+
+        let series = Arc::new(SeriesAPI::new_with_cache_policy(
+            Arc::clone(&dm),
+            Arc::clone(&quotes_ws),
+            Arc::clone(&self.state.auth),
+            SeriesCachePolicy {
+                enabled: self.state.config.series_disk_cache_enabled,
+                max_bytes: self.state.config.series_disk_cache_max_bytes,
+                retention_days: self.state.config.series_disk_cache_retention_days,
+            },
+        ));
+        let ins = Arc::new(InsAPI::new(
+            Arc::clone(&dm),
+            Arc::clone(&quotes_ws),
+            None,
+            Arc::clone(&self.state.auth),
+            self.state.config.stock,
+            self.state.endpoints.holiday_url.clone(),
+        ));
+
+        *guard = Some(HistoricalApis {
+            _dm: Arc::clone(&dm),
+            _quotes_ws: Arc::clone(&quotes_ws),
+            ins: Arc::clone(&ins),
+            series: Arc::clone(&series),
+        });
+        Ok((ins, series))
     }
 }
 
 #[async_trait(?Send)]
 impl HistoricalSource for SdkHistoricalSource {
     async fn instrument_metadata(&self, symbol: &str) -> Result<InstrumentMetadata> {
-        let mut rows = self.ins.query_symbol_info(&[symbol]).await?;
+        let (ins, _) = self.ensure_apis().await?;
+        let mut rows = ins.query_symbol_info(&[symbol]).await?;
         let row = rows
             .pop()
             .ok_or_else(|| TqError::DataNotFound(format!("instrument metadata not found: {symbol}")))?;
@@ -48,61 +154,21 @@ impl HistoricalSource for SdkHistoricalSource {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
-        self.series.kline_data_series(symbol, duration, start_dt, end_dt).await
+        let (_, series) = self.ensure_apis().await?;
+        series.kline_data_series(symbol, duration, start_dt, end_dt).await
     }
 }
 
 impl Client {
     async fn preload_symbol_info(&self, headers: HeaderMap) -> Result<()> {
-        if self.config.stock {
-            return Ok(());
-        }
-
-        let url = self.endpoints.ins_url.trim();
-        if url.is_empty() {
-            return Ok(());
-        }
-
-        let content = crate::utils::fetch_json_with_headers(url, headers).await?;
-        let symbols = content
-            .as_object()
-            .ok_or_else(|| TqError::ParseError("合约信息格式错误，应为对象".to_string()))?;
-
-        let mut quotes = Map::new();
-        for (symbol, item) in symbols {
-            let Some(source) = item.as_object() else {
-                continue;
-            };
-            quotes.insert(symbol.clone(), Value::Object(build_preloaded_quote(source)));
-        }
-
-        if let Some(mut quote) = quotes.remove("CSI.000300") {
-            if let Some(obj) = quote.as_object_mut() {
-                obj.insert("exchange_id".to_string(), Value::String("SSE".to_string()));
-            }
-            quotes.insert("SSE.000300".to_string(), quote);
-        }
-
-        for (symbol, quote_value) in &mut quotes {
-            if symbol.starts_with("CFFEX.IO")
-                && let Some(obj) = quote_value.as_object_mut()
-                && obj.get("ins_class").and_then(Value::as_str) == Some("OPTION")
-            {
-                obj.insert("underlying_symbol".to_string(), Value::String("SSE.000300".to_string()));
-            }
-        }
-
-        let mut payload = Map::new();
-        let quote_symbols = quotes.keys().cloned().collect::<Vec<_>>();
-        payload.insert("quotes".to_string(), Value::Object(quotes));
-        self.dm.merge_data(Value::Object(payload), true, true);
-        for symbol in quote_symbols {
-            if let Ok(mut quote) = self.dm.get_quote_data(&symbol) {
-                quote.update_change();
-                self.market_state.update_quote(symbol.into(), quote).await;
-            }
-        }
-        Ok(())
+        preload_symbol_info_into_dm(
+            self.config.stock,
+            &self.endpoints.ins_url,
+            headers,
+            &self.dm,
+            Some(&self.market_state),
+        )
+        .await
     }
 
     async fn load_market_bootstrap(&self, backtest: bool) -> Result<MarketBootstrap> {
@@ -201,22 +267,12 @@ impl Client {
         Ok(quotes_ws)
     }
 
-    pub(crate) async fn build_historical_source(&mut self) -> Result<Arc<dyn HistoricalSource>> {
-        if !self.market_active.load(Ordering::SeqCst) {
-            let _ = self.initialize_market_runtime(true).await?;
-        }
-
-        let ins = self
-            .ins_api
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))?;
-        let series = self
-            .series_api
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))?;
-        Ok(Arc::new(SdkHistoricalSource::new(ins, series)))
+    pub(crate) async fn build_historical_source(&self) -> Result<Arc<dyn HistoricalSource>> {
+        Ok(Arc::new(SdkHistoricalSource::new(
+            Arc::clone(&self.auth),
+            self.config.clone(),
+            self.endpoints.clone(),
+        )))
     }
 
     /// 初始化行情功能
@@ -248,6 +304,66 @@ impl Client {
         }
         Ok(())
     }
+}
+
+async fn preload_symbol_info_into_dm(
+    stock: bool,
+    ins_url: &str,
+    headers: HeaderMap,
+    dm: &Arc<DataManager>,
+    market_state: Option<&Arc<MarketDataState>>,
+) -> Result<()> {
+    if stock {
+        return Ok(());
+    }
+
+    let url = ins_url.trim();
+    if url.is_empty() {
+        return Ok(());
+    }
+
+    let content = crate::utils::fetch_json_with_headers(url, headers).await?;
+    let symbols = content
+        .as_object()
+        .ok_or_else(|| TqError::ParseError("合约信息格式错误，应为对象".to_string()))?;
+
+    let mut quotes = Map::new();
+    for (symbol, item) in symbols {
+        let Some(source) = item.as_object() else {
+            continue;
+        };
+        quotes.insert(symbol.clone(), Value::Object(build_preloaded_quote(source)));
+    }
+
+    if let Some(mut quote) = quotes.remove("CSI.000300") {
+        if let Some(obj) = quote.as_object_mut() {
+            obj.insert("exchange_id".to_string(), Value::String("SSE".to_string()));
+        }
+        quotes.insert("SSE.000300".to_string(), quote);
+    }
+
+    for (symbol, quote_value) in &mut quotes {
+        if symbol.starts_with("CFFEX.IO")
+            && let Some(obj) = quote_value.as_object_mut()
+            && obj.get("ins_class").and_then(Value::as_str) == Some("OPTION")
+        {
+            obj.insert("underlying_symbol".to_string(), Value::String("SSE.000300".to_string()));
+        }
+    }
+
+    let mut payload = Map::new();
+    let quote_symbols = quotes.keys().cloned().collect::<Vec<_>>();
+    payload.insert("quotes".to_string(), Value::Object(quotes));
+    dm.merge_data(Value::Object(payload), true, true);
+    if let Some(market_state) = market_state {
+        for symbol in quote_symbols {
+            if let Ok(mut quote) = dm.get_quote_data(&symbol) {
+                quote.update_change();
+                market_state.update_quote(symbol.into(), quote).await;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn parse_instrument_metadata(symbol: &str, value: &Value) -> InstrumentMetadata {

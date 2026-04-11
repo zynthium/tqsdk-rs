@@ -1,5 +1,6 @@
 use super::{Client, ClientBuilder, ClientConfig, TradeSessionOptions};
 use crate::auth::Authenticator;
+use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
@@ -11,6 +12,7 @@ use crate::types::{EdbIndexData, Kline, SymbolRanking, SymbolSettlement, Trading
 use crate::websocket::WebSocketConfig;
 use async_channel::Receiver;
 use chrono::{DateTime, NaiveDate, Utc};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
@@ -351,14 +353,21 @@ impl Client {
             broker.to_string(),
             user_id.to_string(),
             password.to_string(),
-            Arc::clone(&self.dm),
+            Arc::new(DataManager::new(
+                HashMap::new(),
+                DataManagerConfig {
+                    default_view_width: self.config.view_width,
+                    enable_auto_cleanup: true,
+                    ..DataManagerConfig::default()
+                },
+            )),
             td_url,
             ws_config,
             options.reliable_events_max_retained,
         ));
 
         let key = format!("{}:{}", broker, user_id);
-        let mut sessions = self.trade_sessions.write().await;
+        let mut sessions = self.trade_sessions.write().unwrap();
         sessions.insert(key, Arc::clone(&session));
 
         Ok(session)
@@ -366,23 +375,28 @@ impl Client {
 
     /// 注册交易会话
     pub async fn register_trade_session(&self, key: &str, session: Arc<TradeSession>) {
-        let mut sessions = self.trade_sessions.write().await;
+        let mut sessions = self.trade_sessions.write().unwrap();
         sessions.insert(key.to_string(), session);
     }
 
     /// 获取交易会话
     pub async fn get_trade_session(&self, key: &str) -> Option<Arc<TradeSession>> {
-        let sessions = self.trade_sessions.read().await;
+        let sessions = self.trade_sessions.read().unwrap();
         sessions.get(key).cloned()
     }
 
     pub fn into_runtime(self) -> Arc<TqRuntime> {
-        let market = Arc::new(LiveMarketAdapter::new(Arc::clone(&self.dm)));
+        let market = Arc::new(LiveMarketAdapter::new(
+            Arc::clone(&self.dm),
+            Arc::clone(&self.auth),
+            self.config.clone(),
+            self.endpoints.clone(),
+        ));
         let execution = Arc::new(LiveExecutionAdapter::new(Arc::clone(&self.trade_sessions)));
         Arc::new(TqRuntime::new(RuntimeMode::Live, market, execution))
     }
 
-    pub async fn create_backtest_session(&mut self, config: ReplayConfig) -> Result<ReplaySession> {
+    pub async fn create_backtest_session(&self, config: ReplayConfig) -> Result<ReplaySession> {
         let source = self.build_historical_source().await?;
         ReplaySession::from_source(config, source).await
     }
@@ -391,8 +405,14 @@ impl Client {
     pub async fn close(&self) -> Result<()> {
         self.close_market().await?;
 
-        let sessions = self.trade_sessions.read().await;
-        for (_key, trader) in sessions.iter() {
+        let sessions = self
+            .trade_sessions
+            .read()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for trader in sessions {
             trader.close().await?;
         }
 

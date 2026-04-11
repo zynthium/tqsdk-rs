@@ -90,7 +90,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
 
     init_logger(&log_level, false);
 
-    let mut client = Client::builder(&username, &password)
+    let client = Client::builder(&username, &password)
         .endpoints(EndpointConfig::from_env())
         .log_level(log_level)
         .view_width(2048)

@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,7 +15,6 @@ pub struct TqRuntime {
     market: Arc<dyn MarketAdapter>,
     execution: Arc<dyn ExecutionAdapter>,
     engine: Arc<ExecutionEngine>,
-    accounts: HashSet<String>,
 }
 
 impl TqRuntime {
@@ -31,8 +29,6 @@ impl TqRuntime {
         market: Arc<dyn MarketAdapter>,
         execution: Arc<dyn ExecutionAdapter>,
     ) -> Self {
-        let accounts = execution.known_accounts().into_iter().collect();
-
         Self {
             id: id.into(),
             mode,
@@ -40,7 +36,6 @@ impl TqRuntime {
             market,
             execution,
             engine: Arc::new(ExecutionEngine),
-            accounts,
         }
     }
 
@@ -69,7 +64,7 @@ impl TqRuntime {
     }
 
     pub fn account(self: &Arc<Self>, account_key: &str) -> RuntimeResult<AccountHandle> {
-        if !self.accounts.contains(account_key) {
+        if !self.execution.has_account(account_key) {
             return Err(RuntimeError::AccountNotFound {
                 account_key: account_key.to_string(),
             });

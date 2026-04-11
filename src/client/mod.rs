@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 
 pub use endpoints::{EndpointConfig, TradeSessionOptions};
 
@@ -70,7 +70,16 @@ pub struct ClientBuilder {
     password: String,
     config: ClientConfig,
     endpoints: EndpointConfig,
-    auth: Option<Arc<RwLock<dyn Authenticator>>>,
+    auth: Option<Arc<AsyncRwLock<dyn Authenticator>>>,
+    trade_session_configs: Vec<PendingTradeSessionConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingTradeSessionConfig {
+    pub broker: String,
+    pub user_id: String,
+    pub password: String,
+    pub options: endpoints::TradeSessionOptions,
 }
 
 /// 客户端
@@ -79,7 +88,7 @@ pub struct Client {
     username: String,
     config: ClientConfig,
     endpoints: EndpointConfig,
-    auth: Arc<RwLock<dyn Authenticator>>,
+    auth: Arc<AsyncRwLock<dyn Authenticator>>,
     dm: Arc<DataManager>,
     market_state: Arc<MarketDataState>,
     live_api: TqApi,
@@ -87,7 +96,7 @@ pub struct Client {
     series_api: Option<Arc<SeriesAPI>>,
     ins_api: Option<Arc<InsAPI>>,
     market_active: AtomicBool,
-    trade_sessions: Arc<RwLock<HashMap<String, Arc<TradeSession>>>>,
+    trade_sessions: Arc<std::sync::RwLock<HashMap<String, Arc<TradeSession>>>>,
 }
 
 impl Client {

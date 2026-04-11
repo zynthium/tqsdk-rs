@@ -202,6 +202,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `ReplaySession::runtime()` 提供；`ExecutionAdapter` / `MarketAdapter` /
 `TaskRegistry` 等装配细节不再作为推荐的 public extension surface。
 
+live 模式下，推荐先在 `ClientBuilder` 上预配置交易账户，再直接 `build_runtime()`；
+运行时账户 key 使用 `broker:user_id` 形式。例如：
+
+```rust
+let runtime = Client::builder(username, password)
+    .trade_session_with_options(
+        "simnow",
+        "user",
+        "password",
+        TradeSessionOptions {
+            td_url_override: Some("wss://example.com/trade".to_string()),
+            reliable_events_max_retained: 8_192,
+        },
+    )
+    .build_runtime()
+    .await?;
+
+let account = runtime
+    .account("simnow:user")
+    .expect("configured account should exist");
+```
+
 ```rust
 use std::sync::Arc;
 use tqsdk_rs::prelude::*;
@@ -592,7 +614,7 @@ use tqsdk_rs::prelude::*;
 let username = std::env::var("TQ_AUTH_USER")?;
 let password = std::env::var("TQ_AUTH_PASS")?;
 
-let mut client = Client::builder(username, password).build().await?;
+let client = Client::builder(username, password).build().await?;
 let start = chrono::Utc::now() - chrono::Duration::days(7);
 let end = chrono::Utc::now();
 let mut session = client

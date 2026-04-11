@@ -156,6 +156,10 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
         self.accounts.clone()
     }
 
+    fn has_account(&self, account_key: &str) -> bool {
+        self.accounts.iter().any(|candidate| candidate == account_key)
+    }
+
     async fn insert_order(&self, account_key: &str, req: &InsertOrderRequest) -> RuntimeResult<String> {
         let order_id = self.state.broker.lock().await.insert_order(account_key, req)?;
         self.state.notify_update().await;

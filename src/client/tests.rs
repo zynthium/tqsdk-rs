@@ -58,7 +58,7 @@ fn build_client_with_market() -> Client {
         crate::datamanager::DataManagerConfig::default(),
     ));
     let market_state = Arc::new(MarketDataState::default());
-    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let auth: Arc<tokio::sync::RwLock<dyn Authenticator>> = Arc::new(tokio::sync::RwLock::new(TestAuth));
     let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
     let quotes_ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -92,7 +92,32 @@ fn build_client_with_market() -> Client {
         series_api: Some(series_api),
         ins_api: Some(ins_api),
         market_active: AtomicBool::new(true),
-        trade_sessions: Arc::new(RwLock::new(HashMap::new())),
+        trade_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
+    }
+}
+
+fn build_inactive_client() -> Client {
+    let dm = Arc::new(DataManager::new(
+        HashMap::new(),
+        crate::datamanager::DataManagerConfig::default(),
+    ));
+    let market_state = Arc::new(MarketDataState::default());
+    let auth: Arc<tokio::sync::RwLock<dyn Authenticator>> = Arc::new(tokio::sync::RwLock::new(TestAuth));
+    let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
+
+    Client {
+        username: "tester".to_string(),
+        config: ClientConfig::default(),
+        endpoints: EndpointConfig::default(),
+        auth,
+        dm,
+        market_state,
+        live_api,
+        quotes_ws: None,
+        series_api: None,
+        ins_api: None,
+        market_active: AtomicBool::new(false),
+        trade_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
     }
 }
 
@@ -252,4 +277,142 @@ async fn create_trade_session_plumbs_reliable_event_retention() {
         .unwrap();
 
     assert_eq!(session.reliable_events_max_retained_for_test(), 32);
+}
+
+#[tokio::test]
+async fn runtime_picks_up_trade_sessions_registered_after_creation() {
+    let client = build_inactive_client();
+    let trade_sessions = Arc::clone(&client.trade_sessions);
+    let runtime = client.into_runtime();
+
+    assert!(runtime.account("simnow:user").is_err());
+
+    let session = Arc::new(crate::trade_session::TradeSession::new(
+        "simnow".to_string(),
+        "user".to_string(),
+        "password".to_string(),
+        Arc::new(DataManager::new(
+            HashMap::new(),
+            crate::datamanager::DataManagerConfig::default(),
+        )),
+        "wss://example.com/trade".to_string(),
+        WebSocketConfig::default(),
+        32,
+    ));
+    trade_sessions
+        .write()
+        .unwrap()
+        .insert("simnow:user".to_string(), session);
+
+    let account = runtime
+        .account("simnow:user")
+        .expect("runtime should see newly registered live trade sessions");
+    assert_eq!(account.account_key(), "simnow:user");
+}
+
+#[tokio::test]
+async fn builder_can_preconfigure_trade_sessions_for_runtime() {
+    let runtime = Client::builder("tester", "secret")
+        .auth(TestAuth)
+        .trade_session_with_options(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade".to_string()),
+                reliable_events_max_retained: 32,
+            },
+        )
+        .build_runtime()
+        .await
+        .expect("builder should create runtime with configured trade sessions");
+
+    let account = runtime
+        .account("simnow:user")
+        .expect("configured trade session should be exposed to runtime");
+    assert_eq!(account.account_key(), "simnow:user");
+}
+
+#[tokio::test]
+async fn trade_sessions_created_by_client_are_dm_isolated() {
+    let client = build_inactive_client();
+    let left = client
+        .create_trade_session_with_options(
+            "simnow",
+            "shared-user",
+            "left-password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade-left".to_string()),
+                reliable_events_max_retained: 32,
+            },
+        )
+        .await
+        .unwrap();
+    let right = client
+        .create_trade_session_with_options(
+            "other",
+            "shared-user",
+            "right-password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade-right".to_string()),
+                reliable_events_max_retained: 32,
+            },
+        )
+        .await
+        .unwrap();
+
+    left.inject_trade_data_for_test(serde_json::json!({
+        "trade": {
+            "shared-user": {
+                "accounts": {
+                    "CNY": {
+                        "user_id": "shared-user",
+                        "currency": "CNY",
+                        "balance": 1000.0,
+                        "available": 900.0
+                    }
+                }
+            }
+        }
+    }));
+    right.inject_trade_data_for_test(serde_json::json!({
+        "trade": {
+            "shared-user": {
+                "accounts": {
+                    "CNY": {
+                        "user_id": "shared-user",
+                        "currency": "CNY",
+                        "balance": 2000.0,
+                        "available": 1800.0
+                    }
+                }
+            }
+        }
+    }));
+
+    let left_account = left.get_account().await.unwrap();
+    let right_account = right.get_account().await.unwrap();
+
+    assert_eq!(left_account.balance, 1000.0);
+    assert_eq!(right_account.balance, 2000.0);
+}
+
+#[tokio::test]
+async fn create_backtest_session_does_not_activate_client_market_state() {
+    let client = Client::builder("tester", "secret")
+        .auth(TestAuth)
+        .build()
+        .await
+        .expect("test client should build without network");
+
+    let start = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+    let end = chrono::DateTime::<chrono::Utc>::from_timestamp(60, 0).unwrap();
+    let _session = client
+        .create_backtest_session(crate::ReplayConfig::new(start, end).unwrap())
+        .await
+        .expect("creating replay session should not initialize live market state");
+
+    assert!(!client.market_active.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
+    assert!(client.kline("SHFE.au2602", Duration::from_secs(60), 64).await.is_err());
 }

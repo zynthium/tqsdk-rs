@@ -174,4 +174,9 @@ impl TradeSession {
     pub(crate) fn reliable_events_max_retained_for_test(&self) -> usize {
         self.current_trade_events().max_retained_events_for_test()
     }
+
+    #[cfg(test)]
+    pub(crate) fn inject_trade_data_for_test(&self, value: serde_json::Value) {
+        self.dm.merge_data(value, true, true);
+    }
 }

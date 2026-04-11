@@ -2,8 +2,6 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
-
 use crate::trade_session::TradeSession;
 use crate::types::{InsertOrderRequest, Order, Position, Trade};
 
@@ -12,6 +10,10 @@ use super::{RuntimeError, RuntimeResult};
 #[async_trait]
 pub trait ExecutionAdapter: Send + Sync {
     fn known_accounts(&self) -> Vec<String>;
+
+    fn has_account(&self, account_key: &str) -> bool {
+        self.known_accounts().iter().any(|candidate| candidate == account_key)
+    }
 
     async fn insert_order(&self, _account_key: &str, _req: &InsertOrderRequest) -> RuntimeResult<String> {
         Err(RuntimeError::Unsupported("insert_order"))
@@ -40,16 +42,16 @@ pub trait ExecutionAdapter: Send + Sync {
 
 #[derive(Default)]
 pub struct LiveExecutionAdapter {
-    trade_sessions: Arc<RwLock<HashMap<String, Arc<TradeSession>>>>,
+    trade_sessions: Arc<std::sync::RwLock<HashMap<String, Arc<TradeSession>>>>,
 }
 
 impl LiveExecutionAdapter {
-    pub fn new(trade_sessions: Arc<RwLock<HashMap<String, Arc<TradeSession>>>>) -> Self {
+    pub fn new(trade_sessions: Arc<std::sync::RwLock<HashMap<String, Arc<TradeSession>>>>) -> Self {
         Self { trade_sessions }
     }
 
     async fn session(&self, account_key: &str) -> RuntimeResult<Arc<TradeSession>> {
-        let sessions = self.trade_sessions.read().await;
+        let sessions = self.trade_sessions.read().unwrap();
         sessions
             .get(account_key)
             .cloned()
@@ -62,10 +64,11 @@ impl LiveExecutionAdapter {
 #[async_trait]
 impl ExecutionAdapter for LiveExecutionAdapter {
     fn known_accounts(&self) -> Vec<String> {
-        match self.trade_sessions.try_read() {
-            Ok(sessions) => sessions.keys().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+        self.trade_sessions.read().unwrap().keys().cloned().collect()
+    }
+
+    fn has_account(&self, account_key: &str) -> bool {
+        self.trade_sessions.read().unwrap().contains_key(account_key)
     }
 
     async fn insert_order(&self, account_key: &str, req: &InsertOrderRequest) -> RuntimeResult<String> {

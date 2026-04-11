@@ -1,4 +1,4 @@
-use super::{Client, ClientBuilder, ClientConfig, EndpointConfig};
+use super::{Client, ClientBuilder, ClientConfig, EndpointConfig, PendingTradeSessionConfig};
 use crate::auth::{Authenticator, TqAuth};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::Result;
@@ -7,7 +7,7 @@ use crate::runtime::TqRuntime;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use tokio::sync::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 
 impl ClientBuilder {
     /// 创建新的客户端构建器
@@ -38,6 +38,7 @@ impl ClientBuilder {
             config: ClientConfig::default(),
             endpoints: EndpointConfig::default(),
             auth: None,
+            trade_session_configs: Vec::new(),
         }
     }
 
@@ -150,7 +151,38 @@ impl ClientBuilder {
     ///     .await?;
     /// ```
     pub fn auth<A: Authenticator + 'static>(mut self, auth: A) -> Self {
-        self.auth = Some(Arc::new(RwLock::new(auth)));
+        self.auth = Some(Arc::new(AsyncRwLock::new(auth)));
+        self
+    }
+
+    pub fn trade_session(
+        mut self,
+        broker: impl Into<String>,
+        user_id: impl Into<String>,
+        password: impl Into<String>,
+    ) -> Self {
+        self.trade_session_configs.push(PendingTradeSessionConfig {
+            broker: broker.into(),
+            user_id: user_id.into(),
+            password: password.into(),
+            options: super::TradeSessionOptions::default(),
+        });
+        self
+    }
+
+    pub fn trade_session_with_options(
+        mut self,
+        broker: impl Into<String>,
+        user_id: impl Into<String>,
+        password: impl Into<String>,
+        options: super::TradeSessionOptions,
+    ) -> Self {
+        self.trade_session_configs.push(PendingTradeSessionConfig {
+            broker: broker.into(),
+            user_id: user_id.into(),
+            password: password.into(),
+            options,
+        });
         self
     }
 
@@ -162,7 +194,7 @@ impl ClientBuilder {
     pub async fn build(self) -> Result<Client> {
         crate::logger::init_logger(&self.config.log_level, true);
 
-        let auth: Arc<RwLock<dyn Authenticator>> = if let Some(custom_auth) = self.auth {
+        let auth: Arc<AsyncRwLock<dyn Authenticator>> = if let Some(custom_auth) = self.auth {
             custom_auth
         } else {
             let mut auth = TqAuth::new(
@@ -171,7 +203,7 @@ impl ClientBuilder {
                 self.endpoints.auth_url.clone(),
             );
             auth.login().await?;
-            Arc::new(RwLock::new(auth))
+            Arc::new(AsyncRwLock::new(auth))
         };
 
         let dm_config = DataManagerConfig {
@@ -183,7 +215,7 @@ impl ClientBuilder {
         let market_state = Arc::new(MarketDataState::default());
         let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
 
-        Ok(Client {
+        let client = Client {
             username: self.username,
             config: self.config,
             endpoints: self.endpoints,
@@ -195,8 +227,22 @@ impl ClientBuilder {
             series_api: None,
             ins_api: None,
             market_active: AtomicBool::new(false),
-            trade_sessions: Arc::new(RwLock::new(HashMap::new())),
-        })
+            trade_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
+        };
+
+        let trade_session_configs = self.trade_session_configs;
+        for session in trade_session_configs {
+            client
+                .create_trade_session_with_options(
+                    &session.broker,
+                    &session.user_id,
+                    &session.password,
+                    session.options.clone(),
+                )
+                .await?;
+        }
+
+        Ok(client)
     }
 
     pub async fn build_runtime(self) -> Result<Arc<TqRuntime>> {
