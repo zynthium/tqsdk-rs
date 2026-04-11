@@ -79,7 +79,7 @@ Client (facade + builder + market)
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
 | `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时与 Builder 任务入口；adapter/registry/planning primitives 属于内部装配 |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
-| `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；状态读取走 `TqApi::quote()` |
+| `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；状态读取走 `Client::quote()` |
 | `series` | `SeriesAPI`, `SeriesSubscription` | 窗口态 K线/Tick 订阅，使用 `wait_update()` / `load()` 读取快照 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
 | `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |

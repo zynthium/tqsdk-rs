@@ -181,6 +181,7 @@ impl ClientBuilder {
         };
         let dm = Arc::new(DataManager::new(HashMap::new(), dm_config));
         let market_state = Arc::new(MarketDataState::default());
+        let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
 
         Ok(Client {
             username: self.username,
@@ -189,6 +190,7 @@ impl ClientBuilder {
             auth,
             dm,
             market_state,
+            live_api,
             quotes_ws: None,
             series_api: None,
             ins_api: None,

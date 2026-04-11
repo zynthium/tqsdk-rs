@@ -32,8 +32,6 @@ async fn main() -> Result<()> {
     let mut client = build_client(&username, &password).await?;
     client.init_market().await?;
 
-    let tqapi = client.tqapi();
-
     let au = env::var("TQ_QUOTE_AU").unwrap_or_else(|_| "SHFE.au2602".to_string());
     let ag = env::var("TQ_QUOTE_AG").unwrap_or_else(|_| "SHFE.ag2512".to_string());
     let m = env::var("TQ_QUOTE_M").unwrap_or_else(|_| "DCE.m2512".to_string());
@@ -49,10 +47,10 @@ async fn main() -> Result<()> {
     let tick_sub = series.tick(au.as_str(), 256).await?;
     tick_sub.start().await?;
 
-    let au_quote = tqapi.quote(au.as_str());
-    let ag_quote = tqapi.quote(ag.as_str());
-    let au_kline = tqapi.kline(au.as_str(), kline_duration);
-    let au_tick = tqapi.tick(au.as_str());
+    let au_quote = client.quote(au.as_str());
+    let ag_quote = client.quote(ag.as_str());
+    let au_kline = client.kline_ref(au.as_str(), kline_duration);
+    let au_tick = client.tick_ref(au.as_str());
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
 
@@ -61,7 +59,7 @@ async fn main() -> Result<()> {
             break;
         }
 
-        let updates = tqapi.wait_update_and_drain().await?;
+        let updates = client.wait_update_and_drain().await?;
 
         for symbol in updates.quotes {
             if symbol.as_str() == au.as_str() {

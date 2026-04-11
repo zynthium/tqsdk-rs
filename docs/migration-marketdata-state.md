@@ -1,6 +1,6 @@
 # 迁移指南：从 Channel/Callback 到高性能状态驱动 API
 
-本指南说明了在 `tqsdk-rs` 中从旧的 Channel 和 Callback 行情订阅模型迁移到全新“高性能状态驱动 API”（`TqApi` + `QuoteRef`/`KlineRef`/`TickRef` + `SeriesSubscription` 快照接口）的原因、概念和具体步骤。
+本指南说明了在 `tqsdk-rs` 中从旧的 Channel 和 Callback 行情订阅模型迁移到全新“高性能状态驱动 API”（`Client` + `QuoteRef`/`KlineRef`/`TickRef` + `SeriesSubscription` 快照接口）的原因、概念和具体步骤。
 
 ## 为什么需要迁移？
 
@@ -10,7 +10,7 @@
 3. **Live/Backtest 语义割裂**：回测时的事件流难以与实时流完美对齐，导致策略在实盘和回测中表现不一。
 
 **新版状态驱动 API 的优势**：
-- **类似 Python TqSdk 的极简体验**：提供 `api.wait_update().await` 和 `q.is_changing()`。
+- **类似 Python TqSdk 的极简体验**：提供 `client.wait_update().await` 和 `q.is_changing()`。
 - **轻量快照读取**：最新 Quote/Kline/Tick 通过共享快照暴露，策略端读取最新状态不需要自己维护一套镜像缓存。
 - **O(changed) 批量唤醒**：内置增量更新集合（UpdateSet），策略只需处理本轮跳动的合约，支持高吞吐全品种扫描。
 
@@ -20,20 +20,20 @@
 
 | 概念 | 旧版 Channel/Callback 模型 | 新版 State-driven API |
 |---|---|---|
-| **获取入口** | `Client` | `client.tqapi()` 返回 `TqApi` |
+| **获取入口** | `Client` | `Client` 直接暴露状态引用与等待接口 |
 | **发起订阅** | `client.subscribe_quote(...)`<br>`client.series()?.kline(...)` | 保持不变（仍作为驱动网络下发的入口） |
-| **数据读取** | `channel.recv().await`<br>或 callback 消费 | `api.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
+| **数据读取** | `channel.recv().await`<br>或 callback 消费 | `client.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
 | **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing()` 检测本地是否过期 |
-| **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `api.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
-| **批量获取** | 无法直接获取本次变更全集 | `api.wait_update_and_drain().await` 直接返回本轮发生变化的 key 集合 |
+| **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `client.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
+| **批量获取** | 无法直接获取本次变更全集 | `client.wait_update_and_drain().await` 直接返回本轮发生变化的 key 集合 |
 
 ---
 
 ## 迁移步骤
 
-### 1. 初始化 TqApi
+### 1. 直接使用 Client 状态入口
 
-获取 `TqApi` 句柄，这是你访问强类型、一致性状态存储的唯一入口。
+`Client` 本身就是访问强类型、一致性状态存储的入口，不再需要先拿到额外的行情 facade。
 
 **旧代码：**
 ```rust
@@ -46,8 +46,7 @@ client.init_market().await?;
 let mut client = Client::builder("user", "pass").build().await?;
 client.init_market().await?;
 
-// 新增：获取状态驱动 API
-let api = client.tqapi();
+let cu = client.quote("SHFE.cu2605");
 ```
 
 ### 2. 行情（Quote）订阅迁移
@@ -74,11 +73,11 @@ let sub = client.subscribe_quote(&["SHFE.cu2605"]).await?;
 sub.start().await?;
 
 // 2. 获取本地句柄
-let cu = api.quote("SHFE.cu2605");
+let cu = client.quote("SHFE.cu2605");
 
 // 3. 在单线程主循环中处理（像 Python 一样）
 loop {
-    api.wait_update().await?; // 阻塞，直到世界发生变化
+    client.wait_update().await?; // 阻塞，直到世界发生变化
     
     if cu.is_changing() {     // 判断 cu 是否是本次更新的主角
         let q = cu.load().await; // 无锁读取 O(1)
@@ -98,12 +97,12 @@ sub.start().await?;
 
 loop {
     // 阻塞并直接返回这一轮被触碰过的 keys
-    let updates = api.wait_update_and_drain().await?;
+    let updates = client.wait_update_and_drain().await?;
     
     // updates.quotes 是一个 HashSet<SymbolId>
     for symbol_id in updates.quotes {
         // 直接构造该特定合约的引用并读取
-        let q_ref = api.quote(symbol_id.as_str());
+        let q_ref = client.quote(symbol_id.as_str());
         let q = q_ref.load().await;
         
         println!("{} 最新价: {}", symbol_id, q.last_price);
@@ -151,7 +150,7 @@ loop {
 ```rust
 // 假设同时有 cu_ref 和 al_ref
 loop {
-    api.wait_update().await?;
+    client.wait_update().await?;
     
     // 如果铜价动了
     if cu_ref.is_changing() {
@@ -171,5 +170,5 @@ loop {
 
 1. **`wait_update` 不返回任何网络包**：它纯粹是一个调度屏障（Barrier）。底层网络线程已经在它返回前，把所有收到的 JSON 数据合并成了强类型的内存结构体（`Quote`/`Kline`）。
 2. **`is_changing()` 会消耗状态**：每次调用 `is_changing()` 如果返回 `true`，内部会推进本地的 `seen_epoch`。在同一个策略循环里，同一个 `QuoteRef` 第二次调用会返回 `false`。
-3. **回测模式 (Backtest)**：回测主路径已经收敛到 `ReplaySession`。应显式调用 `session.step().await?` 推进历史时间；如果需要目标持仓任务，请通过 `session.runtime(...).await?` 获取回放 runtime，而不是假设 `TqApi::wait_update()` 会自动驱动历史流。
+3. **回测模式 (Backtest)**：回测主路径已经收敛到 `ReplaySession`。应显式调用 `session.step().await?` 推进历史时间；如果需要目标持仓任务，请通过 `session.runtime(...).await?` 获取回放 runtime，而不是假设 live `wait_update()` 会自动驱动历史流。
 4. **当前边界**：Quote callback/channel 与 Series callback/stream 都已删除；新代码应统一使用状态驱动读取模型。

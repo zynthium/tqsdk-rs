@@ -8,6 +8,7 @@ use reqwest::header::HeaderMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 #[derive(Default)]
 struct TestAuth;
@@ -58,6 +59,7 @@ fn build_client_with_market() -> Client {
     ));
     let market_state = Arc::new(MarketDataState::default());
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
     let quotes_ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
         Arc::clone(&dm),
@@ -85,12 +87,82 @@ fn build_client_with_market() -> Client {
         auth,
         dm,
         market_state,
+        live_api,
         quotes_ws: Some(quotes_ws),
         series_api: Some(series_api),
         ins_api: Some(ins_api),
         market_active: AtomicBool::new(true),
         trade_sessions: Arc::new(RwLock::new(HashMap::new())),
     }
+}
+
+#[tokio::test]
+async fn client_exposes_market_state_refs_directly() {
+    let client = build_client_with_market();
+    let symbol = "SHFE.au2602";
+
+    let quote_ref = client.quote(symbol);
+    let kline_ref = client.kline_ref(symbol, Duration::from_secs(60));
+    let tick_ref = client.tick_ref(symbol);
+
+    let quote = crate::types::Quote {
+        instrument_id: "au2602".to_string(),
+        last_price: 520.5,
+        ..Default::default()
+    };
+
+    let kline = crate::types::Kline {
+        id: 7,
+        datetime: 1_711_111_111,
+        open: 510.0,
+        close: 521.0,
+        high: 523.0,
+        low: 509.0,
+        open_oi: 10,
+        close_oi: 12,
+        volume: 99,
+        epoch: None,
+    };
+
+    let tick = crate::types::Tick {
+        id: 11,
+        datetime: 1_711_111_222,
+        last_price: 520.5,
+        average: 519.0,
+        highest: 523.0,
+        lowest: 509.0,
+        ask_price1: 521.0,
+        ask_volume1: 3,
+        bid_price1: 520.0,
+        bid_volume1: 2,
+        volume: 101,
+        amount: 0.0,
+        open_interest: 88,
+        ..Default::default()
+    };
+
+    client.market_state.update_quote(symbol.into(), quote).await;
+    client
+        .market_state
+        .update_kline(crate::marketdata::KlineKey::new(symbol, Duration::from_secs(60)), kline)
+        .await;
+    client.market_state.update_tick(symbol.into(), tick).await;
+
+    let updates = client.wait_update_and_drain().await.unwrap();
+    assert_eq!(updates.quotes.len(), 1);
+    assert_eq!(updates.klines.len(), 1);
+    assert_eq!(updates.ticks.len(), 1);
+
+    let quote = quote_ref.load().await;
+    let kline = kline_ref.load().await;
+    let tick = tick_ref.load().await;
+
+    assert_eq!(quote_ref.symbol(), symbol);
+    assert_eq!(kline_ref.symbol(), symbol);
+    assert_eq!(tick_ref.symbol(), symbol);
+    assert_eq!(quote.last_price, 520.5);
+    assert_eq!(kline.close, 521.0);
+    assert_eq!(tick.last_price, 520.5);
 }
 
 #[tokio::test]

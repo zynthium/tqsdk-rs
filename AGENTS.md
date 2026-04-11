@@ -61,7 +61,7 @@ examples/
 - `ReplaySession` 是唯一推荐的公开回测入口；不要为新代码重新引入 `BacktestHandle` 风格的 facade。
 - `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
 - `DataManager` 的 merge 通知统一使用 `subscribe_epoch()`；旧的 `on_data` / `on_data_register` / `off_data` callback plumbing 已删除，不要重新引入。
-- breaking target：live API 继续收口到 `Client` 单入口；即使当前代码仍存在 `tqapi()` / `series()` / `ins()`，新改动也不要扩大这些入口的使用面。
+- breaking target：live API 继续收口到 `Client` 单入口；`tqapi()` 已删除，`series()` / `ins()` 也不应再扩大使用面。
 - `QuoteSubscription` 和 `SeriesSubscription` 目前仍是显式 `start()` 模型，但 breaking target 是 auto-start；新代码不要再新增对 `start()` 语义的依赖。
 - `QuoteSubscription` 只负责订阅生命周期；读取 Quote 的长期目标是 `Client::quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`；不要重新引入 `on_update`、`on_new_bar`、`data_stream()` 一类 fan-out API。

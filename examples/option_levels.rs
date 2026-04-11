@@ -39,9 +39,8 @@ async fn main() -> Result<()> {
     let mut client = build_client(&user, &pass, config).await?;
     client.init_market().await?;
 
-    let tqapi = client.tqapi();
     let quote_sub = client.subscribe_quote(&[underlying.as_str()]).await?;
-    let quote_ref = tqapi.quote(underlying.as_str());
+    let quote_ref = client.quote(underlying.as_str());
     quote_sub.start().await?;
 
     let underlying_price = tokio::time::timeout(Duration::from_secs(20), async {

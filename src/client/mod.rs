@@ -12,14 +12,16 @@ mod tests;
 
 use crate::auth::Authenticator;
 use crate::datamanager::DataManager;
+use crate::errors::Result;
 use crate::ins::InsAPI;
-use crate::marketdata::{MarketDataState, TqApi};
+use crate::marketdata::{KlineRef, MarketDataState, MarketDataUpdates, QuoteRef, TickRef, TqApi};
 use crate::series::SeriesAPI;
 use crate::trade_session::TradeSession;
 use crate::websocket::TqQuoteWebsocket;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 pub use endpoints::{EndpointConfig, TradeSessionOptions};
@@ -80,6 +82,7 @@ pub struct Client {
     auth: Arc<RwLock<dyn Authenticator>>,
     dm: Arc<DataManager>,
     market_state: Arc<MarketDataState>,
+    live_api: TqApi,
     quotes_ws: Option<Arc<TqQuoteWebsocket>>,
     series_api: Option<Arc<SeriesAPI>>,
     ins_api: Option<Arc<InsAPI>>,
@@ -88,7 +91,23 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn tqapi(&self) -> TqApi {
-        TqApi::new(Arc::clone(&self.market_state))
+    pub fn quote(&self, symbol: impl Into<crate::marketdata::SymbolId>) -> QuoteRef {
+        self.live_api.quote(symbol)
+    }
+
+    pub fn kline_ref(&self, symbol: impl Into<crate::marketdata::SymbolId>, duration: Duration) -> KlineRef {
+        self.live_api.kline(symbol, duration)
+    }
+
+    pub fn tick_ref(&self, symbol: impl Into<crate::marketdata::SymbolId>) -> TickRef {
+        self.live_api.tick(symbol)
+    }
+
+    pub async fn wait_update(&self) -> Result<()> {
+        self.live_api.wait_update().await
+    }
+
+    pub async fn wait_update_and_drain(&self) -> Result<MarketDataUpdates> {
+        self.live_api.wait_update_and_drain().await
     }
 }

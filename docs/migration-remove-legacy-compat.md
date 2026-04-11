@@ -154,7 +154,7 @@ let scheduler = account
 - 已收口：`TradeEventStream`、`OrderEventStream`、`TradeOnlyEventStream`、`TradeEventRecvError` 与 `TradeSessionEvent` 不再从 crate root 直接导出；显式类型引用请走 `tqsdk_rs::trade_session::{...}`。
 - 已收口：`InsAPI`、`SeriesAPI`、`SeriesCachePolicy`、`KlineKey`、`MarketDataState`、`MarketDataUpdates` 与 `SymbolId` 不再从 crate root 直接导出；显式类型引用请走对应模块命名空间。
 - 已收口：`Authenticator`、`ClientOption` 与 `BacktestResult` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::{auth, client, replay}::{...}`。
-- 已收口：`Client::market_state()` 已删除；从 `Client` 读取行情状态请统一通过 `client.tqapi()`。
+- 已收口：`Client::market_state()` 与 `Client::tqapi()` 已删除；从 `Client` 读取行情状态请统一通过 `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}`。
 - 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 snapshot getter 或回调。
 - 下一轮目标：`Client` 成为唯一 live 入口，`TqApi` / `SeriesAPI` / `InsAPI` 从 crate root / prelude / README 主路径退出。
 - 下一轮目标：Quote / Series 移除显式 `start()`，改为 auto-start；`close()` 仅表示提前释放资源。

@@ -11,7 +11,7 @@
 - 类型安全：核心行情、K 线、Tick、账户、委托、成交等结构均为强类型定义。
 - 异步优先：基于 `tokio`，统一行情、序列、交易与回测的异步接口。
 - DIFF 协议：支持天勤增量数据合并、路径监听与 epoch 变化追踪。
-- 状态驱动优先：`TqApi` 负责最新市场状态读取，`SeriesSubscription` 负责窗口态序列读取。
+- 状态驱动优先：`Client` 负责最新市场状态读取，`SeriesSubscription` 负责窗口态序列读取。
 - 延迟启动：先创建订阅/会话句柄，再显式 `start()`/`connect()`，把生命周期控制与数据读取分离。
 - 背压可控：关键通道与离线队列已改为有界缓冲，避免慢消费者无限堆积内存。
 - 零拷贝共享：状态快照与事件对象尽量通过 `Arc<T>` 共享，降低多消费者场景开销。
@@ -141,13 +141,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     client.init_market().await?;
 
-    let tqapi = client.tqapi();
     let symbol = "SHFE.au2602";
     
     let quote_sub = client.subscribe_quote(&[symbol]).await?;
     quote_sub.start().await?;
 
-    let quote_ref = tqapi.quote(symbol);
+    let quote_ref = client.quote(symbol);
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -320,22 +319,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 1. 行情数据 (状态驱动 API - 推荐)
 
-`tqsdk-rs` 提供高性能的状态驱动行情订阅。通过 `TqApi` 获取数据引用（`QuoteRef`/`KlineRef`/`TickRef`），并使用 `wait_update()` 驱动策略循环。
+`tqsdk-rs` 提供高性能的状态驱动行情订阅。通过 `Client` 直接获取数据引用（`QuoteRef`/`KlineRef`/`TickRef`），并使用 `wait_update()` 驱动策略循环。
 
 #### Quote 订阅 - 实时行情
 
 ```rust
-let tqapi = client.tqapi();
 let symbol = "SHFE.au2602";
 
 let quote_sub = client.subscribe_quote(&[symbol]).await?;
 quote_sub.start().await?;
 
-let quote_ref = tqapi.quote(symbol);
+let quote_ref = client.quote(symbol);
 
 loop {
     // 等待任意数据更新，并获取本次变化的集合
-    let updates = tqapi.wait_update_and_drain().await?;
+    let updates = client.wait_update_and_drain().await?;
     
     if updates.quotes.contains(&symbol.into()) {
         let q = quote_ref.load().await;
@@ -349,7 +347,6 @@ loop {
 ```rust
 use std::time::Duration;
 
-let tqapi = client.tqapi();
 let symbol = "SHFE.au2602";
 let duration = Duration::from_secs(60);
 
@@ -357,7 +354,7 @@ let series_api = client.series()?;
 let sub = series_api.kline(symbol, duration, 300).await?;
 sub.start().await?;
 
-let kline_ref = tqapi.kline(symbol, duration);
+let kline_ref = client.kline_ref(symbol, duration);
 
 loop {
     kline_ref.wait_update().await?;
@@ -368,20 +365,19 @@ loop {
 
 #### Quote 订阅的职责边界
 
-`QuoteSubscription` 现在只负责向服务端声明订阅生命周期；真正的数据读取统一走 `TqApi::quote()` 返回的 `QuoteRef`。
+`QuoteSubscription` 现在只负责向服务端声明订阅生命周期；真正的数据读取统一走 `Client::quote()` 返回的 `QuoteRef`。
 
 ```rust
-let tqapi = client.tqapi();
 let symbols = ["SHFE.au2602", "SHFE.ag2512"];
 
 let quote_sub = client.subscribe_quote(&symbols).await?;
 quote_sub.start().await?;
 
-let au = tqapi.quote("SHFE.au2602");
-let ag = tqapi.quote("SHFE.ag2512");
+let au = client.quote("SHFE.au2602");
+let ag = client.quote("SHFE.ag2512");
 
 loop {
-    let updates = tqapi.wait_update_and_drain().await?;
+    let updates = client.wait_update_and_drain().await?;
 
     if updates.quotes.contains(&"SHFE.au2602".into()) {
         println!("au 最新价: {}", au.load().await.last_price);
@@ -827,8 +823,8 @@ tqsdk-rs/
 
 ### Canonical 接口
 
-- Quote：`QuoteSubscription` 负责订阅生命周期，`TqApi::quote()` 负责读取最新状态。
-- Series：`TqApi` 负责 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口，并通过 `wait_update()` / `load()` 暴露快照。
+- Quote：`QuoteSubscription` 负责订阅生命周期，`Client::quote()` 负责读取最新状态。
+- Series：`Client::{kline_ref,tick_ref}` 负责 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口与历史窗口，并通过 `wait_update()` / `load()` 暴露快照。
 - TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
 仍保留的回调接口大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。
@@ -839,7 +835,7 @@ tqsdk-rs/
 
 ```rust
 let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-let quote_ref = client.tqapi().quote("SHFE.au2602");
+let quote_ref = client.quote("SHFE.au2602");
 
 quote_sub.start().await?;
 
