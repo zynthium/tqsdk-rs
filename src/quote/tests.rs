@@ -10,7 +10,7 @@ fn symbol_set(symbols: &[&str]) -> HashSet<String> {
 }
 
 #[tokio::test]
-async fn start_failure_rolls_back_quote_subscription_state() {
+async fn quote_subscription_creation_failure_rolls_back_state() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -20,15 +20,14 @@ async fn start_failure_rolls_back_quote_subscription_state() {
     ));
     ws.force_send_failure_for_test();
 
-    let sub = QuoteSubscription::new(Arc::clone(&ws), vec!["SHFE.au2602".to_string()]);
+    let sub = QuoteSubscription::new(Arc::clone(&ws), vec!["SHFE.au2602".to_string()]).await;
 
-    assert!(sub.start().await.is_err());
-    assert!(!*sub.running.read().await);
+    assert!(sub.is_err());
     assert!(ws.aggregated_quote_subscriptions_for_test().is_empty());
 }
 
 #[tokio::test]
-async fn quote_subscription_start_and_close_sync_server_lifecycle() {
+async fn quote_subscription_creation_and_close_sync_server_lifecycle() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -36,10 +35,10 @@ async fn quote_subscription_start_and_close_sync_server_lifecycle() {
         Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
-    let sub = QuoteSubscription::new(Arc::clone(&ws), vec!["SHFE.au2602".to_string()]);
+    let sub = QuoteSubscription::new(Arc::clone(&ws), vec!["SHFE.au2602".to_string()])
+        .await
+        .unwrap();
 
-    assert!(ws.aggregated_quote_subscriptions_for_test().is_empty());
-    sub.start().await.unwrap();
     assert_eq!(
         ws.aggregated_quote_subscriptions_for_test(),
         symbol_set(&["SHFE.au2602"])
@@ -58,9 +57,10 @@ async fn quote_subscription_add_remove_symbols_resync_server_state() {
         Arc::new(MarketDataState::default()),
         WebSocketConfig::default(),
     ));
-    let sub = QuoteSubscription::new(Arc::clone(&ws), vec!["SHFE.au2602".to_string()]);
+    let sub = QuoteSubscription::new(Arc::clone(&ws), vec!["SHFE.au2602".to_string()])
+        .await
+        .unwrap();
 
-    sub.start().await.unwrap();
     sub.add_symbols(&["SHFE.ag2602", "DCE.m2601"]).await.unwrap();
     assert_eq!(
         ws.aggregated_quote_subscriptions_for_test(),

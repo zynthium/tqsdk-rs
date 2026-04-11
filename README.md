@@ -12,7 +12,7 @@
 - 异步优先：基于 `tokio`，统一行情、序列、交易与回测的异步接口。
 - DIFF 协议：支持天勤增量数据合并、路径监听与 epoch 变化追踪。
 - 状态驱动优先：`Client` 负责最新市场状态读取，`SeriesSubscription` 负责窗口态序列读取。
-- 延迟启动：先创建订阅/会话句柄，再显式 `start()`/`connect()`，把生命周期控制与数据读取分离。
+- 订阅即生效：Quote / Series 创建后立即生效，`close()` 只负责提前释放资源；TradeSession 仍需显式 `connect()`。
 - 背压可控：关键通道与离线队列已改为有界缓冲，避免慢消费者无限堆积内存。
 - 零拷贝共享：状态快照与事件对象尽量通过 `Arc<T>` 共享，降低多消费者场景开销。
 - Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
@@ -27,13 +27,13 @@
   `Client` 将直接承载行情状态读取、序列订阅与 query facade；
   `TqApi`、`SeriesAPI`、`InsAPI` 将退出 crate root / prelude / README 主路径。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out。
-  `QuoteSubscription` / `SeriesSubscription` 的显式 `start()` 将被移除，改为创建即生效。
+  `QuoteSubscription` / `SeriesSubscription` 已改为创建即生效。
 - `TradeSession` 将彻底按“状态 vs 事件”分层。
   账户/持仓统一走 `wait_update()` + getter；
   订单/成交/通知/异步错误统一走可靠事件流。
 - 本轮 cleanup 不会引入 `TqClient` 同义 facade，不会保留长期 shim。
 
-当前 README 中的代码示例仍反映仓库现状；随着 breaking slices 落地，这些示例会同步切到新的 canonical API。
+当前 README 中的代码示例反映当前 canonical API；后续 breaking slices 将继续收口 `TradeSession` 与 root exports。
 
 ## 功能模块
 
@@ -143,8 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let symbol = "SHFE.au2602";
     
-    let quote_sub = client.subscribe_quote(&[symbol]).await?;
-    quote_sub.start().await?;
+    let _quote_sub = client.subscribe_quote(&[symbol]).await?;
 
     let quote_ref = client.quote(symbol);
 
@@ -326,8 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 let symbol = "SHFE.au2602";
 
-let quote_sub = client.subscribe_quote(&[symbol]).await?;
-quote_sub.start().await?;
+let _quote_sub = client.subscribe_quote(&[symbol]).await?;
 
 let quote_ref = client.quote(symbol);
 
@@ -350,8 +348,7 @@ use std::time::Duration;
 let symbol = "SHFE.au2602";
 let duration = Duration::from_secs(60);
 
-let sub = client.kline(symbol, duration, 300).await?;
-sub.start().await?;
+let _sub = client.kline(symbol, duration, 300).await?;
 
 let kline_ref = client.kline_ref(symbol, duration);
 
@@ -369,8 +366,7 @@ loop {
 ```rust
 let symbols = ["SHFE.au2602", "SHFE.ag2512"];
 
-let quote_sub = client.subscribe_quote(&symbols).await?;
-quote_sub.start().await?;
+let _quote_sub = client.subscribe_quote(&symbols).await?;
 
 let au = client.quote("SHFE.au2602");
 let ag = client.quote("SHFE.ag2512");
@@ -649,7 +645,6 @@ println!("quotes={:?} cont={:?} options={:?} raw={:?}", quotes, cont, options, r
 启用 `polars` feature 后，可以直接将序列数据转换为 DataFrame：
 
 ```rust
-subscription.start().await?;
 let snapshot = subscription.wait_update().await?;
 
 if snapshot.update.chart_ready {
@@ -830,13 +825,11 @@ tqsdk-rs/
 
 ## 最佳实践
 
-### 1. 延迟启动模式
+### 1. 订阅即生效
 
 ```rust
 let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
 let quote_ref = client.quote("SHFE.au2602");
-
-quote_sub.start().await?;
 
 loop {
     quote_ref.wait_update().await?;
@@ -844,7 +837,7 @@ loop {
 }
 ```
 
-先创建订阅句柄，再显式 `start()`，可以把“声明订阅”和“消费状态”分离开。
+Quote / Series 订阅在创建时已经向服务端声明完成；如果需要提前释放资源，调用 `close()` 即可。
 
 ### 2. 背压与慢消费者
 
@@ -856,9 +849,7 @@ loop {
 
 ```rust
 match client.subscribe_quote(&["SHFE.au2602"]).await {
-    Ok(sub) => {
-        sub.start().await?;
-    }
+    Ok(_sub) => {}
     Err(err) => {
         eprintln!("订阅失败: {}", err);
     }
@@ -917,7 +908,7 @@ let layer = create_logger_layer("info", false);
 ### 重要提示
 
 1. 合约代码必须使用完整格式，如 `SHFE.au2602`。
-2. Quote 和 Series 都需要显式 `start()` 才会推进状态；TradeSession 需要 `connect()`。
+2. Quote 和 Series 创建后会立即推进状态；TradeSession 仍需要 `connect()`。
 3. `SeriesSubscription` 是 coalesced snapshot API；用 `wait_update()` 等待下一次窗口更新，再用 `load()` 读取当前 `SeriesData`。
 4. 通道类接口已采用有界缓冲；如果你观察到丢更新日志，优先检查消费者速度和队列容量。
 5. 交易示例会访问真实交易接口，请优先使用模拟环境验证。
@@ -926,7 +917,7 @@ let layer = create_logger_layer("info", false);
 
 **Q: 为什么收不到数据？**
 
-- 检查 Quote/Series 是否已调用 `start()`，TradeSession 是否已 `connect()`。
+- 检查 Quote/Series 订阅句柄是否仍然存活，以及 TradeSession 是否已 `connect()`。
 - 对 Quote/Series，检查你是在等状态更新还是误用了已经删除的 callback/stream 接口。
 - 检查合约代码格式和账户权限。
 

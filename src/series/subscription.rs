@@ -9,7 +9,7 @@ use tracing::{debug, info, warn};
 
 impl SeriesSubscription {
     /// 创建订阅
-    pub(crate) fn new(
+    pub(crate) async fn new(
         dm: Arc<crate::datamanager::DataManager>,
         ws: Arc<crate::websocket::TqQuoteWebsocket>,
         options: crate::types::SeriesOptions,
@@ -20,7 +20,7 @@ impl SeriesSubscription {
         }
         let (snapshot_tx, snapshot_rx) = tokio::sync::watch::channel(None);
 
-        Ok(Self {
+        let sub = Self {
             dm,
             ws,
             options,
@@ -35,7 +35,9 @@ impl SeriesSubscription {
             wait_rx: Arc::new(tokio::sync::Mutex::new(snapshot_rx)),
             latest_snapshot: Arc::new(tokio::sync::RwLock::new(None)),
             watch_task: Arc::new(std::sync::Mutex::new(None)),
-        })
+        };
+        sub.activate().await?;
+        Ok(sub)
     }
 
     /// 发送 set_chart 请求
@@ -88,8 +90,7 @@ impl SeriesSubscription {
         Ok(())
     }
 
-    /// 启动订阅。
-    pub async fn start(&self) -> Result<()> {
+    async fn activate(&self) -> Result<()> {
         let mut running = self.running.write().await;
         if *running {
             return Ok(());
@@ -281,7 +282,7 @@ impl SeriesSubscription {
     /// 等待下一次窗口快照更新。
     pub async fn wait_update(&self) -> Result<SeriesSnapshot> {
         if !*self.running.read().await {
-            return Err(TqError::InternalError("Series 订阅尚未启动".to_string()));
+            return Err(TqError::InternalError("Series 订阅已关闭".to_string()));
         }
         let mut rx = self.wait_rx.lock().await;
         loop {

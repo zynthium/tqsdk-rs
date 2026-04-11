@@ -22,8 +22,7 @@
 //!         .await?;
 //!
 //!     client.init_market().await?;
-//!     let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-//!     quote_sub.start().await?;
+//!     let _quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
 //!
 //!     Ok(())
 //! }

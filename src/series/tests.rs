@@ -139,7 +139,7 @@ fn sample_tick(id: i64, price: f64) -> Tick {
     }
 }
 
-fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscription {
+async fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscription {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -164,6 +164,7 @@ fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscriptio
             focus_position: None,
         },
     )
+    .await
     .unwrap()
 }
 
@@ -187,7 +188,7 @@ fn sample_series_snapshot(symbol: &str, epoch: i64) -> SeriesSnapshot {
 }
 
 #[tokio::test]
-async fn kline_returns_unstarted_subscription() {
+async fn kline_returns_started_subscription() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -200,13 +201,15 @@ async fn kline_returns_unstarted_subscription() {
 
     let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await.unwrap();
 
-    assert!(!*sub.running.read().await);
-    assert!(!sub.watch_task_active_for_test());
+    assert!(*sub.running.read().await);
+    assert!(sub.watch_task_active_for_test());
     assert!(sub.snapshot().await.is_none());
+
+    sub.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn start_failure_rolls_back_series_watch_task() {
+async fn kline_creation_failure_rolls_back_series_watch_task() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -215,26 +218,12 @@ async fn start_failure_rolls_back_series_watch_task() {
         WebSocketConfig::default(),
     ));
     ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth));
+    let api = SeriesAPI::new(Arc::clone(&dm), Arc::clone(&ws), auth);
 
-    let sub = SeriesSubscription::new(
-        dm,
-        ws,
-        SeriesOptions {
-            symbols: vec!["SHFE.au2602".to_string()],
-            duration: 60_000_000_000,
-            view_width: 32,
-            chart_id: Some("chart_test".to_string()),
-            left_kline_id: None,
-            focus_datetime: None,
-            focus_position: None,
-        },
-    )
-    .unwrap();
+    let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await;
 
-    assert!(sub.start().await.is_err());
-    assert!(!*sub.running.read().await);
-    assert!(!sub.watch_task_active_for_test());
-    assert!(sub.snapshot().await.is_none());
+    assert!(sub.is_err());
 }
 
 #[tokio::test]
@@ -396,17 +385,16 @@ async fn tick_data_series_cache_miss_should_trigger_fetch_path() {
 
 #[tokio::test]
 async fn load_returns_error_before_first_snapshot() {
-    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity).await;
 
     assert!(sub.snapshot().await.is_none());
     assert!(matches!(sub.load().await, Err(TqError::DataNotFound(_))));
-    assert!(matches!(sub.wait_update().await, Err(TqError::InternalError(_))));
+    assert!(timeout(Duration::from_millis(50), sub.wait_update()).await.is_err());
 }
 
 #[tokio::test]
 async fn wait_update_and_load_track_latest_snapshot_state() {
-    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
-    *sub.running.write().await = true;
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity).await;
     let wait_sub = sub.clone();
     let waiter = tokio::spawn(async move { wait_sub.wait_update().await.expect("wait_update should succeed") });
 
@@ -429,10 +417,8 @@ async fn wait_update_and_load_track_latest_snapshot_state() {
 
 #[tokio::test]
 async fn series_subscription_start_and_close_manage_watch_task_lifecycle() {
-    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity);
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity).await;
 
-    assert!(!sub.watch_task_active_for_test());
-    sub.start().await.expect("start should succeed");
     assert!(sub.watch_task_active_for_test());
 
     sub.close().await.expect("close should succeed");

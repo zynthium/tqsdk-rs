@@ -69,8 +69,7 @@ sub.start().await?;
 **新代码：**
 ```rust
 // 1. 发起网络订阅请求
-let sub = client.subscribe_quote(&["SHFE.cu2605"]).await?;
-sub.start().await?;
+let _sub = client.subscribe_quote(&["SHFE.cu2605"]).await?;
 
 // 2. 获取本地句柄
 let cu = client.quote("SHFE.cu2605");
@@ -92,8 +91,7 @@ loop {
 
 **新代码：**
 ```rust
-let sub = client.subscribe_quote(&symbols).await?;
-sub.start().await?;
+let _sub = client.subscribe_quote(&symbols).await?;
 
 loop {
     // 阻塞并直接返回这一轮被触碰过的 keys
@@ -118,13 +116,11 @@ loop {
 **旧代码：**
 ```rust
 let sub = client.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
-sub.start().await?;
 ```
 
 **新代码：**
 ```rust
 let sub = client.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
-sub.start().await?;
 
 loop {
     let snapshot = sub.wait_update().await?;

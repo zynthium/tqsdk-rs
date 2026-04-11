@@ -181,18 +181,31 @@ async fn client_exposes_series_subscriptions_directly() {
 }
 
 #[tokio::test]
-async fn subscribe_quote_requires_explicit_start() {
+async fn subscribe_quote_is_active_immediately() {
     let client = build_client_with_market();
-    let sub = client.subscribe_quote(&["SHFE.au2602"]).await.unwrap();
     let ws = client.quotes_ws.as_ref().unwrap();
 
     assert!(ws.aggregated_quote_subscriptions_for_test().is_empty());
 
-    sub.start().await.unwrap();
+    let sub = client.subscribe_quote(&["SHFE.au2602"]).await.unwrap();
     assert_eq!(
         ws.aggregated_quote_subscriptions_for_test(),
         HashSet::from(["SHFE.au2602".to_string()])
     );
+
+    sub.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_quote_creation_failure_rolls_back_server_state() {
+    let client = build_client_with_market();
+    let ws = client.quotes_ws.as_ref().unwrap();
+    ws.force_send_failure_for_test();
+
+    let sub = client.subscribe_quote(&["SHFE.au2602"]).await;
+
+    assert!(sub.is_err());
+    assert!(ws.aggregated_quote_subscriptions_for_test().is_empty());
 }
 
 #[tokio::test]

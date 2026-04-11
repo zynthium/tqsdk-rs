@@ -36,7 +36,6 @@ async fn main() -> Result<()> {
     let sub = client
         .kline_history(symbol.as_str(), duration, 8000, left_kline_id)
         .await?;
-    sub.start().await?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
 

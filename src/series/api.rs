@@ -444,7 +444,6 @@ impl SeriesAPI {
     }
 
     async fn fetch_history_page_with_subscription(&self, sub: Arc<SeriesSubscription>) -> Result<HistoryPage> {
-        sub.start().await?;
         let fetched = if self.ws.auto_peek_enabled() {
             match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, sub.wait_update()).await {
                 Ok(Ok(snapshot)) => history_page_from_snapshot(&snapshot),
@@ -507,11 +506,9 @@ impl SeriesAPI {
             options.view_width
         );
 
-        Ok(Arc::new(SeriesSubscription::new(
-            Arc::clone(&self.dm),
-            Arc::clone(&self.ws),
-            options,
-        )?))
+        Ok(Arc::new(
+            SeriesSubscription::new(Arc::clone(&self.dm), Arc::clone(&self.ws), options).await?,
+        ))
     }
 }
 

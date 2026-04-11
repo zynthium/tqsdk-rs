@@ -52,8 +52,8 @@ breaking cleanup 完成后的公开模型收敛为四条主路径：
 | `TradeSession::{account_channel, position_channel}` | `wait_update()` + `get_account()` / `get_position()` / `get_positions()` | 账户与持仓属于最新状态读取，不再提供 best-effort snapshot channel |
 | `TradeSession::{on_account, on_position}` | `wait_update()` + snapshot getters | 交易快照统一走 pull-model，不再保留状态回调 |
 | `TradeSession::{on_notification, on_error, notification_channel}` | `subscribe_events()` | 通知与异步错误并入可靠事件流 |
-| `QuoteSubscription::start()` | `Client::subscribe_quote()` | Quote 订阅将在 breaking cleanup 中改为创建即生效 |
-| `SeriesSubscription::start()` | `Client::{kline,tick,kline_history,kline_history_with_focus}` | Series 订阅将在 breaking cleanup 中改为创建即启动 |
+| `QuoteSubscription::start()` | `Client::subscribe_quote()` | Quote 订阅已改为创建即生效 |
+| `SeriesSubscription::start()` | `Client::{kline,tick,kline_history,kline_history_with_focus}` | Series 订阅已改为创建即启动 |
 
 ## Quote Lifecycle Note
 
@@ -157,6 +157,6 @@ let scheduler = account
 - 已收口：`Client::market_state()` 与 `Client::tqapi()` 已删除；从 `Client` 读取行情状态请统一通过 `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}`。
 - 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 snapshot getter 或回调。
 - 下一轮目标：`Client` 成为唯一 live 入口，`TqApi` / `SeriesAPI` / `InsAPI` 从 crate root / prelude / README 主路径退出。
-- 下一轮目标：Quote / Series 移除显式 `start()`，改为 auto-start；`close()` 仅表示提前释放资源。
+- 已收口：Quote / Series 已移除显式 `start()`；`close()` 仅表示提前释放资源。
 - 下一轮目标：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

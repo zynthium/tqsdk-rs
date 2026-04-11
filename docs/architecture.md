@@ -89,7 +89,7 @@ Client (facade + builder + market)
 ## Breaking Target
 
 - live 入口继续收口：`Client` 将直接暴露行情状态读取、序列订阅和 query facade；`TqApi`、`SeriesAPI`、`InsAPI` 退出 crate root / prelude / README 主路径。
-- Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；下一轮会移除显式 `start()`，改为创建即生效。
+- Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；当前已改为创建即生效。
 - `TradeSession` 继续按“状态 vs 事件”分层：
   账户/持仓是 snapshot getter + `wait_update()`。
   订单/成交/通知/异步错误是可靠事件流。
@@ -99,8 +99,7 @@ Client (facade + builder + market)
 
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
-- 当前现状：`QuoteSubscription`、`SeriesSubscription` 仍需显式 `start()`。
-- breaking 目标：Quote / Series 订阅改为 auto-start，只保留 `close()` 作为提前释放资源接口。
+- 当前现状：`QuoteSubscription`、`SeriesSubscription` 已改为 auto-start，只保留 `close()` 作为提前释放资源接口。
 - 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
 - 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐/历史窗口状态。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。

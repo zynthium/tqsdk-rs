@@ -331,10 +331,9 @@ impl Client {
             auth.has_md_grants(symbols)?
         }
         let symbol_list: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
-        Ok(Arc::new(QuoteSubscription::new(
-            self.quotes_ws.as_ref().unwrap().clone(),
-            symbol_list,
-        )))
+        Ok(Arc::new(
+            QuoteSubscription::new(self.quotes_ws.as_ref().unwrap().clone(), symbol_list).await?,
+        ))
     }
 
     /// 创建交易会话（不自动连接）

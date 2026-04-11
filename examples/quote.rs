@@ -37,14 +37,11 @@ async fn main() -> Result<()> {
     let m = env::var("TQ_QUOTE_M").unwrap_or_else(|_| "DCE.m2512".to_string());
 
     let quote_sub = client.subscribe_quote(&[au.as_str(), ag.as_str(), m.as_str()]).await?;
-    quote_sub.start().await?;
 
     let kline_duration = Duration::from_secs(60);
     let kline_sub = client.kline(au.as_str(), kline_duration, 256).await?;
-    kline_sub.start().await?;
 
     let tick_sub = client.tick(au.as_str(), 256).await?;
-    tick_sub.start().await?;
 
     let au_quote = client.quote(au.as_str());
     let ag_quote = client.quote(ag.as_str());

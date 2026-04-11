@@ -136,16 +136,16 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
 - Modify: `examples/history.rs`
 - Test: `src/client/tests.rs`
 
-- [ ] 给 `Client` 增加直达 live 状态方法：
+- [x] 给 `Client` 增加直达 live 状态方法：
   `quote(symbol)`, `kline_ref(symbol, duration)`, `tick_ref(symbol)`, `wait_update()`, `wait_update_and_drain()`。
-- [ ] 给 `Client` 增加直达序列订阅方法：
+- [x] 给 `Client` 增加直达序列订阅方法：
   `kline(symbols, duration, data_length)`, `tick(symbol, data_length)`, `kline_history(...)`, `kline_history_with_focus(...)`。
 - [ ] 保留当前已有的 query facade，删除 `Client::ins()` 与 `Client::series()` 两个公开逃生口。
-- [ ] 删除 `Client::tqapi()`，不再要求用户先取出 `TqApi` 再读状态。
+- [x] 删除 `Client::tqapi()`，不再要求用户先取出 `TqApi` 再读状态。
 - [ ] 收紧 root/prelude export：`TqApi`、`SeriesAPI`、`InsAPI` 不再作为默认导出和文档主路径。
 - [ ] `TqApi` 退回 `marketdata` 内部或 advanced path，不再出现在 crate root、prelude、README 快速开始和 examples 中。
-- [ ] 把 README 和 examples 改成只展示 `Client` 单入口路径。
-- [ ] 为 `Client` 单入口补一组回归测试：
+- [x] 把 README 和 examples 改成只展示 `Client` 单入口路径。
+- [x] 为 `Client` 单入口补一组回归测试：
   `client.quote()` / `client.wait_update()` 可工作。
   `client.kline()` / `client.tick()` 不再需要 `client.series()?`。
   `client.close()` 后这些入口全部失效。
@@ -165,14 +165,14 @@ cleanup 完成后的 canonical public model 收敛为四条主路径：
 - Test: `src/quote/tests.rs`
 - Test: `src/series/tests.rs`
 
-- [ ] 让 `Client::subscribe_quote()` 返回已生效的 `QuoteSubscription`，删除 `QuoteSubscription::start()`。
-- [ ] 让 live `kline/tick/history` 返回已启动的 `SeriesSubscription`，删除 `SeriesSubscription::start()`。
-- [ ] 保留 `Drop` 自动清理和显式 `close()`，但把 `close()` 定义为“提前释放资源”，不是“正式完成启动流程”。
-- [ ] 调整失败回滚测试：
+- [x] 让 `Client::subscribe_quote()` 返回已生效的 `QuoteSubscription`，删除 `QuoteSubscription::start()`。
+- [x] 让 live `kline/tick/history` 返回已启动的 `SeriesSubscription`，删除 `SeriesSubscription::start()`。
+- [x] 保留 `Drop` 自动清理和显式 `close()`，但把 `close()` 定义为“提前释放资源”，不是“正式完成启动流程”。
+- [x] 调整失败回滚测试：
   之前验证 `start()` 失败回滚。
   现在验证构造/创建阶段失败不会留下脏订阅。
-- [ ] 更新 README 与示例，删除所有 `.start().await?`。
-- [ ] 在迁移文档中明确：auto-start 只适用于 Quote/Series；`TradeSession::connect()` 仍然保留，因为它代表显式交易连接副作用。
+- [x] 更新 README 与示例，删除所有 `.start().await?`。
+- [x] 在迁移文档中明确：auto-start 只适用于 Quote/Series；`TradeSession::connect()` 仍然保留，因为它代表显式交易连接副作用。
 
 ## Task 4: Finish TradeSession State/Event Separation
 

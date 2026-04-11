@@ -41,7 +41,6 @@ async fn main() -> Result<()> {
 
     let quote_sub = client.subscribe_quote(&[underlying.as_str()]).await?;
     let quote_ref = client.quote(underlying.as_str());
-    quote_sub.start().await?;
 
     let underlying_price = tokio::time::timeout(Duration::from_secs(20), async {
         loop {

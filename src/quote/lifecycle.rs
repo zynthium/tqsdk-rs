@@ -7,19 +7,20 @@ use uuid::Uuid;
 
 impl QuoteSubscription {
     /// 创建新的 Quote 订阅
-    pub(crate) fn new(ws: Arc<crate::websocket::TqQuoteWebsocket>, initial_symbols: Vec<String>) -> Self {
+    pub(crate) async fn new(ws: Arc<crate::websocket::TqQuoteWebsocket>, initial_symbols: Vec<String>) -> Result<Self> {
         let symbols: HashSet<String> = initial_symbols.into_iter().collect();
 
-        QuoteSubscription {
+        let sub = QuoteSubscription {
             id: Uuid::new_v4().to_string(),
             ws,
             symbols: Arc::new(tokio::sync::RwLock::new(symbols)),
             running: Arc::new(tokio::sync::RwLock::new(false)),
-        }
+        };
+        sub.activate().await?;
+        Ok(sub)
     }
 
-    /// 启动订阅监听
-    pub async fn start(&self) -> Result<()> {
+    async fn activate(&self) -> Result<()> {
         let mut running = self.running.write().await;
         if *running {
             return Ok(());
