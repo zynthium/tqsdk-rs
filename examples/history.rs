@@ -1,8 +1,55 @@
 use std::env;
 use std::time::Duration;
 
+use chrono::Utc;
 use tqsdk_rs::prelude::*;
 use tracing::info;
+
+fn parse_env_usize(name: &str, default: usize) -> usize {
+    env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn parse_env_i32(name: &str) -> Option<i32> {
+    env::var(name).ok().and_then(|raw| raw.parse::<i32>().ok())
+}
+
+async fn resolve_left_kline_id(client: &Client, symbol: &str, duration: Duration, data_length: usize) -> Result<i64> {
+    let sub = client.kline(symbol, duration, data_length.max(2)).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            sub.close().await?;
+            return Err(TqError::Timeout);
+        }
+
+        let snapshot = match tokio::time::timeout(remaining, sub.wait_update()).await {
+            Ok(result) => result?,
+            Err(_) => {
+                sub.close().await?;
+                return Err(TqError::Timeout);
+            }
+        };
+
+        if !snapshot.update.chart_ready {
+            continue;
+        }
+
+        let series = sub.load().await?;
+        if let Some(single) = &series.single
+            && let Some(last) = single.data.last()
+        {
+            let left_id = last.id.saturating_sub(data_length.saturating_sub(1) as i64);
+            sub.close().await?;
+            return Ok(left_id.max(0));
+        }
+    }
+}
 
 async fn build_client(username: &str, password: &str) -> Result<Client> {
     Client::builder(username, password)
@@ -28,23 +75,45 @@ async fn main() -> Result<()> {
 
     let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.au2512".to_string());
     let duration = Duration::from_secs(60);
-    let left_kline_id = env::var("TQ_LEFT_KLINE_ID")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(105761);
-
-    let sub = client
-        .kline_history(symbol.as_str(), duration, 8000, left_kline_id)
-        .await?;
+    let data_length = parse_env_usize("TQ_HISTORY_VIEW_WIDTH", 8000);
+    let focus_position = parse_env_i32("TQ_HISTORY_FOCUS_POSITION").unwrap_or(0);
+    let left_kline_id = match env::var("TQ_LEFT_KLINE_ID").ok().as_deref() {
+        Some("auto") => {
+            let resolved = resolve_left_kline_id(&client, symbol.as_str(), duration, data_length).await?;
+            info!("基于实时 K 线推导 left_kline_id={}", resolved);
+            Some(resolved)
+        }
+        Some(raw) => raw.parse::<i64>().ok(),
+        None => None,
+    };
+    let sub = if let Some(left_kline_id) = left_kline_id {
+        info!("按 left_kline_id={} 拉取历史窗口", left_kline_id);
+        client
+            .kline_history(symbol.as_str(), duration, data_length, left_kline_id)
+            .await?
+    } else {
+        info!(
+            "未设置 TQ_LEFT_KLINE_ID，按当前时间聚焦最近历史窗口 view_width={} focus_position={}",
+            data_length, focus_position
+        );
+        client
+            .kline_history_with_focus(symbol.as_str(), duration, data_length, Utc::now(), focus_position)
+            .await?
+    };
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
 
+    let mut synced = false;
     loop {
-        if tokio::time::Instant::now() > deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
             break;
         }
 
-        let snapshot = sub.wait_update().await?;
+        let snapshot = match tokio::time::timeout(remaining, sub.wait_update()).await {
+            Ok(result) => result?,
+            Err(_) => break,
+        };
         if !snapshot.update.chart_ready {
             continue;
         }
@@ -66,11 +135,15 @@ async fn main() -> Result<()> {
                     single.data.len()
                 );
             }
+            synced = true;
             break;
         }
     }
 
     sub.close().await?;
     client.close().await?;
+    if !synced {
+        return Err(TqError::Timeout);
+    }
     Ok(())
 }

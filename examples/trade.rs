@@ -23,6 +23,14 @@ async fn build_client(username: &str, password: &str, config: ClientConfig) -> R
         .await
 }
 
+fn example_duration() -> Duration {
+    let secs = env::var("TQ_TRADE_EXAMPLE_DURATION_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(300);
+    Duration::from_secs(secs.max(1))
+}
+
 /// 使用可靠事件流的交易示例（实盘交易）
 async fn trade_reliable_event_example() {
     info!("==================== 交易可靠事件流示例（实盘）====================");
@@ -38,6 +46,7 @@ async fn trade_reliable_event_example() {
         log_level: "info".to_string(),
         ..Default::default()
     };
+    let run_duration = example_duration();
 
     let client = build_client(&username, &password, config)
         .await
@@ -213,9 +222,10 @@ async fn trade_reliable_event_example() {
     trader.wait_order_update_reliable(&order_id).await.unwrap();
     */
 
-    // 运行 30 秒
+    // 运行一段可配置时长，便于联调与 CI 验证
     info!("\n监听交易数据更新...");
-    tokio::time::sleep(Duration::from_secs(300)).await;
+    info!("示例将持续运行 {} 秒", run_duration.as_secs());
+    tokio::time::sleep(run_duration).await;
     info!("可靠事件流示例结束\n");
 
     info!("开始关闭交易会话...");

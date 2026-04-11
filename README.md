@@ -74,7 +74,9 @@
 - 修复行情 WebSocket 断线重连后未完成 `ins_query` 可能丢失或重复的问题。
 - 修复 `query_cont_quotes` 在未提供 `has_night` 时仍发送该变量导致的超时问题。
 - 修复 `TradeSession::connect()` 失败后后台任务仍可能继续重连或保活的问题。
+- 修复 `subscribe_order_events()` / `subscribe_trade_events()` 会被通知或异步错误事件挤占 retention 窗口、导致误报 `Lagged` 的问题。
 - 将 `SeriesSubscription` 收敛为快照式状态接口，窗口消费统一改用 `wait_update()` / `load()`。
+- 修复 `quote` / `history` 示例在截止时间后仍可能卡在等待更新的问题，并为 `trade` 示例增加可配置运行时长。
 - 将 Quote、TradingStatus、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
 - 修复 `has_md_grants` 的指数权限判断顺序：
   `SSE.000016` / `SSE.000300` / `SSE.000905` / `SSE.000852` 现在会优先校验 `lmt_idx` 权限。
@@ -115,11 +117,19 @@ tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3" }
 | `TQ_AUTH_USER` | 是 | 天勤账号 |
 | `TQ_AUTH_PASS` | 是 | 天勤密码 |
 | `TQ_LOG_LEVEL` | 否 | 常见示例使用的日志级别，如 `info`、`debug` |
+| `TQ_QUOTE_AU` | 否 | `quote` 示例中的第一个行情合约 |
+| `TQ_QUOTE_AG` | 否 | `quote` 示例中的第二个行情合约 |
+| `TQ_QUOTE_M` | 否 | `quote` 示例中的第三个行情合约 |
 | `SIMNOW_USER_0` | 否 | `trade` 示例使用的 SimNow 账号 |
 | `SIMNOW_PASS_0` | 否 | `trade` 示例使用的 SimNow 密码 |
+| `TQ_TRADE_EXAMPLE_DURATION_SECS` | 否 | `trade` 示例持续运行秒数，默认 `300` |
 | `TQ_START_DT` | 否 | `backtest` 示例起始日期，格式 `YYYY-MM-DD` |
 | `TQ_END_DT` | 否 | `backtest` 示例结束日期，格式 `YYYY-MM-DD` |
 | `TQ_TEST_SYMBOL` | 否 | `history` 示例联调用的测试合约 |
+| `TQ_LEFT_KLINE_ID` | 否 | `history` 示例按左边界定位历史窗口；支持整数或 `auto`，未设置时会自动聚焦最近窗口 |
+| `TQ_HISTORY_VIEW_WIDTH` | 否 | `history` 示例历史窗口宽度，默认 `8000` |
+| `TQ_HISTORY_FOCUS_POSITION` | 否 | `history` 示例按时间焦点定位时的窗口偏移，默认 `0` |
+| `TQ_POSITION_SIZE` | 否 | `backtest` / `pivot_point` 示例使用的目标手数 |
 | `TQ_UNDERLYING` | 否 | `option_levels` 示例的标的合约 |
 
 ### 基础示例 - 行情订阅
@@ -444,7 +454,7 @@ println!("持仓数={}", positions.len());
 说明：
 
 - 交易会话推荐先建立 `wait_update()` 与 `subscribe_events()` 的消费路径，再 `connect()`。
-- `subscribe_events()` 是交易侧唯一 canonical push-style 入口；`subscribe_order_events()` / `subscribe_trade_events()` 只是过滤视图。
+- `subscribe_events()` 是交易侧唯一 canonical push-style 入口；`subscribe_order_events()` / `subscribe_trade_events()` 是按事件类型过滤的可靠视图，并拥有独立 retention。
 - 可靠事件流只会看到订阅之后产生的事件；账户、持仓统一按最新快照读取。
 - 需要等待某个订单出现后续更新时，优先使用 `wait_order_update_reliable(order_id)`。
 - `connect()` 失败时会清理本次连接产生的后台状态，不会继续残留重连任务。
@@ -722,13 +732,13 @@ cargo run --example option_levels
 | 示例文件 | 主要内容 | 额外环境变量 |
 |------|------|------|
 | `quote.rs` | Quote、单合约 K 线、多合约对齐 K 线、Tick | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
-| `history.rs` | 历史 K 线、接口联调、交易状态查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL` |
-| `trade.rs` | 可靠事件流、账户/持仓监听、订单等待 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0` |
+| `history.rs` | 历史 K 线、接口联调、交易状态查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL`、`TQ_LEFT_KLINE_ID`、`TQ_HISTORY_VIEW_WIDTH`、`TQ_HISTORY_FOCUS_POSITION` |
+| `trade.rs` | 可靠事件流、账户/持仓监听、订单等待 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0`，可选 `TQ_TRADE_EXAMPLE_DURATION_SECS` |
 | `backtest.rs` | `ReplaySession` 构建、K 线注册、runtime 驱动、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `pivot_point.rs` | 基于 `ReplaySession` 的日线枢轴点反转策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `datamanager.rs` | `watch` / `unwatch`、路径读取、epoch | 无 |
 | `custom_logger.rs` | `create_logger_layer()` 与业务日志组合 | 无 |
-| `option_levels.rs` | 平值/实值/虚值期权查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_UNDERLYING`、`TQ_LOG_LEVEL` |
+| `option_levels.rs` | 平值/实值/虚值期权查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_UNDERLYING`、`TQ_LOG_LEVEL`；默认标的为 ETF，要求账户具备股票行情权限 |
 
 ### 扩展环境变量配置
 

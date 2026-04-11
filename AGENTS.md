@@ -49,9 +49,11 @@ examples/
 ├── history.rs
 ├── trade.rs
 ├── backtest.rs
+├── pivot_point.rs
 ├── datamanager.rs
 ├── option_levels.rs
-└── custom_logger.rs
+├── custom_logger.rs
+└── marketdata_state_stress.rs
 ```
 
 ## 核心架构提示
@@ -62,13 +64,14 @@ examples/
 - `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
 - `DataManager` 的 merge 通知统一使用 `subscribe_epoch()`；旧的 `on_data` / `on_data_register` / `off_data` callback plumbing 已删除，不要重新引入。
 - breaking target：live API 继续收口到 `Client` 单入口；`tqapi()` 已删除，`series()` / `ins()` 也不应再扩大使用面。
-- `QuoteSubscription` 和 `SeriesSubscription` 目前仍是显式 `start()` 模型，但 breaking target 是 auto-start；新代码不要再新增对 `start()` 语义的依赖。
+- `QuoteSubscription` 和 `SeriesSubscription` 已经是 auto-start；创建后立即生效，`close()` 只负责提前释放资源。
 - `QuoteSubscription` 只负责订阅生命周期；读取 Quote 的长期目标是 `Client::quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`；不要重新引入 `on_update`、`on_new_bar`、`data_stream()` 一类 fan-out API。
 - `TqRuntime` 的目标持仓 canonical 入口是 `runtime.account(\"...\").target_pos(...).build()` 和 scheduler builder；`compat::` facade 已删除，不要重新引入。
 - `TradeSession` 对外分为两层：账户/持仓等仍以最新状态读取为主，`order` / `trade` 则使用可靠事件流 API。
-- breaking target：`TradeSession` 的通知与异步错误也会并入可靠事件流；账户/持仓 callback/channel 会继续清理，不要为新代码新增依赖。
+- `TradeSession` 的通知与异步错误已经并入可靠事件流；账户/持仓 callback/channel 已不再是推荐路径，不要为新代码新增依赖。
 - `TradeSession` 内部 watcher 已改为监听 DataManager epoch，再按 path epoch 拆分账户快照与可靠订单/成交事件。
+- `subscribe_order_events()` / `subscribe_trade_events()` 是按类型过滤的可靠事件视图；它们不应再因为通知或异步错误事件共享 retention 窗口而误报 `Lagged`。
 - 重连逻辑包含完整性校验，不要为了“简化”而破坏临时缓冲再合并的策略。
 - 行情与非关键状态更新存在有界缓冲和丢弃策略；但 `TradeSession` 的 `order` / `trade` 公开接口不再走 best-effort channel。
 
@@ -91,11 +94,19 @@ examples/
 | `TQ_AUTH_USER` | 天勤账号 |
 | `TQ_AUTH_PASS` | 天勤密码 |
 | `TQ_LOG_LEVEL` | 示例中的日志级别 |
+| `TQ_QUOTE_AU` | `quote` 示例中的第一个行情合约 |
+| `TQ_QUOTE_AG` | `quote` 示例中的第二个行情合约 |
+| `TQ_QUOTE_M` | `quote` 示例中的第三个行情合约 |
 | `TQ_TEST_SYMBOL` | live 查询示例/测试使用的合约 |
+| `TQ_LEFT_KLINE_ID` | `history` 示例按左边界定位历史窗口；支持整数或 `auto`，未设置时自动聚焦最近窗口 |
+| `TQ_HISTORY_VIEW_WIDTH` | `history` 示例历史窗口宽度，默认 `8000` |
+| `TQ_HISTORY_FOCUS_POSITION` | `history` 示例按时间焦点定位时的窗口偏移，默认 `0` |
 | `TQ_START_DT` | `backtest` 示例起始日期 |
 | `TQ_END_DT` | `backtest` 示例结束日期 |
+| `TQ_POSITION_SIZE` | `backtest` / `pivot_point` 示例使用的目标手数 |
 | `SIMNOW_USER_0` | `trade` 示例的 SimNow 账号 |
 | `SIMNOW_PASS_0` | `trade` 示例的 SimNow 密码 |
+| `TQ_TRADE_EXAMPLE_DURATION_SECS` | `trade` 示例持续运行秒数，默认 `300` |
 | `TQ_UNDERLYING` | `option_levels` 示例的标的合约 |
 
 还有少量高级环境变量会覆盖默认服务地址，例如 `TQ_AUTH_URL`、`TQ_MD_URL`、`TQ_TD_URL`、`TQ_INS_URL`、`TQ_CHINESE_HOLIDAY_URL`。只有在排查网络、联调特殊服务或切换服务端点时才应修改。
@@ -158,7 +169,7 @@ examples/
 
 - 单元测试主要分布在对应模块目录和 `src/*/tests.rs`。
 - 部分 `ins` 相关测试是 live 测试，默认被 `#[ignore]` 跳过。
-- `examples/history.rs` 会创建 `logs/` 目录；不要把这类产物加入版本控制。
+- `examples/custom_logger.rs` 会创建 `logs/` 目录；不要把这类产物加入版本控制。
 - 示例默认以“可读、可演示”为目标，不要为局部技巧牺牲 API 清晰度。
 
 ## 安全边界

@@ -155,8 +155,8 @@ let scheduler = account
 - 已收口：`InsAPI`、`SeriesAPI`、`SeriesCachePolicy`、`KlineKey`、`MarketDataState`、`MarketDataUpdates` 与 `SymbolId` 不再从 crate root 直接导出；显式类型引用请走对应模块命名空间。
 - 已收口：`Authenticator`、`ClientOption` 与 `BacktestResult` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::{auth, client, replay}::{...}`。
 - 已收口：`Client::market_state()` 与 `Client::tqapi()` 已删除；从 `Client` 读取行情状态请统一通过 `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}`。
-- 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 snapshot getter 或回调。
+- 已收口：`TradeSession::{account_channel, position_channel}` 已删除；账户与持仓请走 `wait_update()` + snapshot getter。
 - 下一轮目标：`Client` 成为唯一 live 入口，`TqApi` / `SeriesAPI` / `InsAPI` 从 crate root / prelude / README 主路径退出。
 - 已收口：Quote / Series 已移除显式 `start()`；`close()` 仅表示提前释放资源。
-- 已收口：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`。
+- 已收口：`TradeSession` 账户/持仓统一走 `wait_update()` + getter；通知与异步错误并入 `subscribe_events()`；`subscribe_order_events()` / `subscribe_trade_events()` 维持独立可靠 retention，不受通知/错误事件流量污染。
 - 约束：在 cleanup 完成前，不要为新代码新增 `BacktestHandle`、`on_quote`、`on_update`、`data_stream` 等依赖。

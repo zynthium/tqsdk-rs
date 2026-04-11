@@ -51,11 +51,15 @@ async fn main() -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
 
     loop {
-        if tokio::time::Instant::now() > deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
             break;
         }
 
-        let updates = client.wait_update_and_drain().await?;
+        let updates = match tokio::time::timeout(remaining, client.wait_update_and_drain()).await {
+            Ok(result) => result?,
+            Err(_) => break,
+        };
 
         for symbol in updates.quotes {
             if symbol.as_str() == au.as_str() {
