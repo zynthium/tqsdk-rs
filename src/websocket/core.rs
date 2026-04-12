@@ -991,6 +991,10 @@ fn peek_frame() -> Frame {
 
 #[cfg(test)]
 impl TqWebsocket {
+    pub(crate) fn url_for_test(&self) -> String {
+        self.url.clone()
+    }
+
     pub(crate) fn emit_error_for_test(&self, message: String) {
         if let Some(callback) = self.on_error.read().unwrap().clone() {
             callback(message);

@@ -383,6 +383,10 @@ impl TqTradeWebsocket {
         self.base.pending_queue_len_for_test().await
     }
 
+    pub(crate) fn url_for_test(&self) -> String {
+        self.base.url_for_test()
+    }
+
     pub(crate) fn req_login_for_test(&self) -> Option<Value> {
         self.runtime.req_login.read().unwrap().clone()
     }

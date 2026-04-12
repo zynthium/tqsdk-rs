@@ -48,6 +48,7 @@ impl Default for EndpointConfig {
 pub struct TradeSessionOptions {
     pub td_url_override: Option<String>,
     pub reliable_events_max_retained: usize,
+    pub use_sm: bool,
 }
 
 impl Default for TradeSessionOptions {
@@ -55,6 +56,7 @@ impl Default for TradeSessionOptions {
         Self {
             td_url_override: None,
             reliable_events_max_retained: 8_192,
+            use_sm: false,
         }
     }
 }

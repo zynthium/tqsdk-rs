@@ -1,5 +1,5 @@
 use super::{Client, ClientBuilder, ClientConfig, TradeSessionOptions};
-use crate::auth::Authenticator;
+use crate::auth::{Authenticator, BrokerInfo};
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
@@ -17,6 +17,75 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
+
+fn urlsafe_base64_encode(input: &str) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    let mut index = 0;
+    while index + 3 <= bytes.len() {
+        let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8) | (bytes[index + 2] as u32);
+        output.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
+        output.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
+        output.push(TABLE[((chunk >> 6) & 0x3f) as usize] as char);
+        output.push(TABLE[(chunk & 0x3f) as usize] as char);
+        index += 3;
+    }
+    match bytes.len() - index {
+        1 => {
+            let chunk = (bytes[index] as u32) << 16;
+            output.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
+            output.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
+            output.push('=');
+            output.push('=');
+        }
+        2 => {
+            let chunk = ((bytes[index] as u32) << 16) | ((bytes[index + 1] as u32) << 8);
+            output.push(TABLE[((chunk >> 18) & 0x3f) as usize] as char);
+            output.push(TABLE[((chunk >> 12) & 0x3f) as usize] as char);
+            output.push(TABLE[((chunk >> 6) & 0x3f) as usize] as char);
+            output.push('=');
+        }
+        _ => {}
+    }
+    output
+}
+
+fn rewrite_sm_td_url(url: &str, sm_type: &str, sm_config: &str, account_id: &str, password: &str) -> String {
+    let Some((_, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let split_idx = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..split_idx];
+    let suffix = &rest[split_idx..];
+    format!(
+        "{}://{}/{}/{}/{}{}",
+        sm_type,
+        authority,
+        sm_config,
+        urlsafe_base64_encode(account_id),
+        urlsafe_base64_encode(password),
+        suffix
+    )
+}
+
+fn resolve_trade_td_url(
+    broker_info: &BrokerInfo,
+    user_id: &str,
+    password: &str,
+    options: &TradeSessionOptions,
+) -> String {
+    if !options.use_sm {
+        return broker_info.url.clone();
+    }
+    let Some(sm_type) = broker_info.smtype.as_deref().filter(|value| !value.is_empty()) else {
+        return broker_info.url.clone();
+    };
+    let Some(sm_config) = broker_info.smconfig.as_deref().filter(|value| !value.is_empty()) else {
+        return broker_info.url.clone();
+    };
+    rewrite_sm_td_url(&broker_info.url, sm_type, sm_config, user_id, password)
+}
 
 impl Client {
     /// 创建新的客户端（使用默认配置）
@@ -374,12 +443,15 @@ impl Client {
         let auth = self.auth.read().await;
         let td_url = if let Some(url) = options
             .td_url_override
+            .as_ref()
             .filter(|url| !url.trim().is_empty())
+            .cloned()
             .or_else(|| self.endpoints.td_url.clone())
         {
             url
         } else {
-            auth.get_td_url(broker, user_id).await?.url
+            let broker_info = auth.get_td_url(broker, user_id).await?;
+            resolve_trade_td_url(&broker_info, user_id, password, &options)
         };
 
         let ws_config = WebSocketConfig {

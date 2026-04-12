@@ -1021,6 +1021,32 @@ async fn trade_session_send_login_includes_compatibility_fields() {
 }
 
 #[tokio::test]
+async fn trade_session_send_login_auto_fills_mac_address_when_not_configured() {
+    let dm = build_dm();
+    let session = build_session(dm);
+
+    session.send_login().await.unwrap();
+
+    let req = session
+        .ws
+        .req_login_for_test()
+        .expect("login packet should be recorded");
+    let mac = req["client_mac_address"]
+        .as_str()
+        .expect("auto-detected mac address should be present");
+    assert_eq!(mac.len(), 17);
+    assert!(
+        mac.chars()
+            .enumerate()
+            .all(|(idx, ch)| if [2, 5, 8, 11, 14].contains(&idx) {
+                ch == '-'
+            } else {
+                ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase()
+            })
+    );
+}
+
+#[tokio::test]
 async fn trade_session_can_skip_confirm_settlement_for_non_futures_logins() {
     let dm = build_dm();
     let session = build_session_with_login_options(

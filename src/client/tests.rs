@@ -13,6 +13,9 @@ use std::time::Duration;
 #[derive(Default)]
 struct TestAuth;
 
+#[derive(Default)]
+struct SmTestAuth;
+
 #[async_trait]
 impl Authenticator for TestAuth {
     fn base_header(&self) -> HeaderMap {
@@ -25,6 +28,53 @@ impl Authenticator for TestAuth {
 
     async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
         Err(TqError::NotLoggedIn)
+    }
+
+    async fn get_md_url(&self, _stock: bool, _backtest: bool) -> Result<String> {
+        Ok("wss://example.com".to_string())
+    }
+
+    fn has_feature(&self, _feature: &str) -> bool {
+        false
+    }
+
+    fn has_md_grants(&self, _symbols: &[&str]) -> Result<()> {
+        Ok(())
+    }
+
+    fn has_td_grants(&self, _symbol: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_auth_id(&self) -> &str {
+        ""
+    }
+
+    fn get_access_token(&self) -> &str {
+        ""
+    }
+}
+
+#[async_trait]
+impl Authenticator for SmTestAuth {
+    fn base_header(&self) -> HeaderMap {
+        HeaderMap::new()
+    }
+
+    async fn login(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
+        Ok(crate::auth::BrokerInfo {
+            category: vec!["TQ".to_string()],
+            url: "http://example.org/trade".to_string(),
+            broker_type: Some("FUTURE".to_string()),
+            smtype: Some("smtcp".to_string()),
+            smconfig: Some("cfg".to_string()),
+            condition_type: None,
+            condition_config: None,
+        })
     }
 
     async fn get_md_url(&self, _stock: bool, _backtest: bool) -> Result<String> {
@@ -97,12 +147,16 @@ fn build_client_with_market() -> Client {
 }
 
 fn build_inactive_client() -> Client {
+    build_inactive_client_with_auth(TestAuth)
+}
+
+fn build_inactive_client_with_auth<A: Authenticator + 'static>(auth_impl: A) -> Client {
     let dm = Arc::new(DataManager::new(
         HashMap::new(),
         crate::datamanager::DataManagerConfig::default(),
     ));
     let market_state = Arc::new(MarketDataState::default());
-    let auth: Arc<tokio::sync::RwLock<dyn Authenticator>> = Arc::new(tokio::sync::RwLock::new(TestAuth));
+    let auth: Arc<tokio::sync::RwLock<dyn Authenticator>> = Arc::new(tokio::sync::RwLock::new(auth_impl));
     let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
 
     Client {
@@ -252,11 +306,36 @@ async fn create_trade_session_allows_td_url_override() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
         )
         .await;
 
     assert!(session.is_ok());
+}
+
+#[tokio::test]
+async fn create_trade_session_uses_sm_td_url_when_requested() {
+    let client = build_inactive_client_with_auth(SmTestAuth);
+
+    let session = client
+        .create_trade_session_with_options(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: None,
+                reliable_events_max_retained: 32,
+                use_sm: true,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        session.ws_url_for_test(),
+        "smtcp://example.org/cfg/dXNlcg==/cGFzc3dvcmQ=/trade"
+    );
 }
 
 #[tokio::test]
@@ -271,6 +350,7 @@ async fn create_trade_session_plumbs_reliable_event_retention() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
         )
         .await
@@ -291,6 +371,7 @@ async fn create_trade_session_with_login_options_plumbs_login_configuration() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
             crate::trade_session::TradeLoginOptions {
                 front: Some(crate::trade_session::TradeFrontConfig {
@@ -353,6 +434,7 @@ async fn builder_can_preconfigure_trade_sessions_for_runtime() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
         )
         .build_runtime()
@@ -376,6 +458,7 @@ async fn builder_can_preconfigure_trade_sessions_with_login_options() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
             crate::trade_session::TradeLoginOptions {
                 front: Some(crate::trade_session::TradeFrontConfig {
@@ -407,6 +490,7 @@ async fn trade_sessions_created_by_client_are_dm_isolated() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade-left".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
         )
         .await
@@ -419,6 +503,7 @@ async fn trade_sessions_created_by_client_are_dm_isolated() {
             TradeSessionOptions {
                 td_url_override: Some("wss://example.com/trade-right".to_string()),
                 reliable_events_max_retained: 32,
+                use_sm: false,
             },
         )
         .await

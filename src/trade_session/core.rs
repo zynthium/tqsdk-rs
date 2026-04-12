@@ -6,11 +6,131 @@ use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
 use crate::types::Notification;
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
+use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::info;
 
 const DEFAULT_CLIENT_APP_ID: &str = "SHINNY_TQ_1.0";
+
+fn configured_value(value: &Option<String>) -> Option<String> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn normalize_mac_candidate(candidate: &str) -> Option<String> {
+    let parts = candidate
+        .trim()
+        .split([':', '-'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() != 6
+        || parts
+            .iter()
+            .any(|part| part.len() != 2 || !part.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return None;
+    }
+    let normalized = parts
+        .into_iter()
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    if normalized == "00-00-00-00-00-00" {
+        return None;
+    }
+    Some(normalized)
+}
+
+#[cfg(target_os = "linux")]
+fn detect_client_mac_address() -> Option<String> {
+    let entries = std::fs::read_dir("/sys/class/net").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy() == "lo" {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(entry.path().join("address")) else {
+            continue;
+        };
+        if let Some(mac) = normalize_mac_candidate(&raw) {
+            return Some(mac);
+        }
+    }
+    None
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd"
+))]
+fn detect_client_mac_address() -> Option<String> {
+    let output = Command::new("ifconfig").arg("-a").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(raw) = line.trim().strip_prefix("ether ")
+            && let Some(mac) = normalize_mac_candidate(raw)
+        {
+            return Some(mac);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn detect_client_mac_address() -> Option<String> {
+    let output = Command::new("getmac").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for token in stdout.split_whitespace() {
+        if let Some(mac) = normalize_mac_candidate(token) {
+            return Some(mac);
+        }
+    }
+    None
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "windows"
+)))]
+fn detect_client_mac_address() -> Option<String> {
+    None
+}
+
+fn detect_client_system_info() -> Option<String> {
+    // 官方 Python 在 macOS 等不支持的平台也会静默跳过穿透式监管信息采集。
+    None
+}
+
+fn resolve_client_mac_address(login_options: &TradeLoginOptions) -> Option<String> {
+    configured_value(&login_options.client_mac_address).or_else(detect_client_mac_address)
+}
+
+fn resolve_client_system_info(login_options: &TradeLoginOptions) -> Option<String> {
+    configured_value(&login_options.client_system_info)
+        .or_else(|| {
+            std::env::var("TQ_CLIENT_SYSTEM_INFO")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(detect_client_system_info)
+}
 
 impl TradeSession {
     /// 创建交易会话
@@ -106,26 +226,14 @@ impl TradeSession {
             "user_name": self.user_id,
             "password": self.password
         });
-        if let Some(mac) = self
-            .login_options
-            .client_mac_address
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(mac) = resolve_client_mac_address(&self.login_options) {
             login_req["client_mac_address"] = serde_json::json!(mac);
         }
-        if let Some(system_info) = self
-            .login_options
-            .client_system_info
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
+        if let Some(system_info) = resolve_client_system_info(&self.login_options) {
             login_req["client_system_info"] = serde_json::json!(system_info);
             login_req["client_app_id"] = serde_json::json!(
-                self.login_options
-                    .client_app_id
+                configured_value(&self.login_options.client_app_id)
                     .as_deref()
-                    .filter(|value| !value.is_empty())
                     .unwrap_or(DEFAULT_CLIENT_APP_ID)
             );
         }
@@ -174,6 +282,11 @@ impl TradeSession {
     #[cfg(test)]
     pub(crate) fn login_options_for_test(&self) -> TradeLoginOptions {
         self.login_options.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ws_url_for_test(&self) -> String {
+        self.ws.url_for_test()
     }
 
     /// 等待交易快照在本会话下推进至少一次。

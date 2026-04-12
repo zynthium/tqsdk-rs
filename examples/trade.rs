@@ -64,6 +64,7 @@ async fn trade_reliable_event_example() {
                 TradeSessionOptions {
                     td_url_override: (!td_url.is_empty()).then_some(td_url),
                     reliable_events_max_retained: 8_192,
+                    use_sm: false,
                 },
             )
             .await
