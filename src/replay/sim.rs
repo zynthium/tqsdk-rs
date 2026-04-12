@@ -84,6 +84,10 @@ impl SimBroker {
             frozen_margin: 0.0,
             frozen_premium: 0.0,
             last_msg: "报单成功".to_string(),
+            is_dead: false,
+            is_online: false,
+            is_error: false,
+            trade_price: 0.0,
             epoch: None,
         };
 
@@ -115,6 +119,10 @@ impl SimBroker {
                 freeze_close_order(position, &mut order);
             }
         }
+        if order.status != ORDER_STATUS_ALIVE {
+            order.exchange_order_id.clear();
+        }
+        refresh_order_derived_fields(&mut order);
 
         self.orders.insert(order_id.clone(), order);
         self.recompute_account(account_key)?;
@@ -198,6 +206,7 @@ impl SimBroker {
             order.frozen_premium = 0.0;
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.last_msg = "已撤单".to_string();
+            refresh_order_derived_fields(order);
             snapshot
         };
 
@@ -252,6 +261,7 @@ impl SimBroker {
                 order.frozen_premium = 0.0;
                 order.status = ORDER_STATUS_FINISHED.to_string();
                 order.last_msg = "交易日结束，自动撤销当日有效的委托单（GFD）".to_string();
+                refresh_order_derived_fields(order);
                 snapshot
             };
             self.release_order_resources(&snapshot)?;
@@ -372,6 +382,8 @@ impl SimBroker {
             order.volume_left = 0;
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.last_msg = "全部成交".to_string();
+            order.trade_price = fill_price;
+            refresh_order_derived_fields(order);
             snapshot
         };
 
@@ -442,6 +454,7 @@ impl SimBroker {
             order.frozen_premium = 0.0;
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.last_msg = last_msg.to_string();
+            refresh_order_derived_fields(order);
             snapshot
         };
 
@@ -954,12 +967,21 @@ fn refresh_position_volume_fields(position: &mut Position) {
     position.pos_long_his = position.volume_long_his;
     position.pos_short_today = position.volume_short_today;
     position.pos_short_his = position.volume_short_his;
+    position.pos_long = position.pos_long_today + position.pos_long_his;
+    position.pos_short = position.pos_short_today + position.pos_short_his;
+    position.pos = position.pos_long - position.pos_short;
     position.volume_long = position.volume_long_today + position.volume_long_his;
     position.volume_short = position.volume_short_today + position.volume_short_his;
     position.volume_long_frozen = position.volume_long_frozen_today + position.volume_long_frozen_his;
     position.volume_short_frozen = position.volume_short_frozen_today + position.volume_short_frozen_his;
     position.volume_long_yd = position.volume_long_his;
     position.volume_short_yd = position.volume_short_his;
+}
+
+fn refresh_order_derived_fields(order: &mut Order) {
+    order.is_dead = order.status == ORDER_STATUS_FINISHED;
+    order.is_online = !order.exchange_order_id.is_empty() && order.status == ORDER_STATUS_ALIVE;
+    order.is_error = order.exchange_order_id.is_empty() && order.status == ORDER_STATUS_FINISHED;
 }
 
 fn limit_fill_price(order: &Order, metadata: &InstrumentMetadata, quote: &ReplayQuote) -> Option<f64> {
@@ -1246,6 +1268,9 @@ fn default_position(account_key: &str, symbol: &str, last_price: f64) -> Positio
         market_value_long: 0.0,
         market_value_short: 0.0,
         market_value: 0.0,
+        pos: 0,
+        pos_long: 0,
+        pos_short: 0,
         epoch: None,
     }
 }

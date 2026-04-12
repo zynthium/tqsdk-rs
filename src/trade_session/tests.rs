@@ -326,6 +326,147 @@ async fn trade_session_reconnect_notifications_reset_readiness_until_next_snapsh
 }
 
 #[tokio::test]
+async fn trade_session_get_position_exposes_derived_net_position_fields() {
+    let dm = build_dm();
+    let session = build_session(Arc::clone(&dm));
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "positions": {
+                        "SHFE.au2602": {
+                            "user_id": "u",
+                            "exchange_id": "SHFE",
+                            "instrument_id": "au2602",
+                            "pos_long_today": 2,
+                            "pos_long_his": 3,
+                            "pos_short_today": 1,
+                            "pos_short_his": 1
+                        }
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    let position = session.get_position("SHFE.au2602").await.unwrap();
+    assert_eq!(position.pos_long, 5);
+    assert_eq!(position.pos_short, 2);
+    assert_eq!(position.pos, 3);
+}
+
+#[tokio::test]
+async fn trade_session_get_order_exposes_derived_flags_and_trade_price() {
+    let dm = build_dm();
+    let session = build_session(Arc::clone(&dm));
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "orders": {
+                        "o1": {
+                            "order_id": "o1",
+                            "exchange_id": "SHFE",
+                            "instrument_id": "au2602",
+                            "direction": "BUY",
+                            "offset": "OPEN",
+                            "status": "ALIVE",
+                            "volume_orign": 2,
+                            "volume_left": 1,
+                            "exchange_order_id": "EX123"
+                        },
+                        "o2": {
+                            "order_id": "o2",
+                            "exchange_id": "SHFE",
+                            "instrument_id": "au2602",
+                            "direction": "BUY",
+                            "offset": "OPEN",
+                            "status": "FINISHED",
+                            "volume_orign": 1,
+                            "volume_left": 1
+                        }
+                    },
+                    "trades": {
+                        "t1": {
+                            "trade_id": "t1",
+                            "order_id": "o1",
+                            "exchange_id": "SHFE",
+                            "instrument_id": "au2602",
+                            "direction": "BUY",
+                            "offset": "OPEN",
+                            "volume": 1,
+                            "price": 520.0
+                        },
+                        "t2": {
+                            "trade_id": "t2",
+                            "order_id": "o1",
+                            "exchange_id": "SHFE",
+                            "instrument_id": "au2602",
+                            "direction": "BUY",
+                            "offset": "OPEN",
+                            "volume": 1,
+                            "price": 522.0
+                        }
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    let online_order = session.get_order("o1").await.unwrap();
+    assert!(online_order.is_online);
+    assert!(!online_order.is_dead);
+    assert!(!online_order.is_error);
+    assert_eq!(online_order.trade_price, 521.0);
+
+    let rejected_order = session.get_order("o2").await.unwrap();
+    assert!(!rejected_order.is_online);
+    assert!(rejected_order.is_dead);
+    assert!(rejected_order.is_error);
+}
+
+#[tokio::test]
+async fn trade_session_get_trade_returns_single_trade_snapshot() {
+    let dm = build_dm();
+    let session = build_session(Arc::clone(&dm));
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "trades": {
+                        "t1": {
+                            "trade_id": "t1",
+                            "order_id": "o1",
+                            "exchange_id": "SHFE",
+                            "instrument_id": "au2602",
+                            "direction": "BUY",
+                            "offset": "OPEN",
+                            "volume": 2,
+                            "price": 520.0
+                        }
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    let trade = session.get_trade("t1").await.unwrap();
+    assert_eq!(trade.trade_id, "t1");
+    assert_eq!(trade.order_id, "o1");
+    assert_eq!(trade.volume, 2);
+    assert_eq!(trade.price, 520.0);
+}
+
+#[tokio::test]
 async fn trade_session_emits_order_then_trade_events() {
     let dm = build_dm();
     let session = build_session(Arc::clone(&dm));

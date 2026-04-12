@@ -149,6 +149,12 @@ pub struct Position {
     pub market_value_short: f64,
     #[serde(default, deserialize_with = "deserialize_f64_default")]
     pub market_value: f64,
+    #[serde(default)]
+    pub pos: i64,
+    #[serde(default)]
+    pub pos_long: i64,
+    #[serde(default)]
+    pub pos_short: i64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "_epoch")]
@@ -196,6 +202,14 @@ pub struct Order {
     pub frozen_premium: f64,
     #[serde(default)]
     pub last_msg: String,
+    #[serde(default)]
+    pub is_dead: bool,
+    #[serde(default)]
+    pub is_online: bool,
+    #[serde(default)]
+    pub is_error: bool,
+    #[serde(default)]
+    pub trade_price: f64,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "_epoch")]
@@ -233,6 +247,10 @@ impl PartialEq for Order {
             && self.frozen_margin == other.frozen_margin
             && self.frozen_premium == other.frozen_premium
             && self.last_msg == other.last_msg
+            && self.is_dead == other.is_dead
+            && self.is_online == other.is_online
+            && self.is_error == other.is_error
+            && self.trade_price == other.trade_price
     }
 }
 

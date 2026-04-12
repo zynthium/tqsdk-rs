@@ -1086,6 +1086,9 @@ fn make_position(exchange_id: &str, instrument_id: &str) -> Position {
         market_value_long: 0.0,
         market_value_short: 0.0,
         market_value: 0.0,
+        pos: 0,
+        pos_long: 0,
+        pos_short: 0,
         epoch: None,
     }
 }
@@ -1097,6 +1100,8 @@ fn make_position_with_long(exchange_id: &str, instrument_id: &str, today: i64, h
     position.volume_long_today = today;
     position.volume_long_his = his;
     position.volume_long = today + his;
+    position.pos_long = today + his;
+    position.pos = position.pos_long;
     position
 }
 
@@ -1125,6 +1130,10 @@ fn make_order(order_id: &str, volume: i64, limit_price: f64, status: &str, volum
         frozen_margin: 0.0,
         frozen_premium: 0.0,
         last_msg: String::new(),
+        is_dead: status == ORDER_STATUS_FINISHED,
+        is_online: false,
+        is_error: false,
+        trade_price: 0.0,
         epoch: None,
     }
 }

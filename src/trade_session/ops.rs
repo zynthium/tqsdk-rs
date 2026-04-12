@@ -85,6 +85,16 @@ impl TradeSession {
         self.dm.get_position_data(&self.user_id, symbol)
     }
 
+    /// 获取指定委托单
+    pub async fn get_order(&self, order_id: &str) -> Result<Order> {
+        self.dm.get_order_data(&self.user_id, order_id)
+    }
+
+    /// 获取指定成交记录
+    pub async fn get_trade(&self, trade_id: &str) -> Result<Trade> {
+        self.dm.get_trade_data(&self.user_id, trade_id)
+    }
+
     /// 获取所有持仓
     pub async fn get_positions(&self) -> Result<HashMap<String, Position>> {
         let Some(serde_json::Value::Object(positions_map)) =
