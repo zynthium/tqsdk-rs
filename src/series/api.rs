@@ -1,9 +1,10 @@
 use super::{KlineSymbols, SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 use crate::cache::{DataSeriesCache, PAGE_VIEW_WIDTH, trim_last_datetime_range};
+use crate::download::{DataDownloadPageObserver, DataDownloadSymbolInfo, DividendAdjustment};
 use crate::errors::{Result, TqError};
 use crate::types::{Kline, Range, SeriesOptions, Tick, rangeset_difference};
-use chrono::{DateTime, Utc};
-use serde_json::json;
+use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -18,6 +19,7 @@ const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 const HISTORY_MANUAL_PEEK_RETRY_INTERVAL: StdDuration = StdDuration::from_millis(500);
 const REPLAY_PAGE_VIEW_WIDTH: usize = 10_000;
+const STOCK_DIVIDEND_URL: &str = "https://stock-dividend.shinnytech.com/query";
 
 impl From<&str> for KlineSymbols {
     fn from(value: &str) -> Self {
@@ -188,7 +190,19 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
-        self.kline_data_series_impl(symbol, duration, start_dt, end_dt, true)
+        self.kline_data_series_impl(symbol, duration, start_dt, end_dt, true, None)
+            .await
+    }
+
+    pub(crate) async fn kline_data_series_with_progress(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+        observer: Option<Arc<dyn DataDownloadPageObserver>>,
+    ) -> Result<Vec<Kline>> {
+        self.kline_data_series_impl(symbol, duration, start_dt, end_dt, true, observer)
             .await
     }
 
@@ -278,7 +292,18 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Tick>> {
-        self.tick_data_series_impl(symbol, start_dt, end_dt, true).await
+        self.tick_data_series_impl(symbol, start_dt, end_dt, true, None).await
+    }
+
+    pub(crate) async fn tick_data_series_with_progress(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+        observer: Option<Arc<dyn DataDownloadPageObserver>>,
+    ) -> Result<Vec<Tick>> {
+        self.tick_data_series_impl(symbol, start_dt, end_dt, true, observer)
+            .await
     }
 
     /// ReplaySession 内部使用的历史 Tick 加载入口。
@@ -303,7 +328,7 @@ impl SeriesAPI {
             return Err(TqError::InvalidParameter("end_dt 必须晚于 start_dt".to_string()));
         }
 
-        self.download_tick_range(symbol, start_nano, end_nano).await
+        self.download_tick_range(symbol, start_nano, end_nano, None).await
     }
 
     async fn tick_data_series_impl(
@@ -312,6 +337,7 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
         require_history_grant: bool,
+        observer: Option<Arc<dyn DataDownloadPageObserver>>,
     ) -> Result<Vec<Tick>> {
         if require_history_grant {
             self.ensure_history_download_grants().await?;
@@ -330,7 +356,7 @@ impl SeriesAPI {
         }
 
         if !self.cache_policy.enabled {
-            return self.download_tick_range(symbol, start_nano, end_nano).await;
+            return self.download_tick_range(symbol, start_nano, end_nano, observer).await;
         }
 
         let result = {
@@ -345,7 +371,9 @@ impl SeriesAPI {
                 if missing.is_empty() {
                     continue;
                 }
-                let rows = self.download_tick_range(symbol, missing.start, missing.end).await?;
+                let rows = self
+                    .download_tick_range(symbol, missing.start, missing.end, observer.clone())
+                    .await?;
                 if rows.is_empty() {
                     continue;
                 }
@@ -411,6 +439,7 @@ impl SeriesAPI {
         duration: StdDuration,
         start_nano: i64,
         end_nano: i64,
+        observer: Option<Arc<dyn DataDownloadPageObserver>>,
     ) -> Result<Vec<Kline>> {
         let focus_time = DateTime::<Utc>::from_timestamp_nanos(start_nano);
         let mut rows = Vec::new();
@@ -425,6 +454,7 @@ impl SeriesAPI {
                     .await?
             };
             let page_len = page.len();
+            report_download_page_progress(&page, start_nano, end_nano, observer.as_ref());
             let Some(new_next) = extend_klines_in_window(&mut rows, page, start_nano, end_nano) else {
                 break;
             };
@@ -438,7 +468,13 @@ impl SeriesAPI {
         Ok(dedup_sort_klines_by_id(rows))
     }
 
-    async fn download_tick_range(&self, symbol: &str, start_nano: i64, end_nano: i64) -> Result<Vec<Tick>> {
+    async fn download_tick_range(
+        &self,
+        symbol: &str,
+        start_nano: i64,
+        end_nano: i64,
+        observer: Option<Arc<dyn DataDownloadPageObserver>>,
+    ) -> Result<Vec<Tick>> {
         let focus_time = DateTime::<Utc>::from_timestamp_nanos(start_nano);
         let mut rows = Vec::new();
         let mut next_id = None;
@@ -451,6 +487,7 @@ impl SeriesAPI {
                 self.fetch_tick_page_by_id(symbol, next_id.unwrap_or_default()).await?
             };
             let page_len = page.len();
+            report_download_page_progress(&page, start_nano, end_nano, observer.as_ref());
             let Some(new_next) = extend_ticks_in_window(&mut rows, page, start_nano, end_nano) else {
                 break;
             };
@@ -559,6 +596,7 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
         require_history_grant: bool,
+        observer: Option<Arc<dyn DataDownloadPageObserver>>,
     ) -> Result<Vec<Kline>> {
         if require_history_grant {
             self.ensure_history_download_grants().await?;
@@ -578,7 +616,9 @@ impl SeriesAPI {
         }
 
         if !self.cache_policy.enabled {
-            return self.download_kline_range(symbol, duration, start_nano, end_nano).await;
+            return self
+                .download_kline_range(symbol, duration, start_nano, end_nano, observer)
+                .await;
         }
 
         let result = {
@@ -596,7 +636,7 @@ impl SeriesAPI {
                     continue;
                 }
                 let rows = self
-                    .download_kline_range(symbol, duration, missing.start, missing.end)
+                    .download_kline_range(symbol, duration, missing.start, missing.end, observer.clone())
                     .await?;
                 if rows.is_empty() {
                     continue;
@@ -659,6 +699,128 @@ impl SeriesAPI {
         } else {
             Err(TqError::permission_denied_history())
         }
+    }
+
+    pub(crate) async fn download_symbol_info(&self, symbol: &str) -> Result<DataDownloadSymbolInfo> {
+        let quote = self.dm.get_quote_data(symbol)?;
+        Ok(DataDownloadSymbolInfo {
+            ins_class: quote.class,
+            price_decs: quote.price_decs,
+        })
+    }
+
+    pub(crate) async fn download_dividend_adjustments(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<DividendAdjustment>> {
+        let cst = FixedOffset::east_opt(8 * 3600).expect("CST offset must be valid");
+        let start_date = start_dt.with_timezone(&cst).format("%Y%m%d").to_string();
+        let end_date = end_dt.with_timezone(&cst).format("%Y%m%d").to_string();
+        let headers = {
+            let auth = self.auth.read().await;
+            auth.base_header()
+        };
+        let client = reqwest::Client::builder()
+            .gzip(true)
+            .brotli(true)
+            .timeout(StdDuration::from_secs(30))
+            .default_headers(headers)
+            .build()
+            .map_err(|source| TqError::Reqwest {
+                context: "创建 stock dividend 客户端失败".to_string(),
+                source,
+            })?;
+        let response = client
+            .get(STOCK_DIVIDEND_URL)
+            .query(&[
+                ("stock_list", symbol),
+                ("start_date", start_date.as_str()),
+                ("end_date", end_date.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|source| TqError::Reqwest {
+                context: format!("请求 stock dividend 失败: GET {STOCK_DIVIDEND_URL}"),
+                source,
+            })?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.map_err(|source| TqError::Reqwest {
+                context: format!("读取 stock dividend 响应失败: GET {STOCK_DIVIDEND_URL}"),
+                source,
+            })?;
+            return Err(TqError::HttpStatus {
+                method: "GET".to_string(),
+                url: STOCK_DIVIDEND_URL.to_string(),
+                status,
+                body_snippet: TqError::truncate_body(body),
+            });
+        }
+
+        let payload = response.json::<Value>().await.map_err(|source| TqError::Reqwest {
+            context: format!("解析 stock dividend 响应失败: GET {STOCK_DIVIDEND_URL}"),
+            source,
+        })?;
+        let mut adjustments = Vec::new();
+        for item in payload.get("result").and_then(Value::as_array).into_iter().flatten() {
+            let market = item.get("marketcode").and_then(Value::as_str).unwrap_or_default();
+            let code = item.get("stockcode").and_then(Value::as_str).unwrap_or_default();
+            if format!("{market}.{code}") != symbol {
+                continue;
+            }
+            let Some(drdate) = item.get("drdate").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(date) = NaiveDate::parse_from_str(drdate, "%Y%m%d") else {
+                continue;
+            };
+            let Some(local_dt) = cst
+                .with_ymd_and_hms(date.year(), date.month(), date.day(), 0, 0, 0)
+                .single()
+            else {
+                continue;
+            };
+            let datetime = local_dt
+                .with_timezone(&Utc)
+                .timestamp_nanos_opt()
+                .ok_or_else(|| TqError::InvalidParameter(format!("stock dividend 日期超出可表示范围: {drdate}")))?;
+            let stock_dividend = item.get("share").and_then(Value::as_f64).unwrap_or_default();
+            let cash_dividend = item.get("cash").and_then(Value::as_f64).unwrap_or_default();
+            if stock_dividend > 0.0 || cash_dividend > 0.0 {
+                adjustments.push(DividendAdjustment {
+                    datetime,
+                    stock_dividend,
+                    cash_dividend,
+                });
+            }
+        }
+        adjustments.sort_by_key(|item| item.datetime);
+        Ok(adjustments)
+    }
+
+    pub(crate) async fn download_previous_close_before(
+        &self,
+        symbol: &str,
+        before_dt: DateTime<Utc>,
+    ) -> Result<Option<f64>> {
+        let sub = self
+            .subscribe_kline_history_with_focus(symbol, StdDuration::from_secs(86_400), 2, before_dt, 1)
+            .await?;
+        let snapshot = self.fetch_history_snapshot_with_subscription(sub).await?;
+        let rows = snapshot
+            .data
+            .single
+            .as_ref()
+            .map(|single| single.data.clone())
+            .unwrap_or_default();
+        let before_nano = before_dt.timestamp_nanos_opt().unwrap_or_default();
+        Ok(rows
+            .into_iter()
+            .filter(|row| row.datetime < before_nano && row.close.is_finite())
+            .map(|row| row.close)
+            .next_back())
     }
 }
 
@@ -749,6 +911,28 @@ fn history_focus_position(auto_peek_enabled: bool, view_width: usize) -> i32 {
     }
 }
 
+fn report_download_page_progress<T>(
+    rows: &[T],
+    start_nano: i64,
+    end_nano: i64,
+    observer: Option<&Arc<dyn DataDownloadPageObserver>>,
+) where
+    T: PageRowDatetime,
+{
+    let Some(observer) = observer else {
+        return;
+    };
+    let Some(latest) = rows
+        .iter()
+        .map(PageRowDatetime::datetime_nanos)
+        .filter(|dt| *dt >= start_nano)
+        .max()
+    else {
+        return;
+    };
+    observer.on_page(latest.min(end_nano));
+}
+
 fn extend_klines_in_window(target: &mut Vec<Kline>, page: Vec<Kline>, start_nano: i64, end_nano: i64) -> Option<i64> {
     let mut next_id = None;
     for row in page {
@@ -791,6 +975,22 @@ fn dedup_sort_ticks_by_id(rows: Vec<Tick>) -> Vec<Tick> {
         by_id.insert(row.id, row);
     }
     by_id.into_values().collect()
+}
+
+trait PageRowDatetime {
+    fn datetime_nanos(&self) -> i64;
+}
+
+impl PageRowDatetime for Kline {
+    fn datetime_nanos(&self) -> i64 {
+        self.datetime
+    }
+}
+
+impl PageRowDatetime for Tick {
+    fn datetime_nanos(&self) -> i64 {
+        self.datetime
+    }
 }
 
 enum HistoryPage {

@@ -1,7 +1,7 @@
 use super::{Client, ClientBuilder, ClientConfig, TradeSessionOptions};
 use crate::auth::{Authenticator, BrokerInfo};
 use crate::datamanager::{DataManager, DataManagerConfig};
-use crate::download::{DataDownloadRequest, DataDownloader};
+use crate::download::{DataDownloadOptions, DataDownloadRequest, DataDownloadWriter, DataDownloader};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
@@ -370,6 +370,25 @@ impl Client {
     /// 启动后台历史数据下载任务，并将结果写入 CSV。
     pub fn spawn_data_downloader(&self, request: DataDownloadRequest) -> Result<DataDownloader> {
         DataDownloader::spawn(self.series_api()?, request)
+    }
+
+    /// 启动后台历史数据下载任务，并应用下载选项。
+    pub fn spawn_data_downloader_with_options(
+        &self,
+        request: DataDownloadRequest,
+        options: DataDownloadOptions,
+    ) -> Result<DataDownloader> {
+        DataDownloader::spawn_with_options(self.series_api()?, request, options)
+    }
+
+    /// 启动后台历史数据下载任务，并将结果流式写入自定义 writer。
+    pub fn spawn_data_downloader_to_writer(
+        &self,
+        request: DataDownloadRequest,
+        writer: DataDownloadWriter,
+        options: DataDownloadOptions,
+    ) -> Result<DataDownloader> {
+        DataDownloader::spawn_to_writer(self.series_api()?, request, writer, options)
     }
 
     /// 订阅 Quote。

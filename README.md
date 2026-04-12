@@ -347,11 +347,33 @@ downloader.wait().await?;
 println!("progress={:.2}%", downloader.get_progress());
 ```
 
+带复权/追加模式的单合约下载：
+
+```rust
+use tqsdk_rs::prelude::*;
+
+let downloader = client.spawn_data_downloader_with_options(
+    DataDownloadRequest {
+        symbols: vec!["SSE.600000".to_string()],
+        duration: Duration::from_secs(86_400),
+        start_dt,
+        end_dt,
+        csv_file: "tmp/600000_daily.csv".into(),
+    },
+    DataDownloadOptions {
+        write_mode: DataDownloadWriteMode::Overwrite,
+        adj_type: Some(DataDownloadAdjType::Forward),
+    },
+)?;
+```
+
 当前 downloader 能力：
 
 - K 线支持多合约按首合约时间线对齐写出 CSV。
 - Tick 下载当前只支持单合约。
-- 通过 `is_finished()` / `get_progress()` 跟踪后台任务状态。
+- 支持文件输出，也支持 `DataDownloadWriter` 自定义 sink。
+- 单合约股票/基金支持前复权 / 后复权下载；多合约对齐 K 线仍不支持复权。
+- `get_progress()` 改为分页推进时持续更新，不再只在“抓取完一整个 symbol”后跳变。
 
 ### 覆盖服务端点
 
