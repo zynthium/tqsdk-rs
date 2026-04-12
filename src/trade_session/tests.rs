@@ -200,6 +200,132 @@ async fn trade_session_wait_update_consumes_snapshot_epochs_that_arrived_between
 }
 
 #[tokio::test]
+async fn trade_session_requires_trade_snapshot_completion_before_ready() {
+    let dm = build_dm();
+    let session = Arc::new(build_session(Arc::clone(&dm)));
+
+    session.ws.force_missing_io_actor_for_test();
+    session.running.store(true, Ordering::SeqCst);
+    session.start_watching().await;
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "session": {
+                        "trading_day": "20260411"
+                    },
+                    "trade_more_data": true
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    timeout(Duration::from_secs(1), session.wait_update())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(session.logged_in.load(Ordering::SeqCst));
+    assert!(!session.snapshot_ready_for_test());
+    assert!(!session.is_ready());
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "trade_more_data": false
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    timeout(Duration::from_secs(1), session.wait_update())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(session.snapshot_ready_for_test());
+    assert!(session.is_ready());
+
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn trade_session_reconnect_notifications_reset_readiness_until_next_snapshot_epoch() {
+    let dm = build_dm();
+    let session = Arc::new(build_session(Arc::clone(&dm)));
+
+    session.ws.force_missing_io_actor_for_test();
+    session.running.store(true, Ordering::SeqCst);
+    session.start_watching().await;
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "session": {
+                        "trading_day": "20260411"
+                    },
+                    "trade_more_data": false,
+                    "accounts": {
+                        "CNY": account_json(1000.0, 900.0)
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    timeout(Duration::from_secs(1), session.wait_update())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(session.is_ready());
+
+    session.ws.emit_notify_for_test(Notification {
+        code: "2019112902".to_string(),
+        level: "WARNING".to_string(),
+        r#type: "MESSAGE".to_string(),
+        content: "reconnected".to_string(),
+        bid: "simnow".to_string(),
+        user_id: "u".to_string(),
+    });
+
+    assert!(!session.snapshot_ready_for_test());
+    assert!(!session.is_ready());
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "accounts": {
+                        "CNY": account_json(1001.0, 901.0)
+                    }
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    timeout(Duration::from_secs(1), session.wait_update())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(session.snapshot_ready_for_test());
+    assert!(session.is_ready());
+
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
 async fn trade_session_emits_order_then_trade_events() {
     let dm = build_dm();
     let session = build_session(Arc::clone(&dm));

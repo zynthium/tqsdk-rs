@@ -191,7 +191,7 @@ impl TradeSession {
 
     /// 检查交易会话是否已就绪
     pub fn is_ready(&self) -> bool {
-        self.logged_in.load(Ordering::SeqCst) && self.ws.is_ready()
+        self.logged_in.load(Ordering::SeqCst) && self.snapshot_ready.load(Ordering::SeqCst) && self.ws.is_ready()
     }
 
     /// 关闭交易会话

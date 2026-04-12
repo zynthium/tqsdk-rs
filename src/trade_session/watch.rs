@@ -17,6 +17,7 @@ impl TradeSession {
         let user_id = self.user_id.clone();
         let logged_in = Arc::clone(&self.logged_in);
         let running = Arc::clone(&self.running);
+        let snapshot_ready = Arc::clone(&self.snapshot_ready);
         let trade_events = Arc::clone(&self.trade_events);
         let snapshot_epoch_tx = self.snapshot_epoch_tx.clone();
         let mut epoch_rx = dm.subscribe_epoch();
@@ -74,7 +75,23 @@ impl TradeSession {
                     Self::process_trade_update(&dm, &user_id, &trade_events, last_processed_epoch).await;
                 }
 
-                if session_changed || account_changed || positions_changed || orders_changed || trades_changed {
+                let trade_snapshot_ready_now = dm
+                    .get_by_path(&["trade", &user_id, "trade_more_data"])
+                    .and_then(|value| value.as_bool())
+                    .is_some_and(|more_data| !more_data);
+                let snapshot_ready_changed =
+                    snapshot_ready.swap(trade_snapshot_ready_now, Ordering::SeqCst) != trade_snapshot_ready_now;
+                if snapshot_ready_changed && trade_snapshot_ready_now {
+                    info!("交易快照已就绪: user_id={}", user_id);
+                }
+
+                if session_changed
+                    || account_changed
+                    || positions_changed
+                    || orders_changed
+                    || trades_changed
+                    || snapshot_ready_changed
+                {
                     let _ = snapshot_epoch_tx.send_replace(Some(current_global_epoch));
                 }
 

@@ -34,6 +34,7 @@ pub struct TradeSession {
     reliable_events_max_retained: usize,
     snapshot_epoch_tx: tokio::sync::watch::Sender<Option<i64>>,
     snapshot_seen_epoch: AtomicI64,
+    snapshot_ready: Arc<AtomicBool>,
 
     logged_in: Arc<AtomicBool>,
     running: Arc<AtomicBool>,

@@ -4,6 +4,7 @@ use super::{
 };
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
+use crate::types::Notification;
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -24,10 +25,15 @@ impl TradeSession {
             reliable_events_max_retained,
         ))));
         let (snapshot_epoch_tx, _) = tokio::sync::watch::channel(Some(0i64));
+        let snapshot_ready = Arc::new(AtomicBool::new(false));
 
         let ws = Arc::new(TqTradeWebsocket::new(ws_url, Arc::clone(&dm), ws_config));
         let trade_events_for_notify = Arc::clone(&trade_events);
+        let snapshot_ready_for_notify = Arc::clone(&snapshot_ready);
         ws.on_notify(move |noti| {
+            if Self::should_reset_snapshot_on_notification(&noti) {
+                snapshot_ready_for_notify.store(false, Ordering::SeqCst);
+            }
             let trade_events = trade_events_for_notify.read().unwrap().clone();
             let _ = trade_events.publish_notification(noti);
         });
@@ -48,6 +54,7 @@ impl TradeSession {
             reliable_events_max_retained,
             snapshot_epoch_tx,
             snapshot_seen_epoch: AtomicI64::new(0),
+            snapshot_ready,
             logged_in: Arc::new(AtomicBool::new(false)),
             running: Arc::new(AtomicBool::new(false)),
             watch_task: Arc::new(std::sync::Mutex::new(None)),
@@ -70,11 +77,21 @@ impl TradeSession {
 
     pub(super) fn reset_snapshot_epoch(&self) {
         self.snapshot_seen_epoch.store(0, Ordering::SeqCst);
+        self.snapshot_ready.store(false, Ordering::SeqCst);
         let _ = self.snapshot_epoch_tx.send_replace(Some(0));
     }
 
     pub(super) fn close_snapshot_epoch(&self) {
+        self.snapshot_ready.store(false, Ordering::SeqCst);
         let _ = self.snapshot_epoch_tx.send_replace(None);
+    }
+
+    pub(super) fn should_reset_snapshot_on_notification(notification: &Notification) -> bool {
+        notification
+            .code
+            .parse::<i64>()
+            .ok()
+            .is_some_and(|code| matches!(code, 2019112901 | 2019112902 | 2019112910 | 2019112911))
     }
 
     pub(super) async fn send_login(&self) -> Result<()> {
@@ -178,5 +195,10 @@ impl TradeSession {
     #[cfg(test)]
     pub(crate) fn inject_trade_data_for_test(&self, value: serde_json::Value) {
         self.dm.merge_data(value, true, true);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot_ready_for_test(&self) -> bool {
+        self.snapshot_ready.load(Ordering::SeqCst)
     }
 }
