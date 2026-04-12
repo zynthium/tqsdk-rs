@@ -142,11 +142,16 @@ impl MarketAdapter for ReplayMarketAdapter {
 pub(crate) struct ReplayExecutionAdapter {
     accounts: Vec<String>,
     state: Arc<ReplayExecutionState>,
+    market: Arc<ReplayMarketState>,
 }
 
 impl ReplayExecutionAdapter {
-    pub(crate) fn new(accounts: Vec<String>, state: Arc<ReplayExecutionState>) -> Self {
-        Self { accounts, state }
+    pub(crate) fn new(accounts: Vec<String>, state: Arc<ReplayExecutionState>, market: Arc<ReplayMarketState>) -> Self {
+        Self {
+            accounts,
+            state,
+            market,
+        }
     }
 }
 
@@ -162,6 +167,13 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
 
     async fn insert_order(&self, account_key: &str, req: &InsertOrderRequest) -> RuntimeResult<String> {
         let order_id = self.state.broker.lock().await.insert_order(account_key, req)?;
+        if let Some(current_quote) = self.market.replay_quote(&req.symbol).await {
+            self.state
+                .broker
+                .lock()
+                .await
+                .apply_quote_path(req.symbol.as_str(), std::slice::from_ref(&current_quote))?;
+        }
         self.state.notify_update().await;
         Ok(order_id)
     }

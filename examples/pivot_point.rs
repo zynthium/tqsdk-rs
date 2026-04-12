@@ -19,7 +19,10 @@ use tqsdk_rs::prelude::*;
 const ACCOUNT_KEY: &str = "TQSIM";
 const DAILY_BAR: Duration = Duration::from_secs(60 * 60 * 24);
 const MIN_DAILY_WIDTH: usize = 32;
+const DEFAULT_SYMBOL: &str = "SHFE.cu2606";
 const DEFAULT_POSITION_SIZE: i64 = 100;
+const DEFAULT_START_DATE: (i32, u32, u32) = (2026, 4, 1);
+const DEFAULT_END_DATE: (i32, u32, u32) = (2026, 4, 9);
 const REVERSAL_CONFIRM: f64 = 50.0;
 const STOP_LOSS_POINTS: f64 = 100.0;
 
@@ -131,15 +134,21 @@ fn find_final_position<'a>(positions: &'a [Position], account_key: &str, symbol:
         .or_else(|| positions.first())
 }
 
+async fn apply_target_and_wait(task: &TargetPosTask, volume: i64) -> StdResult<(), Box<dyn Error>> {
+    task.set_target_volume(volume)?;
+    task.wait_target_reached().await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
-    let symbol = env_or_default("TQ_TEST_SYMBOL", "SHFE.cu2309");
+    let symbol = env_or_default("TQ_TEST_SYMBOL", DEFAULT_SYMBOL);
     let log_level = env_or_default("TQ_LOG_LEVEL", "info");
     let position_size = parse_env_i64("TQ_POSITION_SIZE", DEFAULT_POSITION_SIZE);
-    let start_date = parse_env_date("TQ_START_DT", (2023, 2, 10))?;
-    let end_date = parse_env_date("TQ_END_DT", (2023, 3, 15))?;
+    let start_date = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)?;
+    let end_date = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)?;
     let (start_dt, end_dt) = shanghai_range(start_date, end_date)?;
     let daily_width = history_view_width(start_date, end_date);
 
@@ -233,7 +242,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
                 strategy.entry_price = current_price;
                 strategy.stop_loss_price = current_price - STOP_LOSS_POINTS;
                 strategy.signal_count += 1;
-                task.set_target_volume(position_size)?;
+                apply_target_and_wait(&task, position_size).await?;
                 println!(
                     "\n多头开仓信号! 开仓价: {:.2}, 止损价: {:.2}",
                     strategy.entry_price, strategy.stop_loss_price
@@ -243,7 +252,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
                 strategy.entry_price = current_price;
                 strategy.stop_loss_price = current_price + STOP_LOSS_POINTS;
                 strategy.signal_count += 1;
-                task.set_target_volume(-position_size)?;
+                apply_target_and_wait(&task, -position_size).await?;
                 println!(
                     "\n空头开仓信号! 开仓价: {:.2}, 止损价: {:.2}",
                     strategy.entry_price, strategy.stop_loss_price
@@ -258,14 +267,14 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
                 strategy.realized_pnl += profit;
                 strategy.current_direction = 0;
                 strategy.signal_count += 1;
-                task.set_target_volume(0)?;
+                apply_target_and_wait(&task, 0).await?;
                 println!("多头止盈平仓: 价格={:.2}, 盈利={:.2}", current_price, profit);
             } else if current_price <= strategy.stop_loss_price {
                 let loss = (strategy.entry_price - current_price) * position_size as f64;
                 strategy.realized_pnl -= loss;
                 strategy.current_direction = 0;
                 strategy.signal_count += 1;
-                task.set_target_volume(0)?;
+                apply_target_and_wait(&task, 0).await?;
                 println!("多头止损平仓: 价格={:.2}, 亏损={:.2}", current_price, loss);
             }
         } else if current_price <= levels.pivot {
@@ -273,14 +282,14 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
             strategy.realized_pnl += profit;
             strategy.current_direction = 0;
             strategy.signal_count += 1;
-            task.set_target_volume(0)?;
+            apply_target_and_wait(&task, 0).await?;
             println!("空头止盈平仓: 价格={:.2}, 盈利={:.2}", current_price, profit);
         } else if current_price >= strategy.stop_loss_price {
             let loss = (current_price - strategy.entry_price) * position_size as f64;
             strategy.realized_pnl -= loss;
             strategy.current_direction = 0;
             strategy.signal_count += 1;
-            task.set_target_volume(0)?;
+            apply_target_and_wait(&task, 0).await?;
             println!("空头止损平仓: 价格={:.2}, 亏损={:.2}", current_price, loss);
         }
     }
@@ -292,11 +301,6 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let final_net_position = find_final_position(&result.final_positions, ACCOUNT_KEY, &symbol)
         .map(net_position)
         .unwrap_or(0);
-    let final_account = result
-        .final_accounts
-        .iter()
-        .find(|account| account.user_id == ACCOUNT_KEY)
-        .or_else(|| result.final_accounts.first());
     let unrealized_pnl = match (strategy.current_direction, strategy.last_observed_price) {
         (1, Some(price)) => (price - strategy.entry_price) * position_size as f64,
         (-1, Some(price)) => (strategy.entry_price - price) * position_size as f64,
@@ -312,10 +316,25 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     println!("  未实现盈亏: {:.2}", unrealized_pnl);
     println!("  总成交笔数: {}", result.trades.len());
     println!("  最终净持仓: {}", final_net_position);
-    if let Some(account) = final_account {
-        println!("  账户权益: {:.2}", account.balance);
-        println!("  可用资金: {:.2}", account.available);
-    }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_python_reference_script() {
+        assert_eq!(DEFAULT_SYMBOL, "SHFE.cu2606");
+        assert_eq!(DEFAULT_POSITION_SIZE, 100);
+        assert_eq!(
+            NaiveDate::from_ymd_opt(DEFAULT_START_DATE.0, DEFAULT_START_DATE.1, DEFAULT_START_DATE.2).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()
+        );
+        assert_eq!(
+            NaiveDate::from_ymd_opt(DEFAULT_END_DATE.0, DEFAULT_END_DATE.1, DEFAULT_END_DATE.2).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 4, 9).unwrap()
+        );
+    }
 }

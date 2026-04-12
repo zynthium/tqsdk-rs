@@ -155,7 +155,9 @@ impl HistoricalSource for SdkHistoricalSource {
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
         let (_, series) = self.ensure_apis().await?;
-        series.kline_data_series(symbol, duration, start_dt, end_dt).await
+        series
+            .replay_kline_data_series(symbol, duration, start_dt, end_dt)
+            .await
     }
 }
 

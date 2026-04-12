@@ -103,7 +103,11 @@ impl ReplaySession {
             self.config.initial_balance,
         )));
         let market = Arc::new(ReplayMarketAdapter::new(Arc::clone(&self.market)));
-        let adapter = Arc::new(ReplayExecutionAdapter::new(account_keys, Arc::clone(&execution)));
+        let adapter = Arc::new(ReplayExecutionAdapter::new(
+            account_keys,
+            Arc::clone(&execution),
+            Arc::clone(&self.market),
+        ));
         let runtime = Arc::new(TqRuntime::new(RuntimeMode::Backtest, market, adapter));
 
         self.execution = Some(execution);

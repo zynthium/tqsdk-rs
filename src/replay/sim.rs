@@ -5,8 +5,8 @@ use chrono::NaiveDate;
 
 use crate::errors::{Result, TqError};
 use crate::types::{
-    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED,
-    Order, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Position, Trade,
+    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, OFFSET_CLOSE, OFFSET_CLOSETODAY, OFFSET_OPEN,
+    ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Position, Trade,
 };
 
 use super::types::{BacktestResult, DailySettlementLog, ReplayQuote};
@@ -449,7 +449,93 @@ fn apply_fill_to_position(position: &mut Position, order: &Order, filled: i64, f
             position.open_cost_short += fill_price * filled as f64;
             position.position_cost_short += fill_price * filled as f64;
         }
+        (DIRECTION_SELL, OFFSET_CLOSETODAY) => {
+            reduce_long_position(position, filled, true);
+        }
+        (DIRECTION_SELL, OFFSET_CLOSE) => {
+            reduce_long_position(position, filled, false);
+        }
+        (DIRECTION_BUY, OFFSET_CLOSETODAY) => {
+            reduce_short_position(position, filled, true);
+        }
+        (DIRECTION_BUY, OFFSET_CLOSE) => {
+            reduce_short_position(position, filled, false);
+        }
         _ => {}
+    }
+}
+
+fn reduce_long_position(position: &mut Position, filled: i64, today_only: bool) {
+    let before = position.volume_long;
+    let mut remaining = filled;
+
+    if !today_only {
+        let closed_his = remaining.min(position.volume_long_his);
+        position.volume_long_his -= closed_his;
+        position.pos_long_his -= closed_his;
+        remaining -= closed_his;
+    }
+
+    let closed_today = remaining.min(position.volume_long_today);
+    position.volume_long_today -= closed_today;
+    position.pos_long_today -= closed_today;
+
+    position.volume_long = position.volume_long_today + position.volume_long_his;
+    position.volume_long_yd = position.volume_long_his;
+    scale_long_costs(position, before);
+}
+
+fn reduce_short_position(position: &mut Position, filled: i64, today_only: bool) {
+    let before = position.volume_short;
+    let mut remaining = filled;
+
+    if !today_only {
+        let closed_his = remaining.min(position.volume_short_his);
+        position.volume_short_his -= closed_his;
+        position.pos_short_his -= closed_his;
+        remaining -= closed_his;
+    }
+
+    let closed_today = remaining.min(position.volume_short_today);
+    position.volume_short_today -= closed_today;
+    position.pos_short_today -= closed_today;
+
+    position.volume_short = position.volume_short_today + position.volume_short_his;
+    position.volume_short_yd = position.volume_short_his;
+    scale_short_costs(position, before);
+}
+
+fn scale_long_costs(position: &mut Position, before_volume: i64) {
+    let after_volume = position.volume_long;
+    position.open_cost_long = scale_cost(position.open_cost_long, before_volume, after_volume);
+    position.position_cost_long = scale_cost(position.position_cost_long, before_volume, after_volume);
+    if after_volume <= 0 {
+        position.open_price_long = 0.0;
+        position.position_price_long = 0.0;
+    } else {
+        position.open_price_long = position.open_cost_long / after_volume as f64;
+        position.position_price_long = position.position_cost_long / after_volume as f64;
+    }
+}
+
+fn scale_short_costs(position: &mut Position, before_volume: i64) {
+    let after_volume = position.volume_short;
+    position.open_cost_short = scale_cost(position.open_cost_short, before_volume, after_volume);
+    position.position_cost_short = scale_cost(position.position_cost_short, before_volume, after_volume);
+    if after_volume <= 0 {
+        position.open_price_short = 0.0;
+        position.position_price_short = 0.0;
+    } else {
+        position.open_price_short = position.open_cost_short / after_volume as f64;
+        position.position_price_short = position.position_cost_short / after_volume as f64;
+    }
+}
+
+fn scale_cost(current_cost: f64, before_volume: i64, after_volume: i64) -> f64 {
+    if before_volume <= 0 || after_volume <= 0 {
+        0.0
+    } else {
+        current_cost * (after_volume as f64 / before_volume as f64)
     }
 }
 

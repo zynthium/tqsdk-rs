@@ -449,6 +449,35 @@ async fn kline_data_series_requires_tq_dl_even_when_cache_hits() {
 }
 
 #[tokio::test]
+async fn replay_kline_data_series_bypasses_tq_dl_guard() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
+    let api = SeriesAPI::new(dm, ws, auth);
+
+    let err = api
+        .replay_kline_data_series(
+            "SHFE.au2602",
+            StdDuration::from_secs(1),
+            DateTime::<Utc>::from_timestamp_nanos(2_000_000_000),
+            DateTime::<Utc>::from_timestamp_nanos(4_000_000_000),
+        )
+        .await
+        .expect_err("replay history path should bypass tq_dl guard and reach fetch path");
+
+    assert!(
+        matches!(err, TqError::WebSocketError(_)),
+        "expected websocket error for replay fetch path, got: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn tick_data_series_requires_tq_dl_even_when_cache_hits() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(

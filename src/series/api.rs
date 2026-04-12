@@ -17,6 +17,7 @@ const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 #[cfg(test)]
 const HISTORY_CHUNK_FETCH_TIMEOUT: StdDuration = StdDuration::from_millis(500);
 const HISTORY_MANUAL_PEEK_RETRY_INTERVAL: StdDuration = StdDuration::from_millis(500);
+const REPLAY_PAGE_VIEW_WIDTH: usize = 10_000;
 
 impl From<&str> for KlineSymbols {
     fn from(value: &str) -> Self {
@@ -187,11 +188,24 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Kline>> {
-        self.ensure_history_download_grants().await?;
+        self.kline_data_series_impl(symbol, duration, start_dt, end_dt, true)
+            .await
+    }
+
+    /// ReplaySession 内部使用的历史 K 线加载入口。
+    ///
+    /// 回放数据抓取复用历史分页协议，但不要求 `tq_dl` 下载权限。
+    pub(crate) async fn replay_kline_data_series(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<Kline>> {
         if symbol.is_empty() {
             return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }
-        let duration_nano = normalize_kline_duration(duration)?;
+        normalize_kline_duration(duration)?;
         let start_nano = start_dt
             .timestamp_nanos_opt()
             .ok_or_else(|| TqError::InvalidParameter("start_dt 超出可表示范围".to_string()))?;
@@ -202,41 +216,59 @@ impl SeriesAPI {
             return Err(TqError::InvalidParameter("end_dt 必须晚于 start_dt".to_string()));
         }
 
-        if !self.cache_policy.enabled {
-            return self.download_kline_range(symbol, duration, start_nano, end_nano).await;
-        }
+        let mut collected = Vec::new();
+        let mut next_left_id = None;
+        let mut last_right_id = None;
 
-        let result = {
-            let _lock = self.data_series_cache.lock_series(symbol, duration_nano)?;
-            let requested_range = Range::new(start_nano, end_nano);
-            let cached_id_ranges = self.data_series_cache.get_rangeset_id(symbol, duration_nano)?;
-            let mut cached_dt_ranges =
-                self.data_series_cache
-                    .get_rangeset_dt(symbol, duration_nano, &cached_id_ranges)?;
-            trim_last_datetime_range(&mut cached_dt_ranges, duration_nano);
+        loop {
+            let sub = if let Some(left_id) = next_left_id {
+                self.subscribe_kline_history_by_id(symbol, duration, REPLAY_PAGE_VIEW_WIDTH, left_id)
+                    .await?
+            } else {
+                self.subscribe_kline_history_with_focus(
+                    symbol,
+                    duration,
+                    REPLAY_PAGE_VIEW_WIDTH,
+                    start_dt,
+                    REPLAY_PAGE_VIEW_WIDTH as i32,
+                )
+                .await?
+            };
+            let snapshot = self.fetch_history_snapshot_with_subscription(sub).await?;
+            let single = snapshot
+                .data
+                .single
+                .as_ref()
+                .ok_or_else(|| TqError::InternalError("Replay 历史下载完成后未得到单合约 K 线数据".to_string()))?;
+            let page = &single.data;
+            let right_id = single
+                .chart
+                .as_ref()
+                .map(|chart| chart.right_id)
+                .unwrap_or(snapshot.update.new_right_id);
+            let last_id = single.last_id;
+            let page_last_dt = page.last().map(|row| row.datetime).unwrap_or(0);
 
-            let missing_dt_ranges = rangeset_difference(&vec![requested_range], &cached_dt_ranges);
-            for missing in missing_dt_ranges {
-                if missing.is_empty() {
-                    continue;
-                }
-                let rows = self
-                    .download_kline_range(symbol, duration, missing.start, missing.end)
-                    .await?;
-                if rows.is_empty() {
-                    continue;
-                }
-                self.data_series_cache
-                    .write_kline_segment(symbol, duration_nano, &rows)?;
+            collected.extend(
+                page.iter()
+                    .filter(|row| row.datetime >= start_nano && row.datetime < end_nano)
+                    .cloned(),
+            );
+
+            if page.is_empty()
+                || page_last_dt >= end_nano
+                || right_id < 0
+                || right_id >= last_id
+                || last_right_id == Some(right_id)
+            {
+                break;
             }
 
-            self.data_series_cache.merge_adjacent_files(symbol, duration_nano)?;
-            self.data_series_cache
-                .read_kline_window(symbol, duration_nano, start_nano, end_nano)?
-        };
-        self.data_series_cache
-            .enforce_limits(self.cache_policy.max_bytes, self.cache_policy.retention_days)?;
-        Ok(result)
+            last_right_id = Some(right_id);
+            next_left_id = Some(right_id);
+        }
+
+        Ok(dedup_sort_klines_by_id(collected))
     }
 
     /// 获取指定时间窗口的历史 Tick 快照（不随行情更新）。
@@ -356,7 +388,7 @@ impl SeriesAPI {
                     .await?
             };
             let page_len = page.len();
-            let Some(new_next) = extend_klines_until_end(&mut rows, page, end_nano) else {
+            let Some(new_next) = extend_klines_in_window(&mut rows, page, start_nano, end_nano) else {
                 break;
             };
             if next_id == Some(new_next) || page_len < PAGE_VIEW_WIDTH {
@@ -382,7 +414,7 @@ impl SeriesAPI {
                 self.fetch_tick_page_by_id(symbol, next_id.unwrap_or_default()).await?
             };
             let page_len = page.len();
-            let Some(new_next) = extend_ticks_until_end(&mut rows, page, end_nano) else {
+            let Some(new_next) = extend_ticks_in_window(&mut rows, page, start_nano, end_nano) else {
                 break;
             };
             if next_id == Some(new_next) || page_len < PAGE_VIEW_WIDTH {
@@ -446,9 +478,17 @@ impl SeriesAPI {
     }
 
     async fn fetch_history_page_with_subscription(&self, sub: Arc<SeriesSubscription>) -> Result<HistoryPage> {
+        let snapshot = self.fetch_history_snapshot_with_subscription(sub).await?;
+        history_page_from_snapshot(&snapshot)
+    }
+
+    async fn fetch_history_snapshot_with_subscription(
+        &self,
+        sub: Arc<SeriesSubscription>,
+    ) -> Result<crate::types::SeriesSnapshot> {
         let fetched = if self.ws.auto_peek_enabled() {
             match tokio::time::timeout(HISTORY_CHUNK_FETCH_TIMEOUT, sub.wait_update()).await {
-                Ok(Ok(snapshot)) => history_page_from_snapshot(&snapshot),
+                Ok(Ok(snapshot)) => Ok(snapshot),
                 Ok(Err(err)) => Err(err),
                 Err(_) => Err(TqError::Timeout),
             }
@@ -463,7 +503,7 @@ impl SeriesAPI {
                 }
                 let wait_duration = (deadline - now).min(HISTORY_MANUAL_PEEK_RETRY_INTERVAL);
                 match tokio::time::timeout(wait_duration, sub.wait_update()).await {
-                    Ok(Ok(snapshot)) => break history_page_from_snapshot(&snapshot),
+                    Ok(Ok(snapshot)) => break Ok(snapshot),
                     Ok(Err(err)) => break Err(err),
                     Err(_) => continue,
                 }
@@ -473,6 +513,68 @@ impl SeriesAPI {
             warn!("历史下载临时订阅关闭失败: {:?}", e);
         }
         fetched
+    }
+
+    async fn kline_data_series_impl(
+        &self,
+        symbol: &str,
+        duration: StdDuration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+        require_history_grant: bool,
+    ) -> Result<Vec<Kline>> {
+        if require_history_grant {
+            self.ensure_history_download_grants().await?;
+        }
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+        }
+        let duration_nano = normalize_kline_duration(duration)?;
+        let start_nano = start_dt
+            .timestamp_nanos_opt()
+            .ok_or_else(|| TqError::InvalidParameter("start_dt 超出可表示范围".to_string()))?;
+        let end_nano = end_dt
+            .timestamp_nanos_opt()
+            .ok_or_else(|| TqError::InvalidParameter("end_dt 超出可表示范围".to_string()))?;
+        if end_nano <= start_nano {
+            return Err(TqError::InvalidParameter("end_dt 必须晚于 start_dt".to_string()));
+        }
+
+        if !self.cache_policy.enabled {
+            return self.download_kline_range(symbol, duration, start_nano, end_nano).await;
+        }
+
+        let result = {
+            let _lock = self.data_series_cache.lock_series(symbol, duration_nano)?;
+            let requested_range = Range::new(start_nano, end_nano);
+            let cached_id_ranges = self.data_series_cache.get_rangeset_id(symbol, duration_nano)?;
+            let mut cached_dt_ranges =
+                self.data_series_cache
+                    .get_rangeset_dt(symbol, duration_nano, &cached_id_ranges)?;
+            trim_last_datetime_range(&mut cached_dt_ranges, duration_nano);
+
+            let missing_dt_ranges = rangeset_difference(&vec![requested_range], &cached_dt_ranges);
+            for missing in missing_dt_ranges {
+                if missing.is_empty() {
+                    continue;
+                }
+                let rows = self
+                    .download_kline_range(symbol, duration, missing.start, missing.end)
+                    .await?;
+                if rows.is_empty() {
+                    continue;
+                }
+                self.data_series_cache
+                    .write_kline_segment(symbol, duration_nano, &rows)?;
+            }
+
+            self.data_series_cache.merge_adjacent_files(symbol, duration_nano)?;
+            self.data_series_cache
+                .read_kline_window(symbol, duration_nano, start_nano, end_nano)?
+        };
+        self.data_series_cache
+            .enforce_limits(self.cache_policy.max_bytes, self.cache_policy.retention_days)?;
+        Ok(result)
     }
 
     /// 通用订阅方法
@@ -610,26 +712,30 @@ fn history_focus_position(auto_peek_enabled: bool, view_width: usize) -> i32 {
     }
 }
 
-fn extend_klines_until_end(target: &mut Vec<Kline>, page: Vec<Kline>, end_nano: i64) -> Option<i64> {
+fn extend_klines_in_window(target: &mut Vec<Kline>, page: Vec<Kline>, start_nano: i64, end_nano: i64) -> Option<i64> {
     let mut next_id = None;
     for row in page {
         if row.datetime == 0 || row.datetime >= end_nano {
             break;
         }
         next_id = row.id.checked_add(1);
-        target.push(row);
+        if row.datetime >= start_nano {
+            target.push(row);
+        }
     }
     next_id
 }
 
-fn extend_ticks_until_end(target: &mut Vec<Tick>, page: Vec<Tick>, end_nano: i64) -> Option<i64> {
+fn extend_ticks_in_window(target: &mut Vec<Tick>, page: Vec<Tick>, start_nano: i64, end_nano: i64) -> Option<i64> {
     let mut next_id = None;
     for row in page {
         if row.datetime == 0 || row.datetime >= end_nano {
             break;
         }
         next_id = row.id.checked_add(1);
-        target.push(row);
+        if row.datetime >= start_nano {
+            target.push(row);
+        }
     }
     next_id
 }
@@ -667,5 +773,75 @@ mod tests {
     #[test]
     fn history_focus_position_uses_view_width_in_backtest_mode() {
         assert_eq!(history_focus_position(false, PAGE_VIEW_WIDTH), PAGE_VIEW_WIDTH as i32);
+    }
+
+    #[test]
+    fn extend_klines_in_window_applies_start_and_end_bounds() {
+        let mut rows = Vec::new();
+        let next_id = extend_klines_in_window(
+            &mut rows,
+            vec![
+                Kline {
+                    id: 1,
+                    datetime: 10,
+                    ..Kline::default()
+                },
+                Kline {
+                    id: 2,
+                    datetime: 20,
+                    ..Kline::default()
+                },
+                Kline {
+                    id: 3,
+                    datetime: 30,
+                    ..Kline::default()
+                },
+                Kline {
+                    id: 4,
+                    datetime: 40,
+                    ..Kline::default()
+                },
+            ],
+            20,
+            35,
+        );
+
+        assert_eq!(next_id, Some(4));
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    #[test]
+    fn extend_ticks_in_window_applies_start_and_end_bounds() {
+        let mut rows = Vec::new();
+        let next_id = extend_ticks_in_window(
+            &mut rows,
+            vec![
+                Tick {
+                    id: 1,
+                    datetime: 10,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 2,
+                    datetime: 20,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 3,
+                    datetime: 30,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 4,
+                    datetime: 40,
+                    ..Tick::default()
+                },
+            ],
+            20,
+            35,
+        );
+
+        assert_eq!(next_id, Some(4));
+        assert_eq!(rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![2, 3]);
     }
 }
