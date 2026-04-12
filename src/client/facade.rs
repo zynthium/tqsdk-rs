@@ -1,6 +1,7 @@
 use super::{Client, ClientBuilder, ClientConfig, TradeSessionOptions};
 use crate::auth::{Authenticator, BrokerInfo};
 use crate::datamanager::{DataManager, DataManagerConfig};
+use crate::download::{DataDownloadRequest, DataDownloader};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::quote::QuoteSubscription;
@@ -364,6 +365,11 @@ impl Client {
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<crate::types::Tick>> {
         self.series_api()?.tick_data_series(symbol, start_dt, end_dt).await
+    }
+
+    /// 启动后台历史数据下载任务，并将结果写入 CSV。
+    pub fn spawn_data_downloader(&self, request: DataDownloadRequest) -> Result<DataDownloader> {
+        DataDownloader::spawn(self.series_api()?, request)
     }
 
     /// 订阅 Quote。

@@ -22,9 +22,10 @@ use super::{BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, Repl
 struct FakeHistoricalSource {
     meta: HashMap<String, InstrumentMetadata>,
     klines: HashMap<(String, i64), Vec<Kline>>,
+    ticks: HashMap<String, Vec<Tick>>,
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl HistoricalSource for FakeHistoricalSource {
     async fn instrument_metadata(&self, symbol: &str) -> crate::Result<InstrumentMetadata> {
         Ok(self.meta.get(symbol).cloned().unwrap())
@@ -42,6 +43,15 @@ impl HistoricalSource for FakeHistoricalSource {
             .get(&(symbol.to_string(), duration.as_nanos() as i64))
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn load_ticks(
+        &self,
+        symbol: &str,
+        _start_dt: DateTime<Utc>,
+        _end_dt: DateTime<Utc>,
+    ) -> crate::Result<Vec<Tick>> {
+        Ok(self.ticks.get(symbol).cloned().unwrap_or_default())
     }
 }
 
@@ -91,6 +101,7 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
                 },
             ],
         )]),
+        ticks: HashMap::new(),
     });
 
     let mut session = ReplaySession::from_source(
@@ -124,7 +135,7 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
 }
 
 #[tokio::test]
-async fn replay_session_can_fill_target_pos_after_final_market_update() {
+async fn replay_session_does_not_fill_target_pos_after_final_market_update_without_next_step() {
     let source = Arc::new(FakeHistoricalSource {
         meta: HashMap::from([(
             "SHFE.rb2605".to_string(),
@@ -155,6 +166,7 @@ async fn replay_session_can_fill_target_pos_after_final_market_update() {
                 epoch: None,
             }],
         )]),
+        ticks: HashMap::new(),
     });
 
     let mut session = ReplaySession::from_source(
@@ -176,10 +188,97 @@ async fn replay_session_can_fill_target_pos_after_final_market_update() {
     while session.step().await.unwrap().is_some() {}
 
     task.set_target_volume(1).unwrap();
+    timeout(Duration::from_millis(200), task.wait_target_reached())
+        .await
+        .expect_err("target should not be reachable without another replay step");
+    task.cancel().await.unwrap();
+    task.wait_finished().await.unwrap();
+
+    let result = session.finish().await.unwrap();
+    assert!(result.trades.is_empty());
+    assert!(
+        result
+            .final_positions
+            .iter()
+            .all(|position| position.volume_long == 0 && position.volume_short == 0)
+    );
+}
+
+#[tokio::test]
+async fn replay_session_does_not_close_target_pos_after_final_market_update_without_next_step() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(
+            "SHFE.rb2605".to_string(),
+            InstrumentMetadata {
+                symbol: "SHFE.rb2605".to_string(),
+                exchange_id: "SHFE".to_string(),
+                instrument_id: "rb2605".to_string(),
+                class: "FUTURE".to_string(),
+                price_tick: 1.0,
+                volume_multiple: 10,
+                margin: 1000.0,
+                commission: 2.0,
+                ..InstrumentMetadata::default()
+            },
+        )]),
+        klines: HashMap::from([(
+            ("SHFE.rb2605".to_string(), 60_000_000_000),
+            vec![
+                Kline {
+                    id: 1,
+                    datetime: 1_000,
+                    open: 10.0,
+                    high: 12.0,
+                    low: 9.0,
+                    close: 11.0,
+                    open_oi: 10,
+                    close_oi: 11,
+                    volume: 5,
+                    epoch: None,
+                },
+                Kline {
+                    id: 2,
+                    datetime: 60_000_001_000,
+                    open: 11.0,
+                    high: 13.0,
+                    low: 10.0,
+                    close: 12.0,
+                    open_oi: 11,
+                    close_oi: 12,
+                    volume: 6,
+                    epoch: None,
+                },
+            ],
+        )]),
+        ticks: HashMap::new(),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    let _quote = session.quote("SHFE.rb2605").await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").expect("configured account should exist");
+    let task: TargetPosTask = account.target_pos("SHFE.rb2605").build().unwrap();
+
+    task.set_target_volume(1).unwrap();
+    while session.step().await.unwrap().is_some() {}
     timeout(Duration::from_secs(1), task.wait_target_reached())
         .await
-        .expect("target should be reachable without another replay step")
-        .expect("target task should succeed");
+        .expect("open target should be reachable after replay steps")
+        .expect("open target task should succeed");
+    task.set_target_volume(0).unwrap();
+    timeout(Duration::from_millis(200), task.wait_target_reached())
+        .await
+        .expect_err("close target should not be reachable without another replay step");
     task.cancel().await.unwrap();
     task.wait_finished().await.unwrap();
 
@@ -187,77 +286,6 @@ async fn replay_session_can_fill_target_pos_after_final_market_update() {
     assert_eq!(result.trades.len(), 1);
     assert_eq!(result.final_positions.len(), 1);
     assert_eq!(result.final_positions[0].volume_long, 1);
-}
-
-#[tokio::test]
-async fn replay_session_can_close_target_pos_after_final_market_update() {
-    let source = Arc::new(FakeHistoricalSource {
-        meta: HashMap::from([(
-            "SHFE.rb2605".to_string(),
-            InstrumentMetadata {
-                symbol: "SHFE.rb2605".to_string(),
-                exchange_id: "SHFE".to_string(),
-                instrument_id: "rb2605".to_string(),
-                class: "FUTURE".to_string(),
-                price_tick: 1.0,
-                volume_multiple: 10,
-                margin: 1000.0,
-                commission: 2.0,
-                ..InstrumentMetadata::default()
-            },
-        )]),
-        klines: HashMap::from([(
-            ("SHFE.rb2605".to_string(), 60_000_000_000),
-            vec![Kline {
-                id: 1,
-                datetime: 1_000,
-                open: 10.0,
-                high: 12.0,
-                low: 9.0,
-                close: 11.0,
-                open_oi: 10,
-                close_oi: 11,
-                volume: 5,
-                epoch: None,
-            }],
-        )]),
-    });
-
-    let mut session = ReplaySession::from_source(
-        ReplayConfig::new(
-            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
-            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
-        )
-        .unwrap(),
-        source,
-    )
-    .await
-    .unwrap();
-
-    let _quote = session.quote("SHFE.rb2605").await.unwrap();
-    let runtime = session.runtime(["TQSIM"]).await.unwrap();
-    let account = runtime.account("TQSIM").expect("configured account should exist");
-    let task: TargetPosTask = account.target_pos("SHFE.rb2605").build().unwrap();
-
-    while session.step().await.unwrap().is_some() {}
-
-    task.set_target_volume(1).unwrap();
-    timeout(Duration::from_secs(1), task.wait_target_reached())
-        .await
-        .expect("open target should be reachable")
-        .expect("open target task should succeed");
-    task.set_target_volume(0).unwrap();
-    timeout(Duration::from_secs(1), task.wait_target_reached())
-        .await
-        .expect("close target should be reachable without another replay step")
-        .expect("close target task should succeed");
-    task.cancel().await.unwrap();
-    task.wait_finished().await.unwrap();
-
-    let result = session.finish().await.unwrap();
-    assert_eq!(result.trades.len(), 2);
-    assert_eq!(result.final_positions.len(), 1);
-    assert_eq!(result.final_positions[0].volume_long, 0);
 }
 
 #[tokio::test]
@@ -289,6 +317,7 @@ async fn replay_session_quote_uses_implicit_minute_feed() {
                 epoch: None,
             }],
         )]),
+        ticks: HashMap::new(),
     });
 
     let mut session = ReplaySession::from_source(
@@ -345,6 +374,7 @@ async fn replay_runtime_market_adapter_exposes_cst_datetime_and_trading_time() {
                 epoch: None,
             }],
         )]),
+        ticks: HashMap::new(),
     });
 
     let mut session = ReplaySession::from_source(
@@ -427,6 +457,7 @@ async fn replay_session_option_quote_bootstraps_underlying_for_runtime_orders() 
                 }],
             ),
         ]),
+        ticks: HashMap::new(),
     });
 
     let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
@@ -453,12 +484,221 @@ async fn replay_session_option_quote_bootstraps_underlying_for_runtime_orders() 
         .insert_order(&limit_order(option, DIRECTION_SELL, OFFSET_OPEN, 1.9, 1))
         .await
         .unwrap();
+    let pending = runtime.execution().order("TQSIM", &order_id).await.unwrap();
+    assert_eq!(pending.status, "ALIVE");
+    assert_eq!(pending.volume_left, 1);
+
+    let _ = session.step().await.unwrap().unwrap();
     let order = runtime.execution().order("TQSIM", &order_id).await.unwrap();
     let position = runtime.execution().position("TQSIM", option).await.unwrap();
 
     assert_eq!(order.status, "FINISHED");
     assert_eq!(order.volume_left, 0);
     assert_eq!(position.volume_short, 1);
+}
+
+#[tokio::test]
+async fn replay_session_tick_handle_streams_rows_and_drives_quote() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::new(),
+        ticks: HashMap::from([(
+            symbol.to_string(),
+            vec![
+                Tick {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                    last_price: 10.0,
+                    average: 10.0,
+                    highest: 10.0,
+                    lowest: 10.0,
+                    ask_price1: 10.1,
+                    ask_volume1: 1,
+                    bid_price1: 9.9,
+                    bid_volume1: 1,
+                    volume: 1,
+                    amount: 10.0,
+                    open_interest: 100,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 2,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 1),
+                    last_price: 11.0,
+                    average: 11.0,
+                    highest: 11.0,
+                    lowest: 10.0,
+                    ask_price1: 11.1,
+                    ask_volume1: 2,
+                    bid_price1: 10.9,
+                    bid_volume1: 2,
+                    volume: 2,
+                    amount: 22.0,
+                    open_interest: 101,
+                    ..Tick::default()
+                },
+            ],
+        )]),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let quote = session.quote(symbol).await.unwrap();
+    let ticks = session.tick(symbol, 8).await.unwrap();
+
+    let first = session.step().await.unwrap().unwrap();
+    assert_eq!(first.updated_quotes, vec![symbol.to_string()]);
+    let first_rows = ticks.rows().await;
+    assert_eq!(first_rows.len(), 1);
+    assert_eq!(first_rows[0].tick.id, 1);
+    assert_eq!(quote.snapshot().await.unwrap().last_price, 10.0);
+
+    let second = session.step().await.unwrap().unwrap();
+    assert_eq!(second.updated_quotes, vec![symbol.to_string()]);
+    let second_rows = ticks.rows().await;
+    assert_eq!(second_rows.len(), 2);
+    assert_eq!(second_rows[1].tick.id, 2);
+    assert_eq!(quote.snapshot().await.unwrap().last_price, 11.0);
+}
+
+#[tokio::test]
+async fn replay_session_public_aligned_kline_matches_main_timeline() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([
+            ("SHFE.rb2605".to_string(), future_metadata("SHFE.rb2605")),
+            ("SHFE.hc2605".to_string(), future_metadata("SHFE.hc2605")),
+        ]),
+        klines: HashMap::from([
+            (
+                ("SHFE.rb2605".to_string(), 60_000_000_000),
+                vec![Kline {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                    open: 10.0,
+                    high: 11.0,
+                    low: 9.0,
+                    close: 10.5,
+                    open_oi: 100,
+                    close_oi: 101,
+                    volume: 5,
+                    epoch: None,
+                }],
+            ),
+            (
+                ("SHFE.hc2605".to_string(), 60_000_000_000),
+                vec![Kline {
+                    id: 7,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                    open: 20.0,
+                    high: 21.0,
+                    low: 19.0,
+                    close: 20.5,
+                    open_oi: 200,
+                    close_oi: 201,
+                    volume: 6,
+                    epoch: None,
+                }],
+            ),
+        ]),
+        ticks: HashMap::new(),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let aligned = session
+        .aligned_kline(&["SHFE.rb2605", "SHFE.hc2605"], Duration::from_secs(60), 8)
+        .await
+        .unwrap();
+
+    let _ = session.step().await.unwrap().unwrap();
+    let rows = aligned.rows().await;
+    let last = rows.last().unwrap();
+
+    assert_eq!(last.datetime_nanos, shanghai_nanos(2026, 4, 9, 9, 1, 0));
+    assert!(last.bars["SHFE.rb2605"].is_some());
+    assert!(last.bars["SHFE.hc2605"].is_some());
+}
+
+#[tokio::test]
+async fn replay_runtime_insert_order_bootstraps_symbol_without_explicit_quote_subscription() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::from([(
+            (symbol.to_string(), 60_000_000_000),
+            vec![Kline {
+                id: 1,
+                datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                open: 10.0,
+                high: 12.0,
+                low: 9.0,
+                close: 11.0,
+                open_oi: 10,
+                close_oi: 11,
+                volume: 5,
+                epoch: None,
+            }],
+        )]),
+        ticks: HashMap::new(),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+
+    let order_id = account.insert_order(&limit_buy(symbol, 11.0, 1)).await.unwrap();
+    let pending = runtime.execution().order("TQSIM", &order_id).await.unwrap();
+    assert_eq!(pending.status, "ALIVE");
+    assert_eq!(pending.volume_left, 1);
+
+    let _ = session.step().await.unwrap().unwrap();
+    let filled = runtime.execution().order("TQSIM", &order_id).await.unwrap();
+    assert_eq!(filled.status, "FINISHED");
+    assert_eq!(filled.volume_left, 0);
 }
 
 #[test]
@@ -2047,6 +2287,7 @@ async fn replay_session_auto_settles_trading_days_and_reports_step_boundary() {
                 },
             ],
         )]),
+        ticks: HashMap::new(),
     });
 
     let start_dt = chrono::FixedOffset::east_opt(8 * 3600)

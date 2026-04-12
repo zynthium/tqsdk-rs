@@ -7,9 +7,11 @@ use tokio::sync::Mutex;
 
 use crate::errors::{Result, TqError};
 use crate::replay::{
-    BacktestResult, HistoricalSource, InstrumentMetadata, ReplayConfig, ReplayKlineHandle, ReplayQuote, ReplayStep,
+    AlignedKlineHandle, BacktestResult, HistoricalSource, InstrumentMetadata, ReplayConfig, ReplayKlineHandle,
+    ReplayQuote, ReplayStep, ReplayTickHandle,
 };
 use crate::runtime::{RuntimeMode, TqRuntime};
+use crate::types::Tick;
 
 use super::feed::FeedCursor;
 use super::kernel::ReplayKernel;
@@ -36,32 +38,37 @@ impl ReplayQuoteHandle {
 
 pub struct ReplaySession {
     config: ReplayConfig,
-    source: Arc<dyn HistoricalSource>,
+    bootstrap: ReplayBootstrapper,
     kernel: Arc<Mutex<ReplayKernel>>,
     market: Arc<ReplayMarketState>,
-    registered_feeds: HashSet<(String, i64)>,
     execution: Option<Arc<ReplayExecutionState>>,
     runtime: Option<Arc<TqRuntime>>,
     active_trading_day: Option<NaiveDate>,
     active_trading_day_end_nanos: Option<i64>,
 }
 
-impl ReplaySession {
-    pub(crate) async fn from_source(config: ReplayConfig, source: Arc<dyn HistoricalSource>) -> Result<Self> {
-        Ok(Self {
-            config,
-            source,
-            kernel: Arc::new(Mutex::new(ReplayKernel::default())),
-            market: Arc::new(ReplayMarketState::default()),
-            registered_feeds: HashSet::new(),
-            execution: None,
-            runtime: None,
-            active_trading_day: None,
-            active_trading_day_end_nanos: None,
-        })
+#[derive(Clone)]
+pub(crate) struct ReplayBootstrapper {
+    config: ReplayConfig,
+    source: Arc<dyn HistoricalSource>,
+    kernel: Arc<Mutex<ReplayKernel>>,
+    market: Arc<ReplayMarketState>,
+    registered_feeds: Arc<Mutex<HashSet<(String, i64)>>>,
+}
+
+impl ReplayBootstrapper {
+    pub(crate) async fn ensure_symbol(&self, symbol: &str) -> Result<InstrumentMetadata> {
+        if let Some(existing) = self.market.metadata_for(symbol).await {
+            return Ok(existing);
+        }
+
+        let metadata = self.source.instrument_metadata(symbol).await?;
+        self.market.register_symbol(metadata.clone()).await;
+        self.kernel.lock().await.register_quote(symbol, metadata.clone());
+        Ok(metadata)
     }
 
-    pub async fn quote(&mut self, symbol: &str) -> Result<ReplayQuoteHandle> {
+    pub(crate) async fn ensure_quote_driver(&self, symbol: &str) -> Result<InstrumentMetadata> {
         let metadata = self.ensure_symbol(symbol).await?;
         self.ensure_option_underlying_quote_feed(&metadata).await?;
         self.ensure_kline_feed(
@@ -71,6 +78,118 @@ impl ReplaySession {
             &metadata,
         )
         .await?;
+        Ok(metadata)
+    }
+
+    pub(crate) async fn ensure_option_underlying_quote_feed(&self, metadata: &InstrumentMetadata) -> Result<()> {
+        if !metadata.class.ends_with("OPTION") || metadata.underlying_symbol.is_empty() {
+            return Ok(());
+        }
+
+        let underlying_metadata = self.ensure_symbol(&metadata.underlying_symbol).await?;
+        self.ensure_kline_feed(
+            &metadata.underlying_symbol,
+            IMPLICIT_QUOTE_DURATION,
+            duration_nanos(IMPLICIT_QUOTE_DURATION)?,
+            &underlying_metadata,
+        )
+        .await
+    }
+
+    pub(crate) async fn ensure_kline_feed(
+        &self,
+        symbol: &str,
+        duration: Duration,
+        duration_nanos: i64,
+        metadata: &InstrumentMetadata,
+    ) -> Result<()> {
+        let key = (symbol.to_string(), duration_nanos);
+        {
+            let registered_feeds = self.registered_feeds.lock().await;
+            if registered_feeds.contains(&key) {
+                return Ok(());
+            }
+        }
+
+        let rows = self
+            .source
+            .load_klines(symbol, duration, self.config.start_dt, self.config.end_dt)
+            .await?;
+        self.kernel.lock().await.push_feed(
+            symbol.to_string(),
+            FeedCursor::from_kline_rows(symbol, duration_nanos, rows.clone()),
+        );
+        self.registered_feeds.lock().await.insert(key);
+
+        if self.market.replay_quote(symbol).await.is_none()
+            && let Some(first) = rows.first()
+        {
+            self.market
+                .update_quote(preview_bar_open_quote(symbol, metadata, first))
+                .await;
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn ensure_tick_feed(&self, symbol: &str) -> Result<InstrumentMetadata> {
+        let metadata = self.ensure_symbol(symbol).await?;
+        self.ensure_option_underlying_quote_feed(&metadata).await?;
+
+        let key = (symbol.to_string(), 0);
+        {
+            let registered_feeds = self.registered_feeds.lock().await;
+            if registered_feeds.contains(&key) {
+                return Ok(metadata);
+            }
+        }
+
+        let rows = self
+            .source
+            .load_ticks(symbol, self.config.start_dt, self.config.end_dt)
+            .await?;
+        self.kernel
+            .lock()
+            .await
+            .push_feed(symbol.to_string(), FeedCursor::from_tick_rows(symbol, rows.clone()));
+        self.registered_feeds.lock().await.insert(key);
+
+        if self.market.replay_quote(symbol).await.is_none()
+            && let Some(first) = rows.first()
+        {
+            self.market.update_quote(replay_quote_from_tick(symbol, first)).await;
+        }
+
+        Ok(metadata)
+    }
+}
+
+impl ReplaySession {
+    pub(crate) async fn from_source(config: ReplayConfig, source: Arc<dyn HistoricalSource>) -> Result<Self> {
+        let kernel = Arc::new(Mutex::new(ReplayKernel::default()));
+        let market = Arc::new(ReplayMarketState::default());
+        let bootstrap = ReplayBootstrapper {
+            config: config.clone(),
+            source,
+            kernel: Arc::clone(&kernel),
+            market: Arc::clone(&market),
+            registered_feeds: Arc::new(Mutex::new(HashSet::new())),
+        };
+        Ok(Self {
+            config,
+            bootstrap,
+            kernel,
+            market,
+            execution: None,
+            runtime: None,
+            active_trading_day: None,
+            active_trading_day_end_nanos: None,
+        })
+    }
+
+    pub async fn quote(&mut self, symbol: &str) -> Result<ReplayQuoteHandle> {
+        let metadata = self.bootstrap.ensure_quote_driver(symbol).await?;
+        self.register_execution_metadata(&metadata).await;
         Ok(ReplayQuoteHandle {
             symbol: symbol.to_string(),
             market: Arc::clone(&self.market),
@@ -78,15 +197,57 @@ impl ReplaySession {
     }
 
     pub async fn kline(&mut self, symbol: &str, duration: Duration, width: usize) -> Result<ReplayKlineHandle> {
-        let metadata = self.ensure_symbol(symbol).await?;
-        self.ensure_option_underlying_quote_feed(&metadata).await?;
+        let metadata = self.bootstrap.ensure_symbol(symbol).await?;
+        self.bootstrap.ensure_option_underlying_quote_feed(&metadata).await?;
         let duration_nanos = duration_nanos(duration)?;
-        self.ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
+        self.bootstrap
+            .ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
             .await?;
+        self.register_execution_metadata(&metadata).await;
 
         let handle = {
             let mut kernel = self.kernel.lock().await;
             kernel.register_kline(symbol, duration_nanos, width, metadata.clone())
+        };
+
+        Ok(handle)
+    }
+
+    pub async fn tick(&mut self, symbol: &str, width: usize) -> Result<ReplayTickHandle> {
+        let metadata = self.bootstrap.ensure_tick_feed(symbol).await?;
+        self.register_execution_metadata(&metadata).await;
+
+        let handle = {
+            let mut kernel = self.kernel.lock().await;
+            kernel.register_tick(symbol, width, metadata)
+        };
+
+        Ok(handle)
+    }
+
+    pub async fn aligned_kline(
+        &mut self,
+        symbols: &[&str],
+        duration: Duration,
+        width: usize,
+    ) -> Result<AlignedKlineHandle> {
+        if symbols.is_empty() {
+            return Err(TqError::InvalidParameter("symbols 不能为空".to_string()));
+        }
+
+        let duration_nanos = duration_nanos(duration)?;
+        for symbol in symbols {
+            let metadata = self.bootstrap.ensure_symbol(symbol).await?;
+            self.bootstrap.ensure_option_underlying_quote_feed(&metadata).await?;
+            self.bootstrap
+                .ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
+                .await?;
+            self.register_execution_metadata(&metadata).await;
+        }
+
+        let handle = {
+            let mut kernel = self.kernel.lock().await;
+            kernel.register_aligned_kline(symbols, duration_nanos, width)
         };
 
         Ok(handle)
@@ -117,6 +278,7 @@ impl ReplaySession {
             account_keys,
             Arc::clone(&execution),
             Arc::clone(&self.market),
+            self.bootstrap.clone(),
         ));
         let runtime = Arc::new(TqRuntime::new(RuntimeMode::Backtest, market, adapter));
 
@@ -166,68 +328,6 @@ impl ReplaySession {
         }
     }
 
-    async fn ensure_symbol(&self, symbol: &str) -> Result<InstrumentMetadata> {
-        if let Some(existing) = self.market.metadata_for(symbol).await {
-            return Ok(existing);
-        }
-
-        let metadata = self.source.instrument_metadata(symbol).await?;
-        self.market.register_symbol(metadata.clone()).await;
-        self.kernel.lock().await.register_quote(symbol, metadata.clone());
-        if let Some(execution) = &self.execution {
-            execution.register_symbol(metadata.clone()).await;
-        }
-        Ok(metadata)
-    }
-
-    async fn ensure_option_underlying_quote_feed(&mut self, metadata: &InstrumentMetadata) -> Result<()> {
-        if !metadata.class.ends_with("OPTION") || metadata.underlying_symbol.is_empty() {
-            return Ok(());
-        }
-
-        let underlying_metadata = self.ensure_symbol(&metadata.underlying_symbol).await?;
-        self.ensure_kline_feed(
-            &metadata.underlying_symbol,
-            IMPLICIT_QUOTE_DURATION,
-            duration_nanos(IMPLICIT_QUOTE_DURATION)?,
-            &underlying_metadata,
-        )
-        .await
-    }
-
-    async fn ensure_kline_feed(
-        &mut self,
-        symbol: &str,
-        duration: Duration,
-        duration_nanos: i64,
-        metadata: &InstrumentMetadata,
-    ) -> Result<()> {
-        let key = (symbol.to_string(), duration_nanos);
-        if self.registered_feeds.contains(&key) {
-            return Ok(());
-        }
-
-        let rows = self
-            .source
-            .load_klines(symbol, duration, self.config.start_dt, self.config.end_dt)
-            .await?;
-        self.kernel.lock().await.push_feed(
-            symbol.to_string(),
-            FeedCursor::from_kline_rows(symbol, duration_nanos, rows.clone()),
-        );
-        self.registered_feeds.insert(key);
-
-        if self.market.replay_quote(symbol).await.is_none()
-            && let Some(first) = rows.first()
-        {
-            self.market
-                .update_quote(preview_bar_open_quote(symbol, metadata, first))
-                .await;
-        }
-
-        Ok(())
-    }
-
     async fn advance_trading_day_clock(&mut self, quote_datetime_nanos: i64) -> Result<Option<NaiveDate>> {
         let trading_day_nanos = trading_day_from_timestamp_nanos(quote_datetime_nanos);
         let trading_day = trading_day_date(trading_day_nanos);
@@ -250,6 +350,19 @@ impl ReplaySession {
         self.active_trading_day_end_nanos = Some(trading_day_end_nanos);
 
         Ok(self.execution.as_ref().map(|_| active_trading_day))
+    }
+
+    async fn register_execution_metadata(&self, metadata: &InstrumentMetadata) {
+        let Some(execution) = &self.execution else {
+            return;
+        };
+
+        execution.register_symbol(metadata.clone()).await;
+        if !metadata.underlying_symbol.is_empty()
+            && let Some(underlying) = self.market.metadata_for(&metadata.underlying_symbol).await
+        {
+            execution.register_symbol(underlying).await;
+        }
     }
 }
 
@@ -274,6 +387,24 @@ fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &cra
         volume: bar.volume,
         amount: 0.0,
         open_interest: bar.open_oi,
+    }
+}
+
+fn replay_quote_from_tick(symbol: &str, tick: &Tick) -> ReplayQuote {
+    ReplayQuote {
+        symbol: symbol.to_string(),
+        datetime_nanos: tick.datetime,
+        last_price: tick.last_price,
+        ask_price1: tick.ask_price1,
+        ask_volume1: tick.ask_volume1,
+        bid_price1: tick.bid_price1,
+        bid_volume1: tick.bid_volume1,
+        highest: tick.highest,
+        lowest: tick.lowest,
+        average: tick.average,
+        volume: tick.volume,
+        amount: tick.amount,
+        open_interest: tick.open_interest,
     }
 }
 

@@ -278,7 +278,44 @@ impl SeriesAPI {
         start_dt: DateTime<Utc>,
         end_dt: DateTime<Utc>,
     ) -> Result<Vec<Tick>> {
-        self.ensure_history_download_grants().await?;
+        self.tick_data_series_impl(symbol, start_dt, end_dt, true).await
+    }
+
+    /// ReplaySession 内部使用的历史 Tick 加载入口。
+    ///
+    /// 回放数据抓取复用历史分页协议，但不要求 `tq_dl` 下载权限。
+    pub(crate) async fn replay_tick_data_series(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<Tick>> {
+        if symbol.is_empty() {
+            return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
+        }
+        let start_nano = start_dt
+            .timestamp_nanos_opt()
+            .ok_or_else(|| TqError::InvalidParameter("start_dt 超出可表示范围".to_string()))?;
+        let end_nano = end_dt
+            .timestamp_nanos_opt()
+            .ok_or_else(|| TqError::InvalidParameter("end_dt 超出可表示范围".to_string()))?;
+        if end_nano <= start_nano {
+            return Err(TqError::InvalidParameter("end_dt 必须晚于 start_dt".to_string()));
+        }
+
+        self.download_tick_range(symbol, start_nano, end_nano).await
+    }
+
+    async fn tick_data_series_impl(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+        require_history_grant: bool,
+    ) -> Result<Vec<Tick>> {
+        if require_history_grant {
+            self.ensure_history_download_grants().await?;
+        }
         if symbol.is_empty() {
             return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }

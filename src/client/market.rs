@@ -136,7 +136,7 @@ impl SdkHistoricalSource {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl HistoricalSource for SdkHistoricalSource {
     async fn instrument_metadata(&self, symbol: &str) -> Result<InstrumentMetadata> {
         let (ins, _) = self.ensure_apis().await?;
@@ -158,6 +158,16 @@ impl HistoricalSource for SdkHistoricalSource {
         series
             .replay_kline_data_series(symbol, duration, start_dt, end_dt)
             .await
+    }
+
+    async fn load_ticks(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> Result<Vec<crate::types::Tick>> {
+        let (_, series) = self.ensure_apis().await?;
+        series.replay_tick_data_series(symbol, start_dt, end_dt).await
     }
 }
 

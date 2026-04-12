@@ -7,7 +7,7 @@ use crate::replay::{BarState, InstrumentMetadata, ReplayHandleId, ReplayQuote, R
 
 use super::feed::{FeedCursor, FeedEvent};
 use super::quote::{QuoteSelection, QuoteSynthesizer};
-use super::series::{AlignedKlineHandle, AlignedKlineRow, ReplayKlineHandle, SeriesStore};
+use super::series::{AlignedKlineHandle, AlignedKlineRow, ReplayKlineHandle, ReplayTickHandle, SeriesStore};
 
 const DEFAULT_SERIES_WIDTH: usize = 1_024;
 
@@ -18,6 +18,7 @@ pub struct ReplayKernel {
     quote_synthesizer: QuoteSynthesizer,
     quote_paths: HashMap<String, Vec<ReplayQuote>>,
     klines: Vec<ReplayKlineHandle>,
+    tick_handles: Vec<ReplayTickHandle>,
     aligned_klines: Vec<AlignedKlineHandle>,
     next_handle_id: usize,
     tick_window_width: usize,
@@ -31,6 +32,7 @@ impl ReplayKernel {
             quote_synthesizer: QuoteSynthesizer::default(),
             quote_paths: HashMap::new(),
             klines: Vec::new(),
+            tick_handles: Vec::new(),
             aligned_klines: Vec::new(),
             next_handle_id: 0,
             tick_window_width: DEFAULT_SERIES_WIDTH,
@@ -42,8 +44,7 @@ impl ReplayKernel {
         &self.series_store
     }
 
-    #[cfg(test)]
-    pub fn register_aligned_kline(
+    pub(crate) fn register_aligned_kline(
         &mut self,
         symbols: &[&str],
         duration_nanos: i64,
@@ -59,6 +60,22 @@ impl ReplayKernel {
             width,
         );
         self.aligned_klines.push(handle.clone());
+        handle
+    }
+
+    pub(crate) fn register_tick(
+        &mut self,
+        symbol: &str,
+        width: usize,
+        metadata: InstrumentMetadata,
+    ) -> ReplayTickHandle {
+        let id = ReplayHandleId(format!("tick_{}", self.next_handle_id));
+        self.next_handle_id += 1;
+
+        self.quote_synthesizer
+            .register_symbol(symbol, metadata, QuoteSelection::Tick);
+        let handle = ReplayTickHandle::new(id, symbol.to_string(), width);
+        self.tick_handles.push(handle.clone());
         handle
     }
 
@@ -172,7 +189,9 @@ impl ReplayKernel {
             FeedEvent::Tick { symbol, tick } => {
                 let update = self.quote_synthesizer.apply_tick(&symbol, &tick);
                 self.quote_paths.insert(symbol.clone(), update.path.clone());
-                self.series_store.push_tick(&symbol, tick, self.tick_window_width);
+                self.series_store
+                    .push_tick(&symbol, tick.clone(), self.tick_window_width);
+                self.update_tick_handles(&symbol, tick, updated_handles).await;
                 if update.source_selected && !updated_quotes.contains(&symbol) {
                     updated_quotes.push(symbol);
                 }
@@ -231,6 +250,24 @@ impl ReplayKernel {
             }
 
             handle.apply_kline(kline.clone(), state).await;
+            if !updated_handles.contains(handle.id()) {
+                updated_handles.push(handle.id().clone());
+            }
+        }
+    }
+
+    async fn update_tick_handles(
+        &self,
+        symbol: &str,
+        tick: crate::types::Tick,
+        updated_handles: &mut Vec<ReplayHandleId>,
+    ) {
+        for handle in &self.tick_handles {
+            if !handle.matches(symbol) {
+                continue;
+            }
+
+            handle.apply_tick(tick.clone()).await;
             if !updated_handles.contains(handle.id()) {
                 updated_handles.push(handle.id().clone());
             }

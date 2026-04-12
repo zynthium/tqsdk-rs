@@ -100,7 +100,6 @@ pub struct AlignedKlineHandle {
 }
 
 impl AlignedKlineHandle {
-    #[cfg(test)]
     pub(crate) fn new(id: ReplayHandleId, symbols: Vec<String>, duration_nanos: i64, width: usize) -> Self {
         Self {
             id,
@@ -132,6 +131,45 @@ impl AlignedKlineHandle {
     }
 
     pub async fn rows(&self) -> Vec<AlignedKlineRow> {
+        self.rows.read().await.iter().cloned().collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplayTickHandle {
+    id: ReplayHandleId,
+    symbol: String,
+    width: usize,
+    rows: Arc<RwLock<VecDeque<TickSeriesRow>>>,
+}
+
+impl ReplayTickHandle {
+    pub(crate) fn new(id: ReplayHandleId, symbol: String, width: usize) -> Self {
+        Self {
+            id,
+            symbol,
+            width,
+            rows: Arc::new(RwLock::new(VecDeque::new())),
+        }
+    }
+
+    pub fn id(&self) -> &ReplayHandleId {
+        &self.id
+    }
+
+    pub(crate) fn matches(&self, symbol: &str) -> bool {
+        self.symbol == symbol
+    }
+
+    pub(crate) async fn apply_tick(&self, tick: Tick) {
+        let mut rows = self.rows.write().await;
+        rows.push_back(TickSeriesRow { tick });
+        while rows.len() > self.width {
+            rows.pop_front();
+        }
+    }
+
+    pub async fn rows(&self) -> Vec<TickSeriesRow> {
         self.rows.read().await.iter().cloned().collect()
     }
 }

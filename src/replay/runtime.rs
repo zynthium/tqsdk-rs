@@ -11,6 +11,7 @@ use crate::replay::{InstrumentMetadata, ReplayQuote};
 use crate::runtime::{ExecutionAdapter, MarketAdapter, RuntimeError, RuntimeResult};
 use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade};
 
+use super::session::ReplayBootstrapper;
 use super::sim::SimBroker;
 
 #[derive(Debug)]
@@ -159,19 +160,26 @@ impl MarketAdapter for ReplayMarketAdapter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct ReplayExecutionAdapter {
     accounts: Vec<String>,
     state: Arc<ReplayExecutionState>,
     market: Arc<ReplayMarketState>,
+    bootstrap: ReplayBootstrapper,
 }
 
 impl ReplayExecutionAdapter {
-    pub(crate) fn new(accounts: Vec<String>, state: Arc<ReplayExecutionState>, market: Arc<ReplayMarketState>) -> Self {
+    pub(crate) fn new(
+        accounts: Vec<String>,
+        state: Arc<ReplayExecutionState>,
+        market: Arc<ReplayMarketState>,
+        bootstrap: ReplayBootstrapper,
+    ) -> Self {
         Self {
             accounts,
             state,
             market,
+            bootstrap,
         }
     }
 }
@@ -187,28 +195,30 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
     }
 
     async fn insert_order(&self, account_key: &str, req: &InsertOrderRequest) -> RuntimeResult<String> {
-        let metadata = self.market.metadata_for(&req.symbol).await;
+        let metadata = self.bootstrap.ensure_quote_driver(&req.symbol).await?;
+        self.state.register_symbol(metadata.clone()).await;
+        if !metadata.underlying_symbol.is_empty()
+            && let Some(underlying_metadata) = self.market.metadata_for(&metadata.underlying_symbol).await
+        {
+            self.state.register_symbol(underlying_metadata).await;
+        }
+
         let current_quote = self.market.replay_quote(&req.symbol).await;
-        let underlying_quote = match metadata.as_ref() {
-            Some(metadata) if metadata.class.ends_with("OPTION") && !metadata.underlying_symbol.is_empty() => {
-                self.market.replay_quote(&metadata.underlying_symbol).await
-            }
-            _ => None,
+        let underlying_quote = if metadata.class.ends_with("OPTION") && !metadata.underlying_symbol.is_empty() {
+            self.market.replay_quote(&metadata.underlying_symbol).await
+        } else {
+            None
         };
 
         let order_id = {
             let mut broker = self.state.broker.lock().await;
-            if let (Some(metadata), Some(underlying_quote)) = (metadata.as_ref(), underlying_quote.as_ref()) {
-                broker.apply_quote_path(&metadata.underlying_symbol, std::slice::from_ref(underlying_quote))?;
+            if let Some(underlying_quote) = underlying_quote.as_ref() {
+                broker.sync_quote_snapshot(&metadata.underlying_symbol, underlying_quote.clone())?;
             }
             if let Some(current_quote) = current_quote.as_ref() {
-                broker.apply_quote_path(req.symbol.as_str(), std::slice::from_ref(current_quote))?;
+                broker.sync_quote_snapshot(req.symbol.as_str(), current_quote.clone())?;
             }
-            let order_id = broker.insert_order(account_key, req)?;
-            if let Some(current_quote) = current_quote.as_ref() {
-                broker.apply_quote_path(req.symbol.as_str(), std::slice::from_ref(current_quote))?;
-            }
-            order_id
+            broker.insert_order(account_key, req)?
         };
         self.state.notify_update().await;
         Ok(order_id)

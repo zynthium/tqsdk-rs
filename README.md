@@ -285,6 +285,10 @@ let config = ReplayConfig::new(start_dt, end_dt)?;
 let mut session = client.create_backtest_session(config).await?;
 let quote = session.quote("SHFE.rb2605").await?;
 let klines = session.kline("SHFE.rb2605", Duration::from_secs(60), 64).await?;
+let ticks = session.tick("SHFE.rb2605", 256).await?;
+let spread = session
+    .aligned_kline(&["SHFE.rb2605", "SHFE.hc2605"], Duration::from_secs(60), 64)
+    .await?;
 let runtime = session.runtime(["TQSIM"]).await?;
 let account = runtime.account("TQSIM").expect("configured account should exist");
 let task = account.target_pos("SHFE.rb2605").build()?;
@@ -307,6 +311,9 @@ while let Some(step) = session.step().await? {
     if let Some(snapshot) = quote.snapshot().await {
         println!("replay quote={:.2}", snapshot.last_price);
     }
+
+    let _latest_ticks = ticks.rows().await;
+    let _latest_spread = spread.rows().await;
 }
 
 task.cancel().await?;
@@ -315,7 +322,36 @@ let result = session.finish().await?;
 println!("trades={}", result.trades.len());
 ```
 
+回测语义说明：
+
+- `ReplaySession::step()` 是唯一的时间推进入口。
+- runtime 在 `step()` 返回后新发出的订单，最早从下一次 `step()` 开始参与撮合，不会回头消费已处理过的本 step 价格路径。
+- `quote()` 在没有显式 tick / kline 订阅时会自动补一个隐式 1 分钟 feed；runtime 下单也会自动为未显式订阅的 symbol 建立回放 quote 驱动。
+
 日线开盘信号策略可参考 `examples/pivot_point.rs`。
+
+### 后台历史下载到 CSV
+
+```rust
+use tqsdk_rs::prelude::*;
+
+let downloader = client.spawn_data_downloader(DataDownloadRequest {
+    symbols: vec!["SHFE.rb2605".to_string(), "SHFE.hc2605".to_string()],
+    duration: Duration::from_secs(60),
+    start_dt,
+    end_dt,
+    csv_file: "tmp/rb_hc_1m.csv".into(),
+})?;
+
+downloader.wait().await?;
+println!("progress={:.2}%", downloader.get_progress());
+```
+
+当前 downloader 能力：
+
+- K 线支持多合约按首合约时间线对齐写出 CSV。
+- Tick 下载当前只支持单合约。
+- 通过 `is_finished()` / `get_progress()` 跟踪后台任务状态。
 
 ### 覆盖服务端点
 
@@ -844,6 +880,7 @@ tqsdk-rs/
 
 - Quote：`QuoteSubscription` 负责订阅生命周期，`Client::quote()` 负责读取最新状态。
 - Series：`Client::{kline,tick}` 负责发起实时窗口订阅，`Client::{get_kline_data_series,get_tick_data_series}` 负责一次性历史快照下载，`Client::{kline_ref,tick_ref}` 负责读取 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口并通过 `wait_update()` / `load()` 暴露快照。
+- Downloader：`Client::spawn_data_downloader()` 负责后台历史下载与 CSV 导出工作流。
 - TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
 仍保留的回调接口大量使用 `Arc<T>`，适合多任务共享而不重复拷贝。

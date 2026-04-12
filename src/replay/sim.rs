@@ -172,6 +172,23 @@ impl SimBroker {
         Ok(())
     }
 
+    pub fn sync_quote_snapshot(&mut self, symbol: &str, quote: ReplayQuote) -> Result<()> {
+        let _metadata = self
+            .metadata
+            .get(symbol)
+            .ok_or_else(|| TqError::TradeError(format!("replay symbol metadata not found: {symbol}")))?;
+        if quote.symbol != symbol {
+            return Err(TqError::InvalidParameter(format!(
+                "quote symbol {} does not match snapshot symbol {}",
+                quote.symbol, symbol
+            )));
+        }
+
+        self.current_quotes.insert(symbol.to_string(), quote);
+        self.recompute_symbol_state(symbol)?;
+        Ok(())
+    }
+
     pub fn order(&self, account_key: &str, order_id: &str) -> Result<Order> {
         let order = self
             .orders
