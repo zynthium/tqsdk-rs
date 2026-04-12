@@ -16,7 +16,7 @@ use crate::errors::Result;
 use crate::ins::InsAPI;
 use crate::marketdata::{KlineRef, MarketDataState, MarketDataUpdates, QuoteRef, TickRef, TqApi};
 use crate::series::SeriesAPI;
-use crate::trade_session::TradeSession;
+use crate::trade_session::{TradeLoginOptions, TradeSession};
 use crate::websocket::TqQuoteWebsocket;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,6 +80,7 @@ pub(crate) struct PendingTradeSessionConfig {
     pub user_id: String,
     pub password: String,
     pub options: endpoints::TradeSessionOptions,
+    pub login_options: TradeLoginOptions,
 }
 
 /// 客户端

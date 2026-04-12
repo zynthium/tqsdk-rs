@@ -22,12 +22,40 @@ pub use events::{
     TradeSessionEventKind,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TradeFrontConfig {
+    pub broker_id: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TradeLoginOptions {
+    pub front: Option<TradeFrontConfig>,
+    pub client_app_id: Option<String>,
+    pub client_system_info: Option<String>,
+    pub client_mac_address: Option<String>,
+    pub confirm_settlement: bool,
+}
+
+impl Default for TradeLoginOptions {
+    fn default() -> Self {
+        Self {
+            front: None,
+            client_app_id: None,
+            client_system_info: None,
+            client_mac_address: None,
+            confirm_settlement: true,
+        }
+    }
+}
+
 /// 交易会话
 #[allow(unused)]
 pub struct TradeSession {
     broker: String,
     user_id: String,
     password: String,
+    login_options: TradeLoginOptions,
     dm: Arc<DataManager>,
     ws: Arc<TqTradeWebsocket>,
     trade_events: Arc<std::sync::RwLock<Arc<TradeEventHub>>>,

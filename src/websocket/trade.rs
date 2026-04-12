@@ -382,6 +382,14 @@ impl TqTradeWebsocket {
     pub(crate) async fn pending_queue_len_for_test(&self) -> usize {
         self.base.pending_queue_len_for_test().await
     }
+
+    pub(crate) fn req_login_for_test(&self) -> Option<Value> {
+        self.runtime.req_login.read().unwrap().clone()
+    }
+
+    pub(crate) fn confirm_settlement_for_test(&self) -> Option<Value> {
+        self.runtime.confirm_settlement.read().unwrap().clone()
+    }
 }
 
 #[cfg(test)]

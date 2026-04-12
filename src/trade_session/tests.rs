@@ -16,6 +16,10 @@ fn build_dm() -> Arc<DataManager> {
 }
 
 fn build_session(dm: Arc<DataManager>) -> TradeSession {
+    build_session_with_login_options(dm, TradeLoginOptions::default())
+}
+
+fn build_session_with_login_options(dm: Arc<DataManager>, login_options: TradeLoginOptions) -> TradeSession {
     TradeSession::new(
         "simnow".to_string(),
         "u".to_string(),
@@ -24,6 +28,7 @@ fn build_session(dm: Arc<DataManager>) -> TradeSession {
         "wss://example.com".to_string(),
         WebSocketConfig::default(),
         8,
+        login_options,
     )
 }
 
@@ -680,6 +685,7 @@ async fn trade_session_failed_connect_clears_stale_logged_in_state() {
         "not-a-valid-url".to_string(),
         WebSocketConfig::default(),
         8,
+        TradeLoginOptions::default(),
     );
 
     session.logged_in.store(true, Ordering::SeqCst);
@@ -699,6 +705,7 @@ async fn trade_session_failed_connect_resets_event_hub_for_existing_and_future_s
         "not-a-valid-url".to_string(),
         WebSocketConfig::default(),
         8,
+        TradeLoginOptions::default(),
     );
     let old_hub = session.trade_events.read().unwrap().clone();
     let mut stale_stream = session.subscribe_events();
@@ -740,6 +747,7 @@ async fn trade_session_failed_connect_does_not_keep_reconnecting_in_background()
             ..WebSocketConfig::default()
         },
         8,
+        TradeLoginOptions::default(),
     );
     let mut events = session.subscribe_events();
 
@@ -850,6 +858,7 @@ async fn trade_commands_do_not_queue_when_transport_actor_is_missing() {
         "wss://example.com".to_string(),
         WebSocketConfig::default(),
         8,
+        TradeLoginOptions::default(),
     );
 
     session.logged_in.store(true, Ordering::SeqCst);
@@ -977,4 +986,55 @@ fn build_insert_order_packet_defaults_limit_to_gfd_any() {
     assert_eq!(pack["time_condition"], TIME_CONDITION_GFD);
     assert_eq!(pack["volume_condition"], VOLUME_CONDITION_ANY);
     assert_eq!(pack["limit_price"], 520.0);
+}
+
+#[tokio::test]
+async fn trade_session_send_login_includes_compatibility_fields() {
+    let dm = build_dm();
+    let session = build_session_with_login_options(
+        dm,
+        TradeLoginOptions {
+            front: Some(TradeFrontConfig {
+                broker_id: "9999".to_string(),
+                url: "tcp://127.0.0.1:12345".to_string(),
+            }),
+            client_system_info: Some("BASE64_SYSTEM_INFO".to_string()),
+            client_mac_address: Some("AA-BB-CC-DD-EE-FF".to_string()),
+            ..TradeLoginOptions::default()
+        },
+    );
+
+    session.send_login().await.unwrap();
+
+    let req = session
+        .ws
+        .req_login_for_test()
+        .expect("login packet should be recorded");
+    assert_eq!(req["bid"], "simnow");
+    assert_eq!(req["user_name"], "u");
+    assert_eq!(req["password"], "p");
+    assert_eq!(req["broker_id"], "9999");
+    assert_eq!(req["front"], "tcp://127.0.0.1:12345");
+    assert_eq!(req["client_system_info"], "BASE64_SYSTEM_INFO");
+    assert_eq!(req["client_app_id"], "SHINNY_TQ_1.0");
+    assert_eq!(req["client_mac_address"], "AA-BB-CC-DD-EE-FF");
+}
+
+#[tokio::test]
+async fn trade_session_can_skip_confirm_settlement_for_non_futures_logins() {
+    let dm = build_dm();
+    let session = build_session_with_login_options(
+        dm,
+        TradeLoginOptions {
+            confirm_settlement: false,
+            ..TradeLoginOptions::default()
+        },
+    );
+
+    session.send_confirm_settlement().await.unwrap();
+
+    assert!(
+        session.ws.confirm_settlement_for_test().is_none(),
+        "non-futures login should be able to skip confirm_settlement"
+    );
 }

@@ -280,6 +280,37 @@ async fn create_trade_session_plumbs_reliable_event_retention() {
 }
 
 #[tokio::test]
+async fn create_trade_session_with_login_options_plumbs_login_configuration() {
+    let client = build_client_with_market();
+
+    let session = client
+        .create_trade_session_with_options_and_login(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade".to_string()),
+                reliable_events_max_retained: 32,
+            },
+            crate::trade_session::TradeLoginOptions {
+                front: Some(crate::trade_session::TradeFrontConfig {
+                    broker_id: "9999".to_string(),
+                    url: "tcp://127.0.0.1:12345".to_string(),
+                }),
+                client_system_info: Some("SYSINFO".to_string()),
+                ..crate::trade_session::TradeLoginOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let login = session.login_options_for_test();
+    assert_eq!(login.front.as_ref().unwrap().broker_id, "9999");
+    assert_eq!(login.front.as_ref().unwrap().url, "tcp://127.0.0.1:12345");
+    assert_eq!(login.client_system_info.as_deref(), Some("SYSINFO"));
+}
+
+#[tokio::test]
 async fn runtime_picks_up_trade_sessions_registered_after_creation() {
     let client = build_inactive_client();
     let trade_sessions = Arc::clone(&client.trade_sessions);
@@ -298,6 +329,7 @@ async fn runtime_picks_up_trade_sessions_registered_after_creation() {
         "wss://example.com/trade".to_string(),
         WebSocketConfig::default(),
         32,
+        crate::trade_session::TradeLoginOptions::default(),
     ));
     trade_sessions
         .write()
@@ -331,6 +363,37 @@ async fn builder_can_preconfigure_trade_sessions_for_runtime() {
         .account("simnow:user")
         .expect("configured trade session should be exposed to runtime");
     assert_eq!(account.account_key(), "simnow:user");
+}
+
+#[tokio::test]
+async fn builder_can_preconfigure_trade_sessions_with_login_options() {
+    let client = Client::builder("tester", "secret")
+        .auth(TestAuth)
+        .trade_session_with_options_and_login(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: Some("wss://example.com/trade".to_string()),
+                reliable_events_max_retained: 32,
+            },
+            crate::trade_session::TradeLoginOptions {
+                front: Some(crate::trade_session::TradeFrontConfig {
+                    broker_id: "9999".to_string(),
+                    url: "tcp://127.0.0.1:12345".to_string(),
+                }),
+                client_system_info: Some("SYSINFO".to_string()),
+                ..crate::trade_session::TradeLoginOptions::default()
+            },
+        )
+        .build()
+        .await
+        .expect("builder should create client with configured login options");
+
+    let session = client.get_trade_session("simnow:user").await.unwrap();
+    let login = session.login_options_for_test();
+    assert_eq!(login.front.as_ref().unwrap().broker_id, "9999");
+    assert_eq!(login.client_system_info.as_deref(), Some("SYSINFO"));
 }
 
 #[tokio::test]

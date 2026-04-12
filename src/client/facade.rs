@@ -7,7 +7,7 @@ use crate::quote::QuoteSubscription;
 use crate::replay::{ReplayConfig, ReplaySession};
 use crate::runtime::{LiveExecutionAdapter, LiveMarketAdapter, RuntimeMode, TqRuntime};
 use crate::series::{KlineSymbols, SeriesAPI, SeriesSubscription};
-use crate::trade_session::TradeSession;
+use crate::trade_session::{TradeLoginOptions, TradeSession};
 use crate::types::{EdbIndexData, Kline, SymbolRanking, SymbolSettlement, TradingCalendarDay, TradingStatus};
 use crate::websocket::WebSocketConfig;
 use async_channel::Receiver;
@@ -314,8 +314,31 @@ impl Client {
 
     /// 创建交易会话（不自动连接）
     pub async fn create_trade_session(&self, broker: &str, user_id: &str, password: &str) -> Result<Arc<TradeSession>> {
-        self.create_trade_session_with_options(broker, user_id, password, TradeSessionOptions::default())
-            .await
+        self.create_trade_session_with_options_and_login(
+            broker,
+            user_id,
+            password,
+            TradeSessionOptions::default(),
+            TradeLoginOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn create_trade_session_with_login_options(
+        &self,
+        broker: &str,
+        user_id: &str,
+        password: &str,
+        login_options: TradeLoginOptions,
+    ) -> Result<Arc<TradeSession>> {
+        self.create_trade_session_with_options_and_login(
+            broker,
+            user_id,
+            password,
+            TradeSessionOptions::default(),
+            login_options,
+        )
+        .await
     }
 
     /// 创建交易会话（支持覆盖交易地址）
@@ -328,6 +351,25 @@ impl Client {
         user_id: &str,
         password: &str,
         options: TradeSessionOptions,
+    ) -> Result<Arc<TradeSession>> {
+        self.create_trade_session_with_options_and_login(
+            broker,
+            user_id,
+            password,
+            options,
+            TradeLoginOptions::default(),
+        )
+        .await
+    }
+
+    /// 创建交易会话（支持覆盖交易地址并扩展登录报文）
+    pub async fn create_trade_session_with_options_and_login(
+        &self,
+        broker: &str,
+        user_id: &str,
+        password: &str,
+        options: TradeSessionOptions,
+        login_options: TradeLoginOptions,
     ) -> Result<Arc<TradeSession>> {
         let auth = self.auth.read().await;
         let td_url = if let Some(url) = options
@@ -364,6 +406,7 @@ impl Client {
             td_url,
             ws_config,
             options.reliable_events_max_retained,
+            login_options,
         ));
 
         let key = format!("{}:{}", broker, user_id);

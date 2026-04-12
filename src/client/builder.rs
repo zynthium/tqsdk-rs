@@ -4,6 +4,7 @@ use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::Result;
 use crate::marketdata::MarketDataState;
 use crate::runtime::TqRuntime;
+use crate::trade_session::TradeLoginOptions;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -166,6 +167,7 @@ impl ClientBuilder {
             user_id: user_id.into(),
             password: password.into(),
             options: super::TradeSessionOptions::default(),
+            login_options: TradeLoginOptions::default(),
         });
         self
     }
@@ -182,6 +184,42 @@ impl ClientBuilder {
             user_id: user_id.into(),
             password: password.into(),
             options,
+            login_options: TradeLoginOptions::default(),
+        });
+        self
+    }
+
+    pub fn trade_session_with_login_options(
+        mut self,
+        broker: impl Into<String>,
+        user_id: impl Into<String>,
+        password: impl Into<String>,
+        login_options: TradeLoginOptions,
+    ) -> Self {
+        self.trade_session_configs.push(PendingTradeSessionConfig {
+            broker: broker.into(),
+            user_id: user_id.into(),
+            password: password.into(),
+            options: super::TradeSessionOptions::default(),
+            login_options,
+        });
+        self
+    }
+
+    pub fn trade_session_with_options_and_login(
+        mut self,
+        broker: impl Into<String>,
+        user_id: impl Into<String>,
+        password: impl Into<String>,
+        options: super::TradeSessionOptions,
+        login_options: TradeLoginOptions,
+    ) -> Self {
+        self.trade_session_configs.push(PendingTradeSessionConfig {
+            broker: broker.into(),
+            user_id: user_id.into(),
+            password: password.into(),
+            options,
+            login_options,
         });
         self
     }
@@ -233,11 +271,12 @@ impl ClientBuilder {
         let trade_session_configs = self.trade_session_configs;
         for session in trade_session_configs {
             client
-                .create_trade_session_with_options(
+                .create_trade_session_with_options_and_login(
                     &session.broker,
                     &session.user_id,
                     &session.password,
                     session.options.clone(),
+                    session.login_options.clone(),
                 )
                 .await?;
         }

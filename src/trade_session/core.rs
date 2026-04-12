@@ -1,6 +1,6 @@
 use super::{
-    OrderEventStream, TradeEventHub, TradeEventRecvError, TradeEventStream, TradeOnlyEventStream, TradeSession,
-    TradeSessionEventKind,
+    OrderEventStream, TradeEventHub, TradeEventRecvError, TradeEventStream, TradeLoginOptions, TradeOnlyEventStream,
+    TradeSession, TradeSessionEventKind,
 };
 use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
@@ -10,8 +10,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::info;
 
+const DEFAULT_CLIENT_APP_ID: &str = "SHINNY_TQ_1.0";
+
 impl TradeSession {
     /// 创建交易会话
+    #[expect(clippy::too_many_arguments, reason = "内部装配 TradeSession 时保持依赖显式展开")]
     pub(crate) fn new(
         broker: String,
         user_id: String,
@@ -20,6 +23,7 @@ impl TradeSession {
         ws_url: String,
         ws_config: WebSocketConfig,
         reliable_events_max_retained: usize,
+        login_options: TradeLoginOptions,
     ) -> Self {
         let trade_events = Arc::new(std::sync::RwLock::new(Arc::new(TradeEventHub::new(
             reliable_events_max_retained,
@@ -48,6 +52,7 @@ impl TradeSession {
             broker,
             user_id,
             password,
+            login_options,
             dm,
             ws,
             trade_events,
@@ -95,12 +100,39 @@ impl TradeSession {
     }
 
     pub(super) async fn send_login(&self) -> Result<()> {
-        let login_req = serde_json::json!({
+        let mut login_req = serde_json::json!({
             "aid": "req_login",
             "bid": self.broker,
             "user_name": self.user_id,
             "password": self.password
         });
+        if let Some(mac) = self
+            .login_options
+            .client_mac_address
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            login_req["client_mac_address"] = serde_json::json!(mac);
+        }
+        if let Some(system_info) = self
+            .login_options
+            .client_system_info
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            login_req["client_system_info"] = serde_json::json!(system_info);
+            login_req["client_app_id"] = serde_json::json!(
+                self.login_options
+                    .client_app_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(DEFAULT_CLIENT_APP_ID)
+            );
+        }
+        if let Some(front) = &self.login_options.front {
+            login_req["broker_id"] = serde_json::json!(front.broker_id);
+            login_req["front"] = serde_json::json!(front.url);
+        }
 
         info!("发送交易登录请求: broker={}, user_id={}", self.broker, self.user_id);
         self.ws.send(&login_req).await?;
@@ -108,6 +140,9 @@ impl TradeSession {
     }
 
     pub(super) async fn send_confirm_settlement(&self) -> Result<()> {
+        if !self.login_options.confirm_settlement {
+            return Ok(());
+        }
         let confirm_req = serde_json::json!({
             "aid": "confirm_settlement"
         });
@@ -134,6 +169,11 @@ impl TradeSession {
     /// 仅订阅成交创建事件
     pub fn subscribe_trade_events(&self) -> TradeOnlyEventStream {
         self.current_trade_events().subscribe_trades()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn login_options_for_test(&self) -> TradeLoginOptions {
+        self.login_options.clone()
     }
 
     /// 等待交易快照在本会话下推进至少一次。
