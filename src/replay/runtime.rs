@@ -37,6 +37,10 @@ impl ReplayMarketState {
         self.metadata.read().await.get(symbol).cloned()
     }
 
+    pub(crate) async fn all_metadata(&self) -> Vec<InstrumentMetadata> {
+        self.metadata.read().await.values().cloned().collect()
+    }
+
     pub(crate) async fn update_quote(&self, quote: ReplayQuote) {
         let symbol = quote.symbol.clone();
         self.quotes.write().await.insert(symbol.clone(), quote);
@@ -101,6 +105,17 @@ impl ReplayExecutionState {
 
     pub(crate) async fn apply_quote_path(&self, symbol: &str, path: &[ReplayQuote]) -> crate::Result<()> {
         self.broker.lock().await.apply_quote_path(symbol, path)
+    }
+
+    pub(crate) async fn register_symbol(&self, metadata: InstrumentMetadata) {
+        self.broker.lock().await.register_symbol(metadata);
+    }
+
+    pub(crate) async fn settle_day(
+        &self,
+        trading_day: chrono::NaiveDate,
+    ) -> crate::Result<Option<crate::replay::DailySettlementLog>> {
+        self.broker.lock().await.settle_day(trading_day)
     }
 }
 

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use tokio::sync::Mutex;
 
 use crate::errors::{Result, TqError};
@@ -41,6 +42,8 @@ pub struct ReplaySession {
     registered_feeds: HashSet<(String, i64)>,
     execution: Option<Arc<ReplayExecutionState>>,
     runtime: Option<Arc<TqRuntime>>,
+    active_trading_day: Option<NaiveDate>,
+    active_trading_day_end_nanos: Option<i64>,
 }
 
 impl ReplaySession {
@@ -53,6 +56,8 @@ impl ReplaySession {
             registered_feeds: HashSet::new(),
             execution: None,
             runtime: None,
+            active_trading_day: None,
+            active_trading_day_end_nanos: None,
         })
     }
 
@@ -102,6 +107,9 @@ impl ReplaySession {
             account_keys.clone(),
             self.config.initial_balance,
         )));
+        for metadata in self.market.all_metadata().await {
+            execution.register_symbol(metadata).await;
+        }
         let market = Arc::new(ReplayMarketAdapter::new(Arc::clone(&self.market)));
         let adapter = Arc::new(ReplayExecutionAdapter::new(
             account_keys,
@@ -116,9 +124,10 @@ impl ReplaySession {
     }
 
     pub async fn step(&mut self) -> Result<Option<ReplayStep>> {
-        let Some(step) = self.kernel.lock().await.step().await? else {
+        let Some(mut step) = self.kernel.lock().await.step().await? else {
             return Ok(None);
         };
+        let mut settled_trading_day = None;
 
         for symbol in &step.updated_quotes {
             let (visible, path) = {
@@ -130,6 +139,9 @@ impl ReplaySession {
                 (visible, path)
             };
 
+            if let Some(trading_day) = self.advance_trading_day_clock(visible.datetime_nanos).await? {
+                settled_trading_day = Some(trading_day);
+            }
             self.market.update_quote(visible).await;
             if let Some(execution) = &self.execution {
                 execution.apply_quote_path(symbol, &path).await?;
@@ -138,10 +150,14 @@ impl ReplaySession {
         }
 
         tokio::task::yield_now().await;
+        step.settled_trading_day = settled_trading_day;
         Ok(Some(step))
     }
 
-    pub async fn finish(&self) -> Result<BacktestResult> {
+    pub async fn finish(&mut self) -> Result<BacktestResult> {
+        if let (Some(execution), Some(trading_day)) = (&self.execution, self.active_trading_day) {
+            execution.settle_day(trading_day).await?;
+        }
         match &self.execution {
             Some(execution) => execution.finish().await,
             None => SimBroker::default().finish(),
@@ -156,6 +172,9 @@ impl ReplaySession {
         let metadata = self.source.instrument_metadata(symbol).await?;
         self.market.register_symbol(metadata.clone()).await;
         self.kernel.lock().await.register_quote(symbol, metadata.clone());
+        if let Some(execution) = &self.execution {
+            execution.register_symbol(metadata.clone()).await;
+        }
         Ok(metadata)
     }
 
@@ -191,6 +210,30 @@ impl ReplaySession {
 
         Ok(())
     }
+
+    async fn advance_trading_day_clock(&mut self, quote_datetime_nanos: i64) -> Result<Option<NaiveDate>> {
+        let trading_day_nanos = trading_day_from_timestamp_nanos(quote_datetime_nanos);
+        let trading_day = trading_day_date(trading_day_nanos);
+        let trading_day_end_nanos = trading_day_end_time_nanos(trading_day_nanos);
+
+        let Some(active_trading_day) = self.active_trading_day else {
+            self.active_trading_day = Some(trading_day);
+            self.active_trading_day_end_nanos = Some(trading_day_end_nanos);
+            return Ok(None);
+        };
+
+        if quote_datetime_nanos <= self.active_trading_day_end_nanos.unwrap_or(i64::MAX) {
+            return Ok(None);
+        }
+
+        if let Some(execution) = &self.execution {
+            execution.settle_day(active_trading_day).await?;
+        }
+        self.active_trading_day = Some(trading_day);
+        self.active_trading_day_end_nanos = Some(trading_day_end_nanos);
+
+        Ok(self.execution.as_ref().map(|_| active_trading_day))
+    }
 }
 
 fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &crate::types::Kline) -> ReplayQuote {
@@ -220,4 +263,32 @@ fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &cra
 fn duration_nanos(duration: Duration) -> Result<i64> {
     i64::try_from(duration.as_nanos())
         .map_err(|_| TqError::InvalidParameter(format!("duration is too large: {:?}", duration)))
+}
+
+const CST_OFFSET_SECONDS: i32 = 8 * 3600;
+const DAY_NANOS: i64 = 86_400_000_000_000;
+const EIGHTEEN_HOURS_NANOS: i64 = 64_800_000_000_000;
+const TRADING_DAY_END_NANOS: i64 = 64_799_999_999_999;
+const BEGIN_MARK_NANOS: i64 = 631_123_200_000_000_000;
+
+fn trading_day_from_timestamp_nanos(timestamp_nanos: i64) -> i64 {
+    let mut days = (timestamp_nanos - BEGIN_MARK_NANOS) / DAY_NANOS;
+    if (timestamp_nanos - BEGIN_MARK_NANOS) % DAY_NANOS >= EIGHTEEN_HOURS_NANOS {
+        days += 1;
+    }
+    let week_day = days % 7;
+    if week_day >= 5 {
+        days += 7 - week_day;
+    }
+    BEGIN_MARK_NANOS + days * DAY_NANOS
+}
+
+fn trading_day_end_time_nanos(trading_day_nanos: i64) -> i64 {
+    trading_day_nanos + TRADING_DAY_END_NANOS
+}
+
+fn trading_day_date(trading_day_nanos: i64) -> NaiveDate {
+    DateTime::<Utc>::from_timestamp_nanos(trading_day_nanos)
+        .with_timezone(&FixedOffset::east_opt(CST_OFFSET_SECONDS).expect("CST offset must be valid"))
+        .date_naive()
 }

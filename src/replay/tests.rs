@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -919,9 +919,54 @@ fn market_buy(symbol: &str, volume: i64) -> InsertOrderRequest {
     }
 }
 
+fn future_metadata(symbol: &str) -> InstrumentMetadata {
+    let (exchange_id, instrument_id) = symbol.split_once('.').unwrap();
+    InstrumentMetadata {
+        symbol: symbol.to_string(),
+        exchange_id: exchange_id.to_string(),
+        instrument_id: instrument_id.to_string(),
+        class: "FUTURE".to_string(),
+        price_tick: 1.0,
+        volume_multiple: 10,
+        margin: 1000.0,
+        commission: 2.0,
+        ..InstrumentMetadata::default()
+    }
+}
+
+fn future_quote(symbol: &str, datetime_nanos: i64, last_price: f64, ask_price1: f64, bid_price1: f64) -> ReplayQuote {
+    ReplayQuote {
+        symbol: symbol.to_string(),
+        datetime_nanos,
+        last_price,
+        ask_price1,
+        ask_volume1: 1,
+        bid_price1,
+        bid_volume1: 1,
+        ..ReplayQuote::default()
+    }
+}
+
+fn shanghai_nanos(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
+    chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(year, month, day, hour, minute, second)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc)
+        .timestamp_nanos_opt()
+        .unwrap()
+}
+
+fn assert_close(actual: f64, expected: f64) {
+    let diff = (actual - expected).abs();
+    assert!(diff < 1e-6, "expected {expected}, got {actual}, abs diff {diff}");
+}
+
 #[test]
 fn sim_broker_fills_limit_buy_when_price_path_crosses() {
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata("SHFE.rb2605"));
     let order_id = broker
         .insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2))
         .unwrap();
@@ -961,6 +1006,7 @@ fn sim_broker_fills_limit_buy_when_price_path_crosses() {
 #[test]
 fn sim_broker_cancels_market_order_without_opponent_quote() {
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata("SHFE.rb2605"));
     let order_id = broker.insert_order("TQSIM", &market_buy("SHFE.rb2605", 1)).unwrap();
 
     broker
@@ -987,6 +1033,7 @@ fn sim_broker_cancels_market_order_without_opponent_quote() {
 #[test]
 fn sim_broker_records_daily_settlement() {
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata("SHFE.rb2605"));
     let settlement = broker
         .settle_day(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
         .unwrap()
@@ -999,6 +1046,7 @@ fn sim_broker_records_daily_settlement() {
 #[test]
 fn sim_broker_limit_fill_uses_order_price_and_updates_position_once() {
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata("SHFE.rb2605"));
     let order_id = broker
         .insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2))
         .unwrap();
@@ -1067,6 +1115,7 @@ fn sim_broker_limit_fill_uses_order_price_and_updates_position_once() {
 #[test]
 fn sim_broker_finish_returns_accumulated_settlements_and_final_state() {
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata("SHFE.rb2605"));
     let order_id = broker
         .insert_order("TQSIM", &limit_buy("SHFE.rb2605", 11.0, 2))
         .unwrap();
@@ -1108,4 +1157,175 @@ fn sim_broker_finish_returns_accumulated_settlements_and_final_state() {
     assert_eq!(result.final_positions[0].volume_long, 2);
     assert_eq!(result.trades.len(), 1);
     assert_eq!(result.trades[0].order_id, order_id);
+}
+
+#[test]
+fn sim_broker_marks_futures_account_to_market_and_charges_commission() {
+    let symbol = "SHFE.rb2605";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(symbol));
+
+    broker
+        .apply_quote_path(symbol, &[future_quote(symbol, 1_000, 10.0, 10.5, 9.5)])
+        .unwrap();
+    let order_id = broker.insert_order("TQSIM", &limit_buy(symbol, 11.0, 2)).unwrap();
+    broker
+        .apply_quote_path(
+            symbol,
+            &[
+                future_quote(symbol, 1_000, 10.0, 10.5, 9.5),
+                future_quote(symbol, 2_000, 12.0, 12.5, 11.5),
+            ],
+        )
+        .unwrap();
+
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+    let position = broker.position("TQSIM", symbol).unwrap();
+    let order = broker.order("TQSIM", &order_id).unwrap();
+
+    assert_eq!(order.status, "FINISHED");
+    assert_eq!(order.volume_left, 0);
+    assert_eq!(result.trades.len(), 1);
+    assert_close(result.trades[0].commission, 4.0);
+    assert_close(account.commission, 4.0);
+    assert_close(account.margin, 2_000.0);
+    assert_close(account.float_profit, 20.0);
+    assert_close(account.position_profit, 20.0);
+    assert_close(account.balance, 10_000_016.0);
+    assert_close(account.available, 9_998_016.0);
+    assert_close(account.risk_ratio, 2_000.0 / 10_000_016.0);
+    assert_eq!(position.volume_long_today, 2);
+    assert_eq!(position.volume_long_his, 0);
+    assert_eq!(position.volume_long, 2);
+    assert_close(position.open_price_long, 11.0);
+    assert_close(position.position_price_long, 11.0);
+    assert_close(position.margin, 2_000.0);
+    assert_close(position.float_profit, 20.0);
+    assert_close(position.position_profit, 20.0);
+    assert_close(position.last_price, 12.0);
+}
+
+#[test]
+fn sim_broker_settlement_rolls_positions_and_resets_daily_account_fields() {
+    let symbol = "SHFE.rb2605";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(symbol));
+
+    broker
+        .apply_quote_path(symbol, &[future_quote(symbol, 1_000, 10.0, 10.5, 9.5)])
+        .unwrap();
+    let _order_id = broker.insert_order("TQSIM", &limit_buy(symbol, 11.0, 2)).unwrap();
+    broker
+        .apply_quote_path(
+            symbol,
+            &[
+                future_quote(symbol, 1_000, 10.0, 10.5, 9.5),
+                future_quote(symbol, 2_000, 12.0, 12.5, 11.5),
+            ],
+        )
+        .unwrap();
+
+    let settlement = broker
+        .settle_day(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_close(settlement.account.balance, 10_000_016.0);
+    assert_close(settlement.account.available, 9_998_016.0);
+    assert_close(settlement.account.position_profit, 20.0);
+
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+    let position = broker.position("TQSIM", symbol).unwrap();
+
+    assert_close(account.pre_balance, 10_000_016.0);
+    assert_close(account.static_balance, 10_000_016.0);
+    assert_close(account.balance, 10_000_016.0);
+    assert_close(account.available, 9_998_016.0);
+    assert_close(account.margin, 2_000.0);
+    assert_close(account.commission, 0.0);
+    assert_close(account.close_profit, 0.0);
+    assert_close(account.position_profit, 0.0);
+    assert_eq!(position.volume_long_today, 0);
+    assert_eq!(position.volume_long_his, 2);
+    assert_eq!(position.volume_long, 2);
+    assert_close(position.position_price_long, 12.0);
+    assert_close(position.position_cost_long, 240.0);
+    assert_close(position.position_profit, 0.0);
+}
+
+#[tokio::test]
+async fn replay_session_auto_settles_trading_days_and_reports_step_boundary() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::from([(
+            (symbol.to_string(), 86_400_000_000_000),
+            vec![
+                Kline {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 1, 0, 0, 0),
+                    open: 10.0,
+                    high: 12.0,
+                    low: 9.0,
+                    close: 11.0,
+                    open_oi: 100,
+                    close_oi: 110,
+                    volume: 5,
+                    epoch: None,
+                },
+                Kline {
+                    id: 2,
+                    datetime: shanghai_nanos(2026, 4, 2, 0, 0, 0),
+                    open: 11.0,
+                    high: 13.0,
+                    low: 10.0,
+                    close: 12.0,
+                    open_oi: 110,
+                    close_oi: 120,
+                    volume: 6,
+                    epoch: None,
+                },
+            ],
+        )]),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 1, 0, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 2, 23, 59, 59)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _quote = session.quote(symbol).await.unwrap();
+    let _daily = session.kline(symbol, Duration::from_secs(86_400), 8).await.unwrap();
+    let _runtime = session.runtime(["TQSIM"]).await.unwrap();
+
+    let mut settled_days = Vec::new();
+    while let Some(step) = session.step().await.unwrap() {
+        if let Some(day) = step.settled_trading_day {
+            settled_days.push(day);
+        }
+    }
+
+    let result = session.finish().await.unwrap();
+    assert_eq!(settled_days, vec![NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()]);
+    assert_eq!(result.settlements.len(), 2);
+    assert_eq!(
+        result.settlements[0].trading_day,
+        NaiveDate::from_ymd_opt(2026, 4, 1).unwrap()
+    );
+    assert_eq!(
+        result.settlements[1].trading_day,
+        NaiveDate::from_ymd_opt(2026, 4, 2).unwrap()
+    );
 }
