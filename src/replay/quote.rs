@@ -195,6 +195,8 @@ fn merge_metadata(current: &InstrumentMetadata, incoming: &InstrumentMetadata) -
         instrument_id: pick_string(&incoming.instrument_id, &current.instrument_id),
         class: pick_string(&incoming.class, &current.class),
         underlying_symbol: pick_string(&incoming.underlying_symbol, &current.underlying_symbol),
+        option_class: pick_string(&incoming.option_class, &current.option_class),
+        strike_price: pick_f64(incoming.strike_price, current.strike_price),
         trading_time: pick_value(&incoming.trading_time, &current.trading_time),
         price_tick: pick_f64(incoming.price_tick, current.price_tick),
         volume_multiple: pick_i32(incoming.volume_multiple, current.volume_multiple),

@@ -392,6 +392,12 @@ fn parse_instrument_metadata(symbol: &str, value: &Value) -> InstrumentMetadata 
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        option_class: value
+            .get("option_class")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        strike_price: value.get("strike_price").and_then(Value::as_f64).unwrap_or_default(),
         trading_time: value.get("trading_time").cloned().unwrap_or(Value::Null),
         price_tick: value.get("price_tick").and_then(Value::as_f64).unwrap_or_default(),
         volume_multiple: value.get("volume_multiple").and_then(Value::as_i64).unwrap_or_default() as i32,

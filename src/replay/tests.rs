@@ -4,7 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::runtime::TargetPosTask;
-use crate::types::{DIRECTION_BUY, InsertOrderRequest, Kline, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT, Tick};
+use crate::types::{
+    DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Kline, OFFSET_CLOSE, OFFSET_OPEN, PRICE_TYPE_ANY,
+    PRICE_TYPE_LIMIT, Tick,
+};
 use async_trait::async_trait;
 use tokio::time::timeout;
 
@@ -381,6 +384,81 @@ async fn replay_runtime_market_adapter_exposes_cst_datetime_and_trading_time() {
             "night": []
         })
     );
+}
+
+#[tokio::test]
+async fn replay_session_option_quote_bootstraps_underlying_for_runtime_orders() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([
+            (underlying.to_string(), future_metadata(underlying)),
+            (option.to_string(), option_metadata(option, underlying, "CALL", 100.0)),
+        ]),
+        klines: HashMap::from([
+            (
+                (underlying.to_string(), 60_000_000_000),
+                vec![Kline {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                    open: 100.0,
+                    high: 100.0,
+                    low: 100.0,
+                    close: 100.0,
+                    open_oi: 10,
+                    close_oi: 10,
+                    volume: 1,
+                    epoch: None,
+                }],
+            ),
+            (
+                (option.to_string(), 60_000_000_000),
+                vec![Kline {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                    open: 2.0,
+                    high: 2.0,
+                    low: 2.0,
+                    close: 2.0,
+                    open_oi: 10,
+                    close_oi: 10,
+                    volume: 1,
+                    epoch: None,
+                }],
+            ),
+        ]),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _quote = session.quote(option).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+
+    let order_id = account
+        .insert_order(&limit_order(option, DIRECTION_SELL, OFFSET_OPEN, 1.9, 1))
+        .await
+        .unwrap();
+    let order = runtime.execution().order("TQSIM", &order_id).await.unwrap();
+    let position = runtime.execution().position("TQSIM", option).await.unwrap();
+
+    assert_eq!(order.status, "FINISHED");
+    assert_eq!(order.volume_left, 0);
+    assert_eq!(position.volume_short, 1);
 }
 
 #[test]
@@ -976,6 +1054,19 @@ fn limit_buy(symbol: &str, price: f64, volume: i64) -> InsertOrderRequest {
     }
 }
 
+fn limit_order(symbol: &str, direction: &str, offset: &str, price: f64, volume: i64) -> InsertOrderRequest {
+    InsertOrderRequest {
+        symbol: symbol.to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: direction.to_string(),
+        offset: offset.to_string(),
+        price_type: PRICE_TYPE_LIMIT.to_string(),
+        limit_price: price,
+        volume,
+    }
+}
+
 fn market_buy(symbol: &str, volume: i64) -> InsertOrderRequest {
     InsertOrderRequest {
         symbol: symbol.to_string(),
@@ -1011,6 +1102,29 @@ fn future_metadata_with_trading_time(symbol: &str, trading_time: serde_json::Val
     }
 }
 
+fn option_metadata(symbol: &str, underlying_symbol: &str, option_class: &str, strike_price: f64) -> InstrumentMetadata {
+    let (exchange_id, instrument_id) = symbol.split_once('.').unwrap();
+    InstrumentMetadata {
+        symbol: symbol.to_string(),
+        exchange_id: exchange_id.to_string(),
+        instrument_id: instrument_id.to_string(),
+        class: "OPTION".to_string(),
+        underlying_symbol: underlying_symbol.to_string(),
+        option_class: option_class.to_string(),
+        strike_price,
+        trading_time: serde_json::json!({
+            "day": [["09:00:00", "15:00:00"]],
+            "night": []
+        }),
+        price_tick: 0.1,
+        volume_multiple: 100,
+        commission: 10.0,
+        open_min_market_order_volume: 1,
+        open_min_limit_order_volume: 1,
+        ..InstrumentMetadata::default()
+    }
+}
+
 fn future_quote(symbol: &str, datetime_nanos: i64, last_price: f64, ask_price1: f64, bid_price1: f64) -> ReplayQuote {
     ReplayQuote {
         symbol: symbol.to_string(),
@@ -1021,6 +1135,24 @@ fn future_quote(symbol: &str, datetime_nanos: i64, last_price: f64, ask_price1: 
         bid_price1,
         bid_volume1: 1,
         ..ReplayQuote::default()
+    }
+}
+
+fn option_quote(symbol: &str, datetime_nanos: i64, last_price: f64, ask_price1: f64, bid_price1: f64) -> ReplayQuote {
+    ReplayQuote {
+        symbol: symbol.to_string(),
+        datetime_nanos,
+        last_price,
+        ask_price1,
+        ask_volume1: 10,
+        bid_price1,
+        bid_volume1: 10,
+        highest: last_price,
+        lowest: last_price,
+        average: last_price,
+        volume: 10,
+        amount: last_price * 1000.0,
+        open_interest: 100,
     }
 }
 
@@ -1281,6 +1413,494 @@ fn sim_broker_marks_futures_account_to_market_and_charges_commission() {
     assert_close(position.float_profit, 20.0);
     assert_close(position.position_profit, 20.0);
     assert_close(position.last_price, 12.0);
+}
+
+#[test]
+fn sim_broker_marks_long_option_with_premium_and_market_value() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.0, 1.9)],
+        )
+        .unwrap();
+
+    let order_id = broker.insert_order("TQSIM", &limit_buy(option, 2.0, 1)).unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[
+                option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.0, 1.9),
+                option_quote(option, shanghai_nanos(2026, 4, 9, 9, 2, 0), 2.5, 2.6, 2.5),
+            ],
+        )
+        .unwrap();
+
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    let position = broker.position("TQSIM", option).unwrap();
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+
+    assert_eq!(order.status, "FINISHED");
+    assert_eq!(order.volume_left, 0);
+    assert_eq!(result.trades.len(), 1);
+    assert_close(result.trades[0].commission, 10.0);
+    assert_close(account.commission, 10.0);
+    assert_close(account.premium, -200.0);
+    assert_close(account.margin, 0.0);
+    assert_close(account.market_value, 250.0);
+    assert_close(account.float_profit, 50.0);
+    assert_close(account.position_profit, 0.0);
+    assert_close(account.balance, 10_000_040.0);
+    assert_close(account.available, 9_999_790.0);
+    assert_eq!(position.volume_long, 1);
+    assert_eq!(position.volume_short, 0);
+    assert_close(position.market_value_long, 250.0);
+    assert_close(position.market_value, 250.0);
+    assert_close(position.float_profit, 50.0);
+    assert_close(position.position_profit, 0.0);
+    assert_close(position.margin, 0.0);
+}
+
+#[test]
+fn sim_broker_reprices_short_option_margin_when_underlying_moves() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.1, 2.0)],
+        )
+        .unwrap();
+
+    let order_id = broker
+        .insert_order("TQSIM", &limit_order(option, DIRECTION_SELL, OFFSET_OPEN, 2.0, 1))
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.1, 2.0)],
+        )
+        .unwrap();
+
+    let filled = broker.order("TQSIM", &order_id).unwrap();
+    assert_eq!(filled.status, "FINISHED");
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 2, 0),
+                105.0,
+                105.5,
+                104.5,
+            )],
+        )
+        .unwrap();
+
+    let position = broker.position("TQSIM", option).unwrap();
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+
+    assert_close(account.commission, 10.0);
+    assert_close(account.premium, 200.0);
+    assert_close(account.market_value, -200.0);
+    assert_close(account.position_profit, 0.0);
+    assert_close(account.margin, 1_460.0);
+    assert_close(account.balance, 9_999_990.0);
+    assert_close(account.available, 9_998_730.0);
+    assert_eq!(position.volume_short, 1);
+    assert_close(position.market_value_short, -200.0);
+    assert_close(position.market_value, -200.0);
+    assert_close(position.margin_short, 1_460.0);
+    assert_close(position.margin, 1_460.0);
+    assert_close(position.float_profit, 0.0);
+    assert_close(position.position_profit, 0.0);
+}
+
+#[test]
+fn sim_broker_option_close_realizes_pnl_through_premium_not_close_profit() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.0, 1.9)],
+        )
+        .unwrap();
+
+    let open_order = broker.insert_order("TQSIM", &limit_buy(option, 2.0, 1)).unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[
+                option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.0, 1.9),
+                option_quote(option, shanghai_nanos(2026, 4, 9, 9, 2, 0), 2.5, 2.6, 2.5),
+            ],
+        )
+        .unwrap();
+    assert_eq!(broker.order("TQSIM", &open_order).unwrap().status, "FINISHED");
+
+    let close_order = broker
+        .insert_order("TQSIM", &limit_order(option, DIRECTION_SELL, OFFSET_CLOSE, 2.5, 1))
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 2, 0), 2.5, 2.6, 2.5)],
+        )
+        .unwrap();
+
+    let close = broker.order("TQSIM", &close_order).unwrap();
+    let position = broker.position("TQSIM", option).unwrap();
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+
+    assert_eq!(close.status, "FINISHED");
+    assert_eq!(result.trades.len(), 2);
+    assert_close(account.close_profit, 0.0);
+    assert_close(account.premium, 50.0);
+    assert_close(account.market_value, 0.0);
+    assert_close(account.float_profit, 0.0);
+    assert_close(account.position_profit, 0.0);
+    assert_close(account.commission, 20.0);
+    assert_close(account.balance, 10_000_030.0);
+    assert_close(account.available, 10_000_030.0);
+    assert_eq!(position.volume_long, 0);
+    assert_close(position.market_value, 0.0);
+    assert_close(position.float_profit, 0.0);
+    assert_close(position.position_profit, 0.0);
+}
+
+#[test]
+fn sim_broker_short_put_margin_matches_python_formula() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605P100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "PUT", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                95.0,
+                95.5,
+                94.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 3.0, 3.1, 3.0)],
+        )
+        .unwrap();
+
+    let order_id = broker
+        .insert_order("TQSIM", &limit_order(option, DIRECTION_SELL, OFFSET_OPEN, 3.0, 1))
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 3.0, 3.1, 3.0)],
+        )
+        .unwrap();
+
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    let position = broker.position("TQSIM", option).unwrap();
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+
+    assert_eq!(order.status, "FINISHED");
+    assert_close(account.margin, 1_440.0);
+    assert_close(account.market_value, -300.0);
+    assert_close(account.premium, 300.0);
+    assert_close(account.balance, 9_999_990.0);
+    assert_close(account.available, 9_998_850.0);
+    assert_close(position.margin_short, 1_440.0);
+    assert_close(position.market_value_short, -300.0);
+}
+
+#[test]
+fn sim_broker_option_settlement_rolls_market_value_into_pre_balance() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.0, 1.9)],
+        )
+        .unwrap();
+
+    let open_order = broker.insert_order("TQSIM", &limit_buy(option, 2.0, 1)).unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[
+                option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.0, 1.9),
+                option_quote(option, shanghai_nanos(2026, 4, 9, 9, 2, 0), 2.5, 2.6, 2.5),
+            ],
+        )
+        .unwrap();
+    assert_eq!(broker.order("TQSIM", &open_order).unwrap().status, "FINISHED");
+
+    let settlement = broker
+        .settle_day(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_close(settlement.account.balance, 10_000_040.0);
+    assert_close(settlement.account.market_value, 250.0);
+    assert_close(settlement.account.pre_balance, 10_000_000.0);
+    assert_close(settlement.account.premium, -200.0);
+
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+    let position = broker.position("TQSIM", option).unwrap();
+
+    assert_close(account.pre_balance, 9_999_790.0);
+    assert_close(account.static_balance, 9_999_790.0);
+    assert_close(account.balance, 10_000_040.0);
+    assert_close(account.available, 9_999_790.0);
+    assert_close(account.market_value, 250.0);
+    assert_close(account.premium, 0.0);
+    assert_close(account.commission, 0.0);
+    assert_close(position.position_price_long, 2.5);
+    assert_close(position.position_cost_long, 250.0);
+    assert_close(position.market_value_long, 250.0);
+    assert_close(position.position_profit, 0.0);
+}
+
+#[test]
+fn sim_broker_short_option_settlement_rolls_negative_market_value_into_pre_balance() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.1, 2.0)],
+        )
+        .unwrap();
+
+    let open_order = broker
+        .insert_order("TQSIM", &limit_order(option, DIRECTION_SELL, OFFSET_OPEN, 2.0, 1))
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.1, 2.0)],
+        )
+        .unwrap();
+    assert_eq!(broker.order("TQSIM", &open_order).unwrap().status, "FINISHED");
+
+    let settlement = broker
+        .settle_day(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap())
+        .unwrap()
+        .unwrap();
+    assert_close(settlement.account.balance, 9_999_990.0);
+    assert_close(settlement.account.market_value, -200.0);
+    assert_close(settlement.account.pre_balance, 10_000_000.0);
+    assert_close(settlement.account.premium, 200.0);
+
+    let result = broker.finish().unwrap();
+    let account = &result.final_accounts[0];
+    let position = broker.position("TQSIM", option).unwrap();
+
+    assert_close(account.pre_balance, 10_000_190.0);
+    assert_close(account.static_balance, 10_000_190.0);
+    assert_close(account.balance, 9_999_990.0);
+    assert_close(account.available, 9_998_790.0);
+    assert_close(account.market_value, -200.0);
+    assert_close(account.margin, 1_400.0);
+    assert_close(account.premium, 0.0);
+    assert_close(account.commission, 0.0);
+    assert_close(position.position_price_short, 2.0);
+    assert_close(position.position_cost_short, 200.0);
+    assert_close(position.market_value_short, -200.0);
+    assert_close(position.margin_short, 1_400.0);
+    assert_close(position.position_profit, 0.0);
+}
+
+#[test]
+fn sim_broker_freezes_and_releases_long_option_premium_on_open_order() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.5, 1.9)],
+        )
+        .unwrap();
+
+    let order_id = broker
+        .insert_order("TQSIM", &limit_order(option, DIRECTION_BUY, OFFSET_OPEN, 2.0, 1))
+        .unwrap();
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    let account = &broker.finish().unwrap().final_accounts[0];
+
+    assert_eq!(order.status, "ALIVE");
+    assert_close(order.frozen_margin, 0.0);
+    assert_close(order.frozen_premium, 200.0);
+    assert_close(account.frozen_margin, 0.0);
+    assert_close(account.frozen_premium, 200.0);
+    assert_close(account.available, 9_999_800.0);
+
+    broker.cancel_order("TQSIM", &order_id).unwrap();
+    let cancelled = broker.order("TQSIM", &order_id).unwrap();
+    let account = &broker.finish().unwrap().final_accounts[0];
+    assert_eq!(cancelled.status, "FINISHED");
+    assert_close(cancelled.frozen_premium, 0.0);
+    assert_close(account.frozen_premium, 0.0);
+    assert_close(account.available, 10_000_000.0);
+}
+
+#[test]
+fn sim_broker_freezes_and_releases_short_option_margin_on_open_order() {
+    let underlying = "DCE.m2605";
+    let option = "DCE.m2605C100";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata(underlying));
+    broker.register_symbol(option_metadata(option, underlying, "CALL", 100.0));
+
+    broker
+        .apply_quote_path(
+            underlying,
+            &[future_quote(
+                underlying,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                100.0,
+                100.5,
+                99.5,
+            )],
+        )
+        .unwrap();
+    broker
+        .apply_quote_path(
+            option,
+            &[option_quote(option, shanghai_nanos(2026, 4, 9, 9, 1, 0), 2.0, 2.5, 1.9)],
+        )
+        .unwrap();
+
+    let order_id = broker
+        .insert_order("TQSIM", &limit_order(option, DIRECTION_SELL, OFFSET_OPEN, 2.0, 1))
+        .unwrap();
+    let order = broker.order("TQSIM", &order_id).unwrap();
+    let account = &broker.finish().unwrap().final_accounts[0];
+
+    assert_eq!(order.status, "ALIVE");
+    assert_close(order.frozen_margin, 1_400.0);
+    assert_close(order.frozen_premium, 0.0);
+    assert_close(account.frozen_margin, 1_400.0);
+    assert_close(account.frozen_premium, 0.0);
+    assert_close(account.available, 9_998_600.0);
+
+    broker.cancel_order("TQSIM", &order_id).unwrap();
+    let cancelled = broker.order("TQSIM", &order_id).unwrap();
+    let account = &broker.finish().unwrap().final_accounts[0];
+    assert_eq!(cancelled.status, "FINISHED");
+    assert_close(cancelled.frozen_margin, 0.0);
+    assert_close(account.frozen_margin, 0.0);
+    assert_close(account.available, 10_000_000.0);
 }
 
 #[test]

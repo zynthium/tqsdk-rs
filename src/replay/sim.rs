@@ -56,6 +56,7 @@ impl SimBroker {
             .cloned()
             .ok_or_else(|| TqError::TradeError(format!("replay symbol metadata not found: {symbol}")))?;
         let last_price = current_quote_last_price(&self.current_quotes, &symbol);
+        let current_quote = self.current_quotes.get(&symbol).cloned();
 
         self.ensure_position_exists(account_key, &symbol, last_price);
 
@@ -81,13 +82,14 @@ impl SimBroker {
             status: ORDER_STATUS_ALIVE.to_string(),
             volume_left: req.volume,
             frozen_margin: 0.0,
+            frozen_premium: 0.0,
             last_msg: "报单成功".to_string(),
             epoch: None,
         };
 
         validate_order_support(&mut order, &metadata);
         if order.status == ORDER_STATUS_ALIVE
-            && let Some(current_quote) = self.current_quotes.get(&symbol)
+            && let Some(current_quote) = current_quote.as_ref()
             && !metadata.trading_time.is_null()
             && !is_in_trading_time(&metadata.trading_time, current_quote.datetime_nanos)?
         {
@@ -101,7 +103,13 @@ impl SimBroker {
                     .get(account_key)
                     .ok_or_else(|| TqError::TradeError(format!("unknown replay account: {account_key}")))?
                     .available;
-                freeze_open_order(&mut order, &metadata, available);
+                freeze_open_order(
+                    &mut order,
+                    &metadata,
+                    current_quote.as_ref(),
+                    current_underlying_last_price(&metadata, &self.current_quotes),
+                    available,
+                );
             } else {
                 let position = self.position_mut(account_key, &symbol, last_price);
                 freeze_close_order(position, &mut order);
@@ -187,6 +195,7 @@ impl SimBroker {
             }
             let snapshot = order.clone();
             order.frozen_margin = 0.0;
+            order.frozen_premium = 0.0;
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.last_msg = "已撤单".to_string();
             snapshot
@@ -240,6 +249,7 @@ impl SimBroker {
                     .ok_or_else(|| TqError::OrderNotFound(order_id.clone()))?;
                 let snapshot = order.clone();
                 order.frozen_margin = 0.0;
+                order.frozen_premium = 0.0;
                 order.status = ORDER_STATUS_FINISHED.to_string();
                 order.last_msg = "交易日结束，自动撤销当日有效的委托单（GFD）".to_string();
                 snapshot
@@ -314,6 +324,13 @@ impl SimBroker {
             .or_insert_with(|| default_position(account_key, symbol, last_price))
     }
 
+    fn symbol_depends_on_underlying(&self, symbol: &str, underlying_symbol: &str) -> bool {
+        self.metadata
+            .get(symbol)
+            .map(|metadata| metadata.underlying_symbol == underlying_symbol)
+            .unwrap_or(false)
+    }
+
     fn match_order(
         &self,
         order_id: &str,
@@ -351,6 +368,7 @@ impl SimBroker {
                 .ok_or_else(|| TqError::OrderNotFound(order_id.to_string()))?;
             let snapshot = order.clone();
             order.frozen_margin = 0.0;
+            order.frozen_premium = 0.0;
             order.volume_left = 0;
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.last_msg = "全部成交".to_string();
@@ -362,14 +380,15 @@ impl SimBroker {
         self.ensure_position_exists(&order.user_id, &symbol, last_price);
 
         let volume_multiple = metadata.volume_multiple as f64;
-        let commission = order.volume_left as f64 * metadata.commission.max(0.0);
+        let commission = order.volume_left as f64 * commission_per_lot(metadata);
+        let premium = premium_delta(&order, fill_price, volume_multiple, metadata);
         let close_profit = {
             let position = self.position_mut(&order.user_id, &symbol, last_price);
             if order.offset == OFFSET_OPEN {
                 apply_open_fill_raw(position, &order, fill_price, volume_multiple);
                 0.0
             } else {
-                let close_profit = close_profit(position, &order, fill_price, volume_multiple);
+                let close_profit = close_profit(position, &order, fill_price, volume_multiple, metadata);
                 release_close_order_resources(position, &order);
                 apply_close_fill_raw(position, &order, volume_multiple);
                 close_profit
@@ -382,6 +401,7 @@ impl SimBroker {
             .ok_or_else(|| TqError::TradeError(format!("unknown replay account: {}", order.user_id)))?;
         account.close_profit += close_profit;
         account.commission += commission;
+        account.premium += premium;
 
         self.next_trade_seq += 1;
         let trade = Trade {
@@ -419,6 +439,7 @@ impl SimBroker {
                 .ok_or_else(|| TqError::OrderNotFound(order_id.to_string()))?;
             let snapshot = order.clone();
             order.frozen_margin = 0.0;
+            order.frozen_premium = 0.0;
             order.status = ORDER_STATUS_FINISHED.to_string();
             order.last_msg = last_msg.to_string();
             snapshot
@@ -445,7 +466,9 @@ impl SimBroker {
         let position_keys = self
             .positions
             .keys()
-            .filter(|(_, position_symbol)| position_symbol == symbol)
+            .filter(|(_, position_symbol)| {
+                position_symbol == symbol || self.symbol_depends_on_underlying(position_symbol, symbol)
+            })
             .cloned()
             .collect::<Vec<_>>();
 
@@ -474,17 +497,22 @@ impl SimBroker {
             .cloned()
             .ok_or_else(|| TqError::TradeError(format!("replay symbol metadata not found: {symbol}")))?;
         let key = (account_key.to_string(), symbol.to_string());
-        let position = self
-            .positions
-            .get_mut(&key)
-            .ok_or_else(|| TqError::TradeError(format!("missing replay position for {account_key}:{symbol}")))?;
         let last_price = self
             .current_quotes
             .get(symbol)
             .map(|quote| quote.last_price)
-            .unwrap_or(position.last_price);
-        recompute_position_metrics(position, &metadata, last_price);
-        Ok(())
+            .unwrap_or_else(|| {
+                self.positions
+                    .get(&key)
+                    .map(|position| position.last_price)
+                    .unwrap_or(0.0)
+            });
+        let underlying_last_price = current_underlying_last_price(&metadata, &self.current_quotes);
+        let position = self
+            .positions
+            .get_mut(&key)
+            .ok_or_else(|| TqError::TradeError(format!("missing replay position for {account_key}:{symbol}")))?;
+        recompute_position_metrics(position, &metadata, last_price, underlying_last_price)
     }
 
     fn recompute_account(&mut self, account_key: &str) -> Result<()> {
@@ -508,6 +536,14 @@ impl SimBroker {
             })
             .map(|order| order.frozen_margin)
             .sum::<f64>();
+        let frozen_premium = self
+            .orders
+            .values()
+            .filter(|order| {
+                order.user_id == account_key && order.status == ORDER_STATUS_ALIVE && order.offset == OFFSET_OPEN
+            })
+            .map(|order| order.frozen_premium)
+            .sum::<f64>();
 
         let account = self
             .accounts
@@ -518,7 +554,7 @@ impl SimBroker {
         account.margin = position_totals.margin;
         account.market_value = position_totals.market_value;
         account.frozen_margin = frozen_margin;
-        account.frozen_premium = 0.0;
+        account.frozen_premium = frozen_premium;
         account.balance = account.static_balance + account.close_profit - account.commission
             + account.premium
             + account.position_profit
@@ -591,25 +627,68 @@ enum MatchOutcome {
 }
 
 fn validate_order_support(order: &mut Order, metadata: &InstrumentMetadata) {
-    let supported = metadata.volume_multiple > 0
-        && metadata.margin.is_finite()
-        && metadata.commission.is_finite()
-        && !metadata.class.ends_with("OPTION");
+    let supported = if is_option(metadata) {
+        metadata.volume_multiple > 0
+            && !metadata.underlying_symbol.is_empty()
+            && matches!(metadata.option_class.as_str(), "CALL" | "PUT")
+            && metadata.strike_price.is_finite()
+    } else {
+        metadata.volume_multiple > 0 && metadata.margin.is_finite() && metadata.commission.is_finite()
+    };
     if !supported {
         order.status = ORDER_STATUS_FINISHED.to_string();
-        order.last_msg = "不支持的合约类型，ReplaySession 目前只支持期货回放交易".to_string();
+        order.last_msg = "不支持的合约类型，ReplaySession 目前只支持期货和商品期权回放交易".to_string();
     }
 }
 
-fn freeze_open_order(order: &mut Order, metadata: &InstrumentMetadata, available: f64) {
-    let frozen_margin = order.volume_orign as f64 * metadata.margin.max(0.0);
-    if frozen_margin > available {
+fn freeze_open_order(
+    order: &mut Order,
+    metadata: &InstrumentMetadata,
+    current_quote: Option<&ReplayQuote>,
+    underlying_last_price: f64,
+    available: f64,
+) {
+    let (frozen_margin, frozen_premium) = if is_option(metadata) {
+        if order.direction == DIRECTION_SELL {
+            let Some(current_quote) = current_quote else {
+                order.status = ORDER_STATUS_FINISHED.to_string();
+                order.last_msg = "下单失败, 未收到期权行情".to_string();
+                return;
+            };
+            let Some(margin_per_lot) = option_margin_per_lot(metadata, current_quote.last_price, underlying_last_price)
+            else {
+                order.status = ORDER_STATUS_FINISHED.to_string();
+                order.last_msg = "下单失败, 未收到标的行情".to_string();
+                return;
+            };
+            (order.volume_orign as f64 * margin_per_lot, 0.0)
+        } else {
+            let fill_ref_price = if order.price_type == PRICE_TYPE_ANY {
+                current_quote.map(|quote| quote.last_price).unwrap_or(f64::NAN)
+            } else {
+                order.limit_price
+            };
+            if !fill_ref_price.is_finite() {
+                order.status = ORDER_STATUS_FINISHED.to_string();
+                order.last_msg = "下单失败, 未收到期权行情".to_string();
+                return;
+            }
+            (
+                0.0,
+                order.volume_orign as f64 * metadata.volume_multiple as f64 * fill_ref_price.max(0.0),
+            )
+        }
+    } else {
+        (order.volume_orign as f64 * metadata.margin.max(0.0), 0.0)
+    };
+    if frozen_margin + frozen_premium > available {
         order.status = ORDER_STATUS_FINISHED.to_string();
         order.last_msg = "开仓资金不足".to_string();
         return;
     }
 
     order.frozen_margin = frozen_margin;
+    order.frozen_premium = frozen_premium;
 }
 
 fn freeze_close_order(position: &mut Position, order: &mut Order) {
@@ -773,9 +852,15 @@ fn apply_close_fill_raw(position: &mut Position, order: &Order, volume_multiple:
     refresh_position_volume_fields(position);
 }
 
-fn recompute_position_metrics(position: &mut Position, metadata: &InstrumentMetadata, last_price: f64) {
+fn recompute_position_metrics(
+    position: &mut Position,
+    metadata: &InstrumentMetadata,
+    last_price: f64,
+    underlying_last_price: f64,
+) -> Result<()> {
     let volume_multiple = metadata.volume_multiple as f64;
-    let margin_per_lot = metadata.margin.max(0.0);
+    let future_margin_per_lot = metadata.margin.max(0.0);
+    let is_option = is_option(metadata);
 
     position.last_price = last_price;
     refresh_position_volume_fields(position);
@@ -785,9 +870,16 @@ fn recompute_position_metrics(position: &mut Position, metadata: &InstrumentMeta
         position.position_price_long = position.position_cost_long / position.volume_long as f64 / volume_multiple;
         position.float_profit_long =
             (last_price - position.open_price_long) * position.volume_long as f64 * volume_multiple;
-        position.position_profit_long =
-            (last_price - position.position_price_long) * position.volume_long as f64 * volume_multiple;
-        position.margin_long = position.volume_long as f64 * margin_per_lot;
+        if is_option {
+            position.position_profit_long = 0.0;
+            position.margin_long = 0.0;
+            position.market_value_long = last_price * position.volume_long as f64 * volume_multiple;
+        } else {
+            position.position_profit_long =
+                (last_price - position.position_price_long) * position.volume_long as f64 * volume_multiple;
+            position.margin_long = position.volume_long as f64 * future_margin_per_lot;
+            position.market_value_long = 0.0;
+        }
     } else {
         position.open_price_long = 0.0;
         position.position_price_long = 0.0;
@@ -796,6 +888,7 @@ fn recompute_position_metrics(position: &mut Position, metadata: &InstrumentMeta
         position.float_profit_long = 0.0;
         position.position_profit_long = 0.0;
         position.margin_long = 0.0;
+        position.market_value_long = 0.0;
     }
 
     if position.volume_short > 0 {
@@ -803,9 +896,23 @@ fn recompute_position_metrics(position: &mut Position, metadata: &InstrumentMeta
         position.position_price_short = position.position_cost_short / position.volume_short as f64 / volume_multiple;
         position.float_profit_short =
             (position.open_price_short - last_price) * position.volume_short as f64 * volume_multiple;
-        position.position_profit_short =
-            (position.position_price_short - last_price) * position.volume_short as f64 * volume_multiple;
-        position.margin_short = position.volume_short as f64 * margin_per_lot;
+        if is_option {
+            let margin_per_lot =
+                option_margin_per_lot(metadata, last_price, underlying_last_price).ok_or_else(|| {
+                    TqError::TradeError(format!(
+                        "missing underlying quote for option replay: {}",
+                        metadata.underlying_symbol
+                    ))
+                })?;
+            position.position_profit_short = 0.0;
+            position.margin_short = position.volume_short as f64 * margin_per_lot;
+            position.market_value_short = -last_price * position.volume_short as f64 * volume_multiple;
+        } else {
+            position.position_profit_short =
+                (position.position_price_short - last_price) * position.volume_short as f64 * volume_multiple;
+            position.margin_short = position.volume_short as f64 * future_margin_per_lot;
+            position.market_value_short = 0.0;
+        }
     } else {
         position.open_price_short = 0.0;
         position.position_price_short = 0.0;
@@ -814,17 +921,26 @@ fn recompute_position_metrics(position: &mut Position, metadata: &InstrumentMeta
         position.float_profit_short = 0.0;
         position.position_profit_short = 0.0;
         position.margin_short = 0.0;
+        position.market_value_short = 0.0;
     }
 
     position.float_profit = position.float_profit_long + position.float_profit_short;
     position.position_profit = position.position_profit_long + position.position_profit_short;
     position.margin = position.margin_long + position.margin_short;
-    position.market_value_long = 0.0;
-    position.market_value_short = 0.0;
-    position.market_value = 0.0;
+    position.market_value = position.market_value_long + position.market_value_short;
+    Ok(())
 }
 
-fn close_profit(position: &Position, order: &Order, fill_price: f64, volume_multiple: f64) -> f64 {
+fn close_profit(
+    position: &Position,
+    order: &Order,
+    fill_price: f64,
+    volume_multiple: f64,
+    metadata: &InstrumentMetadata,
+) -> f64 {
+    if is_option(metadata) {
+        return 0.0;
+    }
     let filled = order.volume_orign as f64;
     match order.direction.as_str() {
         DIRECTION_SELL => (fill_price - position.position_price_long) * filled * volume_multiple,
@@ -918,6 +1034,76 @@ fn ensure_account_owns_order(account_key: &str, order: &Order) -> Result<()> {
 
 fn current_quote_last_price(quotes: &HashMap<String, ReplayQuote>, symbol: &str) -> f64 {
     quotes.get(symbol).map(|quote| quote.last_price).unwrap_or(0.0)
+}
+
+fn current_underlying_last_price(metadata: &InstrumentMetadata, quotes: &HashMap<String, ReplayQuote>) -> f64 {
+    if metadata.underlying_symbol.is_empty() {
+        f64::NAN
+    } else {
+        quotes
+            .get(&metadata.underlying_symbol)
+            .map(|quote| quote.last_price)
+            .unwrap_or(f64::NAN)
+    }
+}
+
+fn is_option(metadata: &InstrumentMetadata) -> bool {
+    metadata.class.ends_with("OPTION")
+}
+
+fn commission_per_lot(metadata: &InstrumentMetadata) -> f64 {
+    if is_option(metadata) {
+        if metadata.commission.is_finite() && metadata.commission > 0.0 {
+            metadata.commission
+        } else {
+            10.0
+        }
+    } else {
+        metadata.commission.max(0.0)
+    }
+}
+
+fn premium_delta(order: &Order, fill_price: f64, volume_multiple: f64, metadata: &InstrumentMetadata) -> f64 {
+    if !is_option(metadata) {
+        return 0.0;
+    }
+    let premium = fill_price * order.volume_orign as f64 * volume_multiple;
+    if order.direction == DIRECTION_BUY {
+        -premium
+    } else {
+        premium
+    }
+}
+
+fn option_margin_per_lot(
+    metadata: &InstrumentMetadata,
+    option_last_price: f64,
+    underlying_last_price: f64,
+) -> Option<f64> {
+    if !is_option(metadata)
+        || !option_last_price.is_finite()
+        || !underlying_last_price.is_finite()
+        || !metadata.strike_price.is_finite()
+        || metadata.volume_multiple <= 0
+    {
+        return None;
+    }
+
+    let strike_price = metadata.strike_price;
+    let volume_multiple = metadata.volume_multiple as f64;
+    if metadata.option_class == "CALL" {
+        let out_value = (strike_price - underlying_last_price).max(0.0);
+        Some(
+            (option_last_price + (0.12 * underlying_last_price - out_value).max(0.07 * underlying_last_price))
+                * volume_multiple,
+        )
+    } else {
+        let out_value = (underlying_last_price - strike_price).max(0.0);
+        Some(
+            (option_last_price + (0.12 * underlying_last_price - out_value).max(0.07 * strike_price)).min(strike_price)
+                * volume_multiple,
+        )
+    }
 }
 
 const DAY_NANOS: i64 = 86_400_000_000_000;

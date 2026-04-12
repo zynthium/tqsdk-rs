@@ -1123,6 +1123,7 @@ fn make_order(order_id: &str, volume: i64, limit_price: f64, status: &str, volum
         status: status.to_string(),
         volume_left,
         frozen_margin: 0.0,
+        frozen_premium: 0.0,
         last_msg: String::new(),
         epoch: None,
     }

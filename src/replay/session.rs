@@ -63,6 +63,7 @@ impl ReplaySession {
 
     pub async fn quote(&mut self, symbol: &str) -> Result<ReplayQuoteHandle> {
         let metadata = self.ensure_symbol(symbol).await?;
+        self.ensure_option_underlying_quote_feed(&metadata).await?;
         self.ensure_kline_feed(
             symbol,
             IMPLICIT_QUOTE_DURATION,
@@ -78,6 +79,7 @@ impl ReplaySession {
 
     pub async fn kline(&mut self, symbol: &str, duration: Duration, width: usize) -> Result<ReplayKlineHandle> {
         let metadata = self.ensure_symbol(symbol).await?;
+        self.ensure_option_underlying_quote_feed(&metadata).await?;
         let duration_nanos = duration_nanos(duration)?;
         self.ensure_kline_feed(symbol, duration, duration_nanos, &metadata)
             .await?;
@@ -176,6 +178,21 @@ impl ReplaySession {
             execution.register_symbol(metadata.clone()).await;
         }
         Ok(metadata)
+    }
+
+    async fn ensure_option_underlying_quote_feed(&mut self, metadata: &InstrumentMetadata) -> Result<()> {
+        if !metadata.class.ends_with("OPTION") || metadata.underlying_symbol.is_empty() {
+            return Ok(());
+        }
+
+        let underlying_metadata = self.ensure_symbol(&metadata.underlying_symbol).await?;
+        self.ensure_kline_feed(
+            &metadata.underlying_symbol,
+            IMPLICIT_QUOTE_DURATION,
+            duration_nanos(IMPLICIT_QUOTE_DURATION)?,
+            &underlying_metadata,
+        )
+        .await
     }
 
     async fn ensure_kline_feed(

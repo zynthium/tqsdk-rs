@@ -193,6 +193,8 @@ pub struct Order {
     #[serde(default)]
     pub frozen_margin: f64,
     #[serde(default)]
+    pub frozen_premium: f64,
+    #[serde(default)]
     pub last_msg: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -229,6 +231,7 @@ impl PartialEq for Order {
             && self.status == other.status
             && self.volume_left == other.volume_left
             && self.frozen_margin == other.frozen_margin
+            && self.frozen_premium == other.frozen_premium
             && self.last_msg == other.last_msg
     }
 }

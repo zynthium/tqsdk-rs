@@ -49,6 +49,8 @@ pub struct InstrumentMetadata {
     pub instrument_id: String,
     pub class: String,
     pub underlying_symbol: String,
+    pub option_class: String,
+    pub strike_price: f64,
     pub trading_time: Value,
     pub price_tick: f64,
     pub volume_multiple: i32,

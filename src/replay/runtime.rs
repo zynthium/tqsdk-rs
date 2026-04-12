@@ -187,14 +187,29 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
     }
 
     async fn insert_order(&self, account_key: &str, req: &InsertOrderRequest) -> RuntimeResult<String> {
-        let order_id = self.state.broker.lock().await.insert_order(account_key, req)?;
-        if let Some(current_quote) = self.market.replay_quote(&req.symbol).await {
-            self.state
-                .broker
-                .lock()
-                .await
-                .apply_quote_path(req.symbol.as_str(), std::slice::from_ref(&current_quote))?;
-        }
+        let metadata = self.market.metadata_for(&req.symbol).await;
+        let current_quote = self.market.replay_quote(&req.symbol).await;
+        let underlying_quote = match metadata.as_ref() {
+            Some(metadata) if metadata.class.ends_with("OPTION") && !metadata.underlying_symbol.is_empty() => {
+                self.market.replay_quote(&metadata.underlying_symbol).await
+            }
+            _ => None,
+        };
+
+        let order_id = {
+            let mut broker = self.state.broker.lock().await;
+            if let (Some(metadata), Some(underlying_quote)) = (metadata.as_ref(), underlying_quote.as_ref()) {
+                broker.apply_quote_path(&metadata.underlying_symbol, std::slice::from_ref(underlying_quote))?;
+            }
+            if let Some(current_quote) = current_quote.as_ref() {
+                broker.apply_quote_path(req.symbol.as_str(), std::slice::from_ref(current_quote))?;
+            }
+            let order_id = broker.insert_order(account_key, req)?;
+            if let Some(current_quote) = current_quote.as_ref() {
+                broker.apply_quote_path(req.symbol.as_str(), std::slice::from_ref(current_quote))?;
+            }
+            order_id
+        };
         self.state.notify_update().await;
         Ok(order_id)
     }
@@ -254,6 +269,7 @@ fn build_quote(metadata: &InstrumentMetadata, replay_quote: &ReplayQuote) -> Quo
         class: metadata.class.clone(),
         exchange_id: metadata.exchange_id.clone(),
         underlying_symbol: metadata.underlying_symbol.clone(),
+        strike_price: metadata.strike_price,
         volume_multiple: metadata.volume_multiple,
         price_tick: metadata.price_tick,
         open_min_market_order_volume: metadata.open_min_market_order_volume,
