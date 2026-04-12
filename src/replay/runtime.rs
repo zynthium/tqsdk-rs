@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use chrono::{DateTime, FixedOffset, Utc};
 use serde_json::Value;
 use tokio::sync::{Mutex, RwLock, broadcast};
 
@@ -148,8 +149,13 @@ impl MarketAdapter for ReplayMarketAdapter {
         }
     }
 
-    async fn trading_time(&self, _symbol: &str) -> RuntimeResult<Option<Value>> {
-        Ok(None)
+    async fn trading_time(&self, symbol: &str) -> RuntimeResult<Option<Value>> {
+        Ok(self
+            .state
+            .metadata_for(symbol)
+            .await
+            .map(|metadata| metadata.trading_time)
+            .filter(|value| !value.is_null()))
     }
 }
 
@@ -229,7 +235,7 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
 fn build_quote(metadata: &InstrumentMetadata, replay_quote: &ReplayQuote) -> Quote {
     Quote {
         instrument_id: metadata.instrument_id.clone(),
-        datetime: replay_quote.datetime_nanos.to_string(),
+        datetime: format_quote_datetime(replay_quote.datetime_nanos),
         last_price: replay_quote.last_price,
         ask_price1: replay_quote.ask_price1,
         ask_volume1: replay_quote.ask_volume1,
@@ -254,4 +260,11 @@ fn build_quote(metadata: &InstrumentMetadata, replay_quote: &ReplayQuote) -> Quo
         open_min_limit_order_volume: metadata.open_min_limit_order_volume,
         ..Quote::default()
     }
+}
+
+fn format_quote_datetime(datetime_nanos: i64) -> String {
+    DateTime::<Utc>::from_timestamp_nanos(datetime_nanos)
+        .with_timezone(&FixedOffset::east_opt(8 * 3600).expect("CST offset must be valid"))
+        .format("%Y-%m-%d %H:%M:%S%.6f")
+        .to_string()
 }

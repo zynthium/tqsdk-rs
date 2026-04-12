@@ -195,6 +195,7 @@ fn merge_metadata(current: &InstrumentMetadata, incoming: &InstrumentMetadata) -
         instrument_id: pick_string(&incoming.instrument_id, &current.instrument_id),
         class: pick_string(&incoming.class, &current.class),
         underlying_symbol: pick_string(&incoming.underlying_symbol, &current.underlying_symbol),
+        trading_time: pick_value(&incoming.trading_time, &current.trading_time),
         price_tick: pick_f64(incoming.price_tick, current.price_tick),
         volume_multiple: pick_i32(incoming.volume_multiple, current.volume_multiple),
         margin: pick_f64(incoming.margin, current.margin),
@@ -275,4 +276,12 @@ fn pick_f64(incoming: f64, current: f64) -> f64 {
 
 fn pick_i32(incoming: i32, current: i32) -> i32 {
     if incoming == 0 { current } else { incoming }
+}
+
+fn pick_value(incoming: &serde_json::Value, current: &serde_json::Value) -> serde_json::Value {
+    if incoming.is_null() {
+        current.clone()
+    } else {
+        incoming.clone()
+    }
 }

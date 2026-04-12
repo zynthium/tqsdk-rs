@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::NaiveDate;
+use serde_json::Value;
 
 use crate::errors::{Result, TqError};
 use crate::types::{
@@ -85,6 +86,14 @@ impl SimBroker {
         };
 
         validate_order_support(&mut order, &metadata);
+        if order.status == ORDER_STATUS_ALIVE
+            && let Some(current_quote) = self.current_quotes.get(&symbol)
+            && !metadata.trading_time.is_null()
+            && !is_in_trading_time(&metadata.trading_time, current_quote.datetime_nanos)?
+        {
+            order.status = ORDER_STATUS_FINISHED.to_string();
+            order.last_msg = "下单失败, 不在可交易时间段内".to_string();
+        }
         if order.status == ORDER_STATUS_ALIVE {
             if order.offset == OFFSET_OPEN {
                 let available = self
@@ -909,6 +918,97 @@ fn ensure_account_owns_order(account_key: &str, order: &Order) -> Result<()> {
 
 fn current_quote_last_price(quotes: &HashMap<String, ReplayQuote>, symbol: &str) -> f64 {
     quotes.get(symbol).map(|quote| quote.last_price).unwrap_or(0.0)
+}
+
+const DAY_NANOS: i64 = 86_400_000_000_000;
+const EIGHTEEN_HOURS_NANOS: i64 = 64_800_000_000_000;
+const BEGIN_MARK_NANOS: i64 = 631_123_200_000_000_000;
+
+fn is_in_trading_time(trading_time: &Value, current_timestamp: i64) -> Result<bool> {
+    for (start, end) in trading_ranges_for_timestamp(current_timestamp, trading_time)? {
+        if start <= current_timestamp && current_timestamp < end {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn trading_ranges_for_timestamp(current_timestamp: i64, trading_time: &Value) -> Result<Vec<(i64, i64)>> {
+    let current_trading_day = trading_day_from_timestamp(current_timestamp);
+    let last_trading_day = trading_day_from_timestamp(trading_day_start_time(current_trading_day) - 1);
+
+    let mut ranges = parse_period_ranges(last_trading_day, trading_time.get("night"))?;
+    ranges.extend(parse_period_ranges(current_trading_day, trading_time.get("day"))?);
+    Ok(ranges)
+}
+
+fn trading_day_start_time(trading_day: i64) -> i64 {
+    let mut start_time = trading_day - 21_600_000_000_000;
+    let week_day = (start_time - BEGIN_MARK_NANOS) / DAY_NANOS % 7;
+    if week_day >= 5 {
+        start_time -= DAY_NANOS * (week_day - 4);
+    }
+    start_time
+}
+
+fn trading_day_from_timestamp(timestamp: i64) -> i64 {
+    let mut days = (timestamp - BEGIN_MARK_NANOS) / DAY_NANOS;
+    if (timestamp - BEGIN_MARK_NANOS) % DAY_NANOS >= EIGHTEEN_HOURS_NANOS {
+        days += 1;
+    }
+    let week_day = days % 7;
+    if week_day >= 5 {
+        days += 7 - week_day;
+    }
+    BEGIN_MARK_NANOS + days * DAY_NANOS
+}
+
+fn parse_period_ranges(base_day_timestamp: i64, raw_periods: Option<&Value>) -> Result<Vec<(i64, i64)>> {
+    let Some(periods) = raw_periods.and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+
+    let mut ranges = Vec::with_capacity(periods.len());
+    for period in periods {
+        let pair = period
+            .as_array()
+            .filter(|pair| pair.len() == 2)
+            .ok_or_else(|| TqError::TradeError("invalid replay trading_time period".to_string()))?;
+        let start = pair[0]
+            .as_str()
+            .ok_or_else(|| TqError::TradeError("invalid replay trading_time period start".to_string()))?;
+        let end = pair[1]
+            .as_str()
+            .ok_or_else(|| TqError::TradeError("invalid replay trading_time period end".to_string()))?;
+        ranges.push((
+            base_day_timestamp + parse_hms_nanos(start)?,
+            base_day_timestamp + parse_hms_nanos(end)?,
+        ));
+    }
+    Ok(ranges)
+}
+
+fn parse_hms_nanos(raw: &str) -> Result<i64> {
+    let mut parts = raw.split(':');
+    let hour = parts
+        .next()
+        .ok_or_else(|| TqError::TradeError("invalid replay trading_time hh:mm:ss".to_string()))?
+        .parse::<i64>()
+        .map_err(|_| TqError::TradeError("invalid replay trading_time hour".to_string()))?;
+    let minute = parts
+        .next()
+        .ok_or_else(|| TqError::TradeError("invalid replay trading_time hh:mm:ss".to_string()))?
+        .parse::<i64>()
+        .map_err(|_| TqError::TradeError("invalid replay trading_time minute".to_string()))?;
+    let second = parts
+        .next()
+        .ok_or_else(|| TqError::TradeError("invalid replay trading_time hh:mm:ss".to_string()))?
+        .parse::<i64>()
+        .map_err(|_| TqError::TradeError("invalid replay trading_time second".to_string()))?;
+    if parts.next().is_some() {
+        return Err(TqError::TradeError("invalid replay trading_time hh:mm:ss".to_string()));
+    }
+    Ok((hour * 3600 + minute * 60 + second) * 1_000_000_000)
 }
 
 fn default_position(account_key: &str, symbol: &str, last_price: f64) -> Position {

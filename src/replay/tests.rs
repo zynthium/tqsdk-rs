@@ -313,6 +313,76 @@ async fn replay_session_quote_uses_implicit_minute_feed() {
     assert_eq!(snapshot.ask_price1, 11.0);
 }
 
+#[tokio::test]
+async fn replay_runtime_market_adapter_exposes_cst_datetime_and_trading_time() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(
+            symbol.to_string(),
+            future_metadata_with_trading_time(
+                symbol,
+                serde_json::json!({
+                    "day": [["09:00:00", "15:00:00"]],
+                    "night": []
+                }),
+            ),
+        )]),
+        klines: HashMap::from([(
+            (symbol.to_string(), 60_000_000_000),
+            vec![Kline {
+                id: 1,
+                datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                open: 10.0,
+                high: 12.0,
+                low: 9.0,
+                close: 11.0,
+                open_oi: 10,
+                close_oi: 11,
+                volume: 5,
+                epoch: None,
+            }],
+        )]),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            chrono::FixedOffset::east_opt(8 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc),
+            chrono::FixedOffset::east_opt(8 * 3600)
+                .unwrap()
+                .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    let _quote = session.quote(symbol).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    session.step().await.unwrap().unwrap();
+
+    let market = runtime.account("TQSIM").unwrap().runtime().market();
+    let quote = market.latest_quote(symbol).await.unwrap();
+    let trading_time = market.trading_time(symbol).await.unwrap().unwrap();
+
+    assert_eq!(quote.datetime, "2026-04-09 09:01:00.000000");
+    assert_eq!(
+        trading_time,
+        serde_json::json!({
+            "day": [["09:00:00", "15:00:00"]],
+            "night": []
+        })
+    );
+}
+
 #[test]
 fn replay_config_rejects_inverted_range() {
     let start_dt = DateTime::<Utc>::from_timestamp(1_700_000_100, 0).unwrap();
@@ -934,6 +1004,13 @@ fn future_metadata(symbol: &str) -> InstrumentMetadata {
     }
 }
 
+fn future_metadata_with_trading_time(symbol: &str, trading_time: serde_json::Value) -> InstrumentMetadata {
+    InstrumentMetadata {
+        trading_time,
+        ..future_metadata(symbol)
+    }
+}
+
 fn future_quote(symbol: &str, datetime_nanos: i64, last_price: f64, ask_price1: f64, bid_price1: f64) -> ReplayQuote {
     ReplayQuote {
         symbol: symbol.to_string(),
@@ -1204,6 +1281,68 @@ fn sim_broker_marks_futures_account_to_market_and_charges_commission() {
     assert_close(position.float_profit, 20.0);
     assert_close(position.position_profit, 20.0);
     assert_close(position.last_price, 12.0);
+}
+
+#[test]
+fn sim_broker_rejects_order_outside_trading_time() {
+    let symbol = "SHFE.rb2605";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata_with_trading_time(
+        symbol,
+        serde_json::json!({
+            "day": [["09:00:00", "15:00:00"]],
+            "night": []
+        }),
+    ));
+
+    broker
+        .apply_quote_path(
+            symbol,
+            &[future_quote(
+                symbol,
+                shanghai_nanos(2026, 4, 9, 8, 59, 0),
+                10.0,
+                10.5,
+                9.5,
+            )],
+        )
+        .unwrap();
+    let order_id = broker.insert_order("TQSIM", &limit_buy(symbol, 11.0, 2)).unwrap();
+    let order = broker.order("TQSIM", &order_id).unwrap();
+
+    assert_eq!(order.status, "FINISHED");
+    assert_eq!(order.last_msg, "下单失败, 不在可交易时间段内");
+}
+
+#[test]
+fn sim_broker_accepts_order_inside_trading_time() {
+    let symbol = "SHFE.rb2605";
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(future_metadata_with_trading_time(
+        symbol,
+        serde_json::json!({
+            "day": [["09:00:00", "15:00:00"]],
+            "night": []
+        }),
+    ));
+
+    broker
+        .apply_quote_path(
+            symbol,
+            &[future_quote(
+                symbol,
+                shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                10.0,
+                10.5,
+                9.5,
+            )],
+        )
+        .unwrap();
+    let order_id = broker.insert_order("TQSIM", &limit_buy(symbol, 11.0, 2)).unwrap();
+    let order = broker.order("TQSIM", &order_id).unwrap();
+
+    assert_eq!(order.status, "ALIVE");
+    assert_eq!(order.last_msg, "报单成功");
 }
 
 #[test]

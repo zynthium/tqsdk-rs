@@ -1,5 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::errors::{Result, TqError};
 use crate::types::{Account, Position, Trade};
@@ -48,6 +49,7 @@ pub struct InstrumentMetadata {
     pub instrument_id: String,
     pub class: String,
     pub underlying_symbol: String,
+    pub trading_time: Value,
     pub price_tick: f64,
     pub volume_multiple: i32,
     pub margin: f64,
