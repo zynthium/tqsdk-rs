@@ -349,6 +349,51 @@ pub struct InsertOrderRequest {
     pub volume: i64,
 }
 
+/// 下单附加选项
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InsertOrderOptions {
+    pub order_id: Option<String>,
+    pub time_condition: Option<String>,
+    pub volume_condition: Option<String>,
+}
+
+impl InsertOrderOptions {
+    pub fn fak() -> Self {
+        Self {
+            order_id: None,
+            time_condition: Some(TIME_CONDITION_IOC.to_string()),
+            volume_condition: Some(VOLUME_CONDITION_ANY.to_string()),
+        }
+    }
+
+    pub fn fok() -> Self {
+        Self {
+            order_id: None,
+            time_condition: Some(TIME_CONDITION_IOC.to_string()),
+            volume_condition: Some(VOLUME_CONDITION_ALL.to_string()),
+        }
+    }
+
+    pub fn resolved_time_condition(&self, price_type: &str) -> String {
+        self.time_condition
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(match price_type {
+                PRICE_TYPE_ANY | PRICE_TYPE_BEST | PRICE_TYPE_FIVELEVEL => TIME_CONDITION_IOC,
+                _ => TIME_CONDITION_GFD,
+            })
+            .to_string()
+    }
+
+    pub fn resolved_volume_condition(&self) -> String {
+        self.volume_condition
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(VOLUME_CONDITION_ANY)
+            .to_string()
+    }
+}
+
 impl InsertOrderRequest {
     pub fn get_exchange_id(&self) -> String {
         if let Some(ref exchange) = self.exchange_id {
@@ -387,6 +432,18 @@ pub const OFFSET_CLOSETODAY: &str = "CLOSETODAY";
 pub const PRICE_TYPE_LIMIT: &str = "LIMIT";
 /// 价格类型 - 市价单
 pub const PRICE_TYPE_ANY: &str = "ANY";
+/// 价格类型 - 最优一档
+pub const PRICE_TYPE_BEST: &str = "BEST";
+/// 价格类型 - 最优五档
+pub const PRICE_TYPE_FIVELEVEL: &str = "FIVELEVEL";
+/// 时间条件 - 当日有效
+pub const TIME_CONDITION_GFD: &str = "GFD";
+/// 时间条件 - 立即成交剩余撤销
+pub const TIME_CONDITION_IOC: &str = "IOC";
+/// 数量条件 - 任意数量
+pub const VOLUME_CONDITION_ANY: &str = "ANY";
+/// 数量条件 - 全部成交
+pub const VOLUME_CONDITION_ALL: &str = "ALL";
 /// 订单状态 - 活动（未成交或部分成交）
 pub const ORDER_STATUS_ALIVE: &str = "ALIVE";
 /// 订单状态 - 已完成（全部成交或已撤销）

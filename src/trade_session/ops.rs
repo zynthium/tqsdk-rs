@@ -1,9 +1,45 @@
 use super::TradeSession;
 use crate::errors::{Result, TqError};
-use crate::types::{Account, InsertOrderRequest, Order, Position, Trade};
+use crate::types::{Account, InsertOrderOptions, InsertOrderRequest, Order, PRICE_TYPE_LIMIT, Position, Trade};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use tracing::{info, warn};
+use uuid::Uuid;
+
+pub(crate) fn build_insert_order_packet(
+    user_id: &str,
+    req: &InsertOrderRequest,
+    options: &InsertOrderOptions,
+) -> Result<(String, serde_json::Value)> {
+    let order_id = options
+        .order_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("TQRS_{}", Uuid::new_v4().simple().to_string()[..8].to_uppercase()));
+    let exchange_id = req.get_exchange_id();
+    let instrument_id = req.get_instrument_id();
+    let time_condition = options.resolved_time_condition(&req.price_type);
+    let volume_condition = options.resolved_volume_condition();
+
+    let mut order_req = serde_json::Map::from_iter([
+        ("aid".to_string(), serde_json::json!("insert_order")),
+        ("user_id".to_string(), serde_json::json!(user_id)),
+        ("order_id".to_string(), serde_json::json!(order_id)),
+        ("exchange_id".to_string(), serde_json::json!(exchange_id)),
+        ("instrument_id".to_string(), serde_json::json!(instrument_id)),
+        ("direction".to_string(), serde_json::json!(req.direction)),
+        ("offset".to_string(), serde_json::json!(req.offset)),
+        ("volume".to_string(), serde_json::json!(req.volume)),
+        ("price_type".to_string(), serde_json::json!(req.price_type)),
+        ("volume_condition".to_string(), serde_json::json!(volume_condition)),
+        ("time_condition".to_string(), serde_json::json!(time_condition)),
+    ]);
+    if req.price_type == PRICE_TYPE_LIMIT {
+        order_req.insert("limit_price".to_string(), serde_json::json!(req.limit_price));
+    }
+    Ok((order_id, serde_json::Value::Object(order_req)))
+}
 
 impl TradeSession {
     async fn cleanup_after_disconnect(&self) {
@@ -17,32 +53,21 @@ impl TradeSession {
 
     /// 下单（返回委托单号）
     pub async fn insert_order(&self, req: &InsertOrderRequest) -> Result<String> {
+        self.insert_order_with_options(req, &InsertOrderOptions::default())
+            .await
+    }
+
+    /// 下单，并允许覆盖成交时效/数量条件等扩展语义
+    pub async fn insert_order_with_options(
+        &self,
+        req: &InsertOrderRequest,
+        options: &InsertOrderOptions,
+    ) -> Result<String> {
         if !self.is_ready() {
             return Err(TqError::InternalError("交易会话未就绪".to_string()));
         }
 
-        let exchange_id = req.get_exchange_id();
-        let instrument_id = req.get_instrument_id();
-
-        use uuid::Uuid;
-        let order_id = format!("TQRS_{}", Uuid::new_v4().simple().to_string()[..8].to_uppercase());
-
-        let time_condition = if req.price_type == "ANY" { "IOC" } else { "GFD" };
-
-        let order_req = serde_json::json!({
-            "aid": "insert_order",
-            "user_id": self.user_id,
-            "order_id": order_id,
-            "exchange_id": exchange_id,
-            "instrument_id": instrument_id,
-            "direction": req.direction,
-            "offset": req.offset,
-            "volume": req.volume,
-            "price_type": req.price_type,
-            "limit_price": req.limit_price,
-            "volume_condition": "ANY",
-            "time_condition": time_condition,
-        });
+        let (order_id, order_req) = build_insert_order_packet(&self.user_id, req, options)?;
 
         info!("发送下单请求: order_id={}, symbol={}", order_id, req.symbol);
         self.ws.send_critical(&order_req).await?;

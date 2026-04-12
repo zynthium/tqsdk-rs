@@ -1,6 +1,9 @@
 use super::*;
 use crate::datamanager::{DataManager, DataManagerConfig};
-use crate::types::{DIRECTION_BUY, InsertOrderRequest, Notification, OFFSET_OPEN, PRICE_TYPE_LIMIT};
+use crate::types::{
+    DIRECTION_BUY, InsertOrderOptions, InsertOrderRequest, Notification, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_BEST,
+    PRICE_TYPE_LIMIT, TIME_CONDITION_GFD, TIME_CONDITION_IOC, VOLUME_CONDITION_ALL, VOLUME_CONDITION_ANY,
+};
 use crate::websocket::WebSocketConfig;
 use serde_json::json;
 use std::collections::HashMap;
@@ -870,4 +873,108 @@ async fn trade_commands_do_not_queue_when_transport_actor_is_missing() {
     let cancel_res = session.cancel_order("TQRS_TEST").await;
     assert!(cancel_res.is_err(), "撤单指令不应在断线竞态下排队补发");
     assert_eq!(session.ws.pending_queue_len_for_test().await, 0);
+}
+
+#[test]
+fn build_insert_order_packet_defaults_best_to_ioc_without_limit_price() {
+    let req = InsertOrderRequest {
+        symbol: "CFFEX.IF2606".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_BEST.to_string(),
+        limit_price: 0.0,
+        volume: 2,
+    };
+
+    let (order_id, pack) = super::ops::build_insert_order_packet("u", &req, &InsertOrderOptions::default()).unwrap();
+
+    assert!(order_id.starts_with("TQRS_"));
+    assert_eq!(pack["price_type"], PRICE_TYPE_BEST);
+    assert_eq!(pack["time_condition"], TIME_CONDITION_IOC);
+    assert_eq!(pack["volume_condition"], VOLUME_CONDITION_ANY);
+    assert!(pack.get("limit_price").is_none());
+}
+
+#[test]
+fn build_insert_order_packet_supports_limit_fak_semantics() {
+    let req = InsertOrderRequest {
+        symbol: "DCE.m2609".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_LIMIT.to_string(),
+        limit_price: 3025.0,
+        volume: 3,
+    };
+
+    let (order_id, pack) = super::ops::build_insert_order_packet(
+        "u",
+        &req,
+        &InsertOrderOptions {
+            time_condition: Some(TIME_CONDITION_IOC.to_string()),
+            ..InsertOrderOptions::default()
+        },
+    )
+    .unwrap();
+
+    assert!(order_id.starts_with("TQRS_"));
+    assert_eq!(pack["price_type"], PRICE_TYPE_LIMIT);
+    assert_eq!(pack["limit_price"], 3025.0);
+    assert_eq!(pack["time_condition"], TIME_CONDITION_IOC);
+    assert_eq!(pack["volume_condition"], VOLUME_CONDITION_ANY);
+}
+
+#[test]
+fn build_insert_order_packet_supports_market_fok_with_custom_order_id() {
+    let req = InsertOrderRequest {
+        symbol: "DCE.m2609".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_ANY.to_string(),
+        limit_price: 0.0,
+        volume: 1,
+    };
+
+    let (order_id, pack) = super::ops::build_insert_order_packet(
+        "u",
+        &req,
+        &InsertOrderOptions {
+            order_id: Some("CUSTOM_ID".to_string()),
+            time_condition: Some(TIME_CONDITION_IOC.to_string()),
+            volume_condition: Some(VOLUME_CONDITION_ALL.to_string()),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(order_id, "CUSTOM_ID");
+    assert_eq!(pack["order_id"], "CUSTOM_ID");
+    assert_eq!(pack["price_type"], PRICE_TYPE_ANY);
+    assert_eq!(pack["time_condition"], TIME_CONDITION_IOC);
+    assert_eq!(pack["volume_condition"], VOLUME_CONDITION_ALL);
+    assert!(pack.get("limit_price").is_none());
+}
+
+#[test]
+fn build_insert_order_packet_defaults_limit_to_gfd_any() {
+    let req = InsertOrderRequest {
+        symbol: "SHFE.au2602".to_string(),
+        exchange_id: None,
+        instrument_id: None,
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        price_type: PRICE_TYPE_LIMIT.to_string(),
+        limit_price: 520.0,
+        volume: 1,
+    };
+
+    let (_order_id, pack) = super::ops::build_insert_order_packet("u", &req, &InsertOrderOptions::default()).unwrap();
+
+    assert_eq!(pack["time_condition"], TIME_CONDITION_GFD);
+    assert_eq!(pack["volume_condition"], VOLUME_CONDITION_ANY);
+    assert_eq!(pack["limit_price"], 520.0);
 }

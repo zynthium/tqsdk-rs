@@ -29,7 +29,8 @@ pub use series::{
     TickSeriesData, UpdateInfo,
 };
 pub use trading::{
-    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Notification, NotifyEvent, OFFSET_CLOSE,
-    OFFSET_CLOSETODAY, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, PRICE_TYPE_ANY, PRICE_TYPE_LIMIT,
-    Position, PositionUpdate, Trade,
+    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderOptions, InsertOrderRequest, Notification, NotifyEvent,
+    OFFSET_CLOSE, OFFSET_CLOSETODAY, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, PRICE_TYPE_ANY,
+    PRICE_TYPE_BEST, PRICE_TYPE_FIVELEVEL, PRICE_TYPE_LIMIT, Position, PositionUpdate, TIME_CONDITION_GFD,
+    TIME_CONDITION_IOC, Trade, VOLUME_CONDITION_ALL, VOLUME_CONDITION_ANY,
 };
