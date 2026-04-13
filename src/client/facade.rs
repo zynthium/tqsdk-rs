@@ -326,8 +326,8 @@ impl Client {
         self.ins_api()?.get_trading_status(symbol).await
     }
 
-    /// 订阅 K 线序列（单合约/多合约对齐）。
-    pub async fn kline<T>(
+    /// 订阅 K 线 serial（单合约/多合约对齐）。
+    pub async fn get_kline_serial<T>(
         &self,
         symbols: T,
         duration: StdDuration,
@@ -336,12 +336,14 @@ impl Client {
     where
         T: Into<KlineSymbols>,
     {
-        self.series_api()?.kline(symbols, duration, data_length).await
+        self.series_api()?
+            .get_kline_serial(symbols, duration, data_length)
+            .await
     }
 
-    /// 订阅 Tick 序列。
-    pub async fn tick(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
-        self.series_api()?.tick(symbol, data_length).await
+    /// 订阅 Tick serial。
+    pub async fn get_tick_serial(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
+        self.series_api()?.get_tick_serial(symbol, data_length).await
     }
 
     /// 一次性获取按时间窗口的历史 K 线快照（不随行情更新），语义为 `[start_dt, end_dt)`。

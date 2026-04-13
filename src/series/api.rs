@@ -96,8 +96,8 @@ impl SeriesAPI {
         }
     }
 
-    /// 获取 K 线序列订阅（单合约/多合约对齐），对齐 tqsdk-python 的 `get_kline_serial`。
-    pub async fn kline<T>(
+    /// 获取 K 线 serial 订阅（单合约/多合约对齐），对齐 tqsdk-python 的 `get_kline_serial`。
+    pub async fn get_kline_serial<T>(
         &self,
         symbols: T,
         duration: StdDuration,
@@ -111,8 +111,8 @@ impl SeriesAPI {
         self.subscribe(options).await
     }
 
-    /// 获取 Tick 序列订阅，对齐 tqsdk-python 的 `get_tick_serial`。
-    pub async fn tick(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
+    /// 获取 Tick serial 订阅，对齐 tqsdk-python 的 `get_tick_serial`。
+    pub async fn get_tick_serial(&self, symbol: &str, data_length: usize) -> Result<Arc<SeriesSubscription>> {
         if symbol.is_empty() {
             return Err(TqError::InvalidParameter("symbol 不能为空字符串".to_string()));
         }

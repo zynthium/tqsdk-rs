@@ -1,10 +1,8 @@
 //! Series API 模块
 //!
-//! 提供 K 线与 Tick 订阅能力，支持：
-//! - 单合约 K 线订阅
-//! - 多合约对齐 K 线订阅
-//! - Tick 订阅
-//! - 一次性历史 K 线 / Tick 下载
+//! 提供 K 线与 Tick 序列能力，支持：
+//! - Python 对齐的 bounded serial 订阅（`get_kline_serial` / `get_tick_serial`）
+//! - 一次性历史 K 线 / Tick 下载（`*_data_series`）
 //! - 快照式窗口状态读取
 
 mod api;
