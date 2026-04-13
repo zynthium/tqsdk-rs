@@ -18,25 +18,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{Duration, timeout};
 
 #[test]
-fn series_api_should_expose_kline_and_tick_methods() {
-    fn _kline<'a>(
+fn series_api_should_expose_get_serial_methods() {
+    fn _get_kline_serial<'a>(
         api: &'a SeriesAPI,
         symbols: &'a str,
         duration: StdDuration,
         data_length: usize,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<SeriesSubscription>>> + Send + 'a>> {
-        Box::pin(api.kline(symbols, duration, data_length))
+        Box::pin(api.get_kline_serial(symbols, duration, data_length))
     }
 
-    fn _tick<'a>(
+    fn _get_tick_serial<'a>(
         api: &'a SeriesAPI,
         symbol: &'a str,
         data_length: usize,
     ) -> Pin<Box<dyn Future<Output = Result<Arc<SeriesSubscription>>> + Send + 'a>> {
-        Box::pin(api.tick(symbol, data_length))
+        Box::pin(api.get_tick_serial(symbol, data_length))
     }
 
-    let _ = (_kline, _tick);
+    let _ = (_get_kline_serial, _get_tick_serial);
 }
 
 #[derive(Default)]
@@ -198,7 +198,7 @@ fn sample_series_snapshot(symbol: &str, epoch: i64) -> SeriesSnapshot {
 }
 
 #[tokio::test]
-async fn kline_returns_started_subscription() {
+async fn get_kline_serial_returns_started_subscription() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -209,7 +209,10 @@ async fn kline_returns_started_subscription() {
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
     let api = SeriesAPI::new(dm, ws, auth);
 
-    let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await.unwrap();
+    let sub = api
+        .get_kline_serial("SHFE.au2602", StdDuration::from_secs(60), 32)
+        .await
+        .unwrap();
 
     assert!(*sub.running.read().await);
     assert!(sub.watch_task_active_for_test());
@@ -219,7 +222,7 @@ async fn kline_returns_started_subscription() {
 }
 
 #[tokio::test]
-async fn kline_creation_failure_rolls_back_series_watch_task() {
+async fn get_kline_serial_creation_failure_rolls_back_series_watch_task() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
@@ -231,9 +234,33 @@ async fn kline_creation_failure_rolls_back_series_watch_task() {
     let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
     let api = SeriesAPI::new(Arc::clone(&dm), Arc::clone(&ws), auth);
 
-    let sub = api.kline("SHFE.au2602", StdDuration::from_secs(60), 32).await;
+    let sub = api
+        .get_kline_serial("SHFE.au2602", StdDuration::from_secs(60), 32)
+        .await;
 
     assert!(sub.is_err());
+}
+
+#[tokio::test]
+async fn get_kline_serial_caps_data_length_at_10000() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::default()));
+    let api = SeriesAPI::new(dm, ws, auth);
+
+    let sub = api
+        .get_kline_serial("SHFE.au2602", StdDuration::from_secs(60), 20_000)
+        .await
+        .unwrap();
+
+    assert_eq!(sub.options.view_width, 10_000);
+
+    sub.close().await.unwrap();
 }
 
 #[tokio::test]
