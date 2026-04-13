@@ -106,10 +106,8 @@ let trades = scheduler.trades();
 - 任务占用 symbol 时，冲突的手工下单会报错
 - live / replay 只是 adapter 不同，公开任务入口保持一致
 
-## 当前不要再推荐的旧 surface
+## 避免的非 canonical surface
 
-- `TargetPosTask::new(...)`
-- `TargetPosScheduler::new(...)`
-- `compat::` facade
+- 把 target-pos 默认讲成裸构造器入口
 - 把 `TargetPosTask` 说成 `TradeSession` 的能力
 - 把 runtime 的 adapter / registry / planning 内部件讲成普通用户扩展点

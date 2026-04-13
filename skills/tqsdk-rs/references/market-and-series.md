@@ -35,11 +35,10 @@ loop {
 - 动态改订阅用 `add_symbols()` / `remove_symbols()`
 - 提前释放资源用 `close()`
 
-不要再推荐：
+避免的非 canonical 写法：
 
-- `start()`
-- `on_quote(...)`
-- `quote_channel()`
+- 给订阅增加额外 `start()` 步骤
+- 把 Quote 讲成 callback / channel fan-out
 
 ## latest Quote / K 线 / Tick
 
@@ -96,8 +95,6 @@ println!("has_new_bar = {}", snapshot.update.has_new_bar);
 
 语义都是 `[start_dt, end_dt)`，它们不是持续更新订阅。
 
-最接近的仓库例子是 `examples/history.rs`。
-
 ## 长时间历史导出
 
 如果用户要“后台下载”“导出 CSV”“长时间区间异步落盘”，优先讲：
@@ -108,12 +105,10 @@ println!("has_new_bar = {}", snapshot.update.has_new_bar);
 
 不要把 `get_kline_data_series()` 讲成无限长历史导出器。
 
-## 当前不要再推荐的旧写法
+## 避免的非 canonical 写法
 
-- `SeriesSubscription::start()`
-- `SeriesSubscription::on_update()`
-- `SeriesSubscription::on_new_bar()`
-- `SeriesSubscription::data_stream()`
+- 给 `SeriesSubscription` 增加额外启动步骤
+- 把序列消费讲成 update callback / new-bar callback / stream fan-out
 - 直接从 `SeriesAPI` / `InsAPI` 作为普通用户主路径出发
 
 ## 什么时候选哪条路径

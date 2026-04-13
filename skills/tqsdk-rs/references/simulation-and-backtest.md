@@ -17,7 +17,7 @@ let mut session = client
     .await?;
 ```
 
-不要再把 `BacktestHandle` 或 `init_market_backtest()` 当公开回测入口。
+公开回测入口统一讲 `create_backtest_session()` 和 `ReplaySession`。
 
 ## 当前 replay 句柄
 
@@ -83,11 +83,6 @@ let account = runtime.account("TQSIM")?;
 let task = account.target_pos("SHFE.rb2605").build()?;
 ```
 
-最接近的仓库例子是：
-
-- `examples/backtest.rs`
-- `examples/pivot_point.rs`
-
 ## `finish()` 的结果
 
 `finish()` 返回 `BacktestResult`，可读：
@@ -99,8 +94,8 @@ let task = account.target_pos("SHFE.rb2605").build()?;
 
 这是回测结束后的汇总结果，不是实时更新对象。
 
-## 当前不要再推荐的旧写法
+## 避免的非 canonical 写法
 
-- `BacktestHandle`
-- `switch_to_backtest()` / `switch_to_live()` 叙事
+- 把回测入口讲成别的 facade 名字
+- 把 replay 讲成 live 状态机上的模式切换
 - 把 replay 说成 `Client` live 状态机的一部分

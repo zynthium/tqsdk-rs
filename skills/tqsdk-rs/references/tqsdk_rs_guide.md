@@ -15,19 +15,19 @@
 
 ## 当前公开 API 地图
 
-| 任务 | 当前 canonical API | 备注 | 例子 |
-|------|--------------------|------|------|
-| live Quote | `init_market()` -> `subscribe_quote()` -> `quote()` -> `wait_update()` / `load()` | 订阅 auto-start | `examples/quote.rs` |
-| live 最新 K 线 / Tick | `kline_ref()` / `tick_ref()` | 读取 latest state | `examples/quote.rs` |
-| live 窗口序列 | `kline()` / `tick()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，coalesced snapshot | `examples/quote.rs` |
-| 一次性历史快照 | `get_kline_data_series()` / `get_tick_data_series()` | 语义为 `[start_dt, end_dt)` | `examples/history.rs` |
-| 长时间历史导出 | `spawn_data_downloader*()` | 后台下载任务，不是实时订阅 | `src/download/` |
-| 合约 / 期权 / 参考数据 | `query_*()`、`get_trading_calendar()`、`get_trading_status()` | 走 `Client` facade，不是 `InsAPI` 主路径 | `examples/option_levels.rs` |
-| 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 | `examples/trade.rs` |
-| live target-pos | `ClientBuilder::trade_session*().build_runtime()` 或 `client.into_runtime()` | `runtime.account("broker:user")` | `README.md` |
-| replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` | `step()` 是唯一时间推进 | `examples/backtest.rs` |
-| replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | backtest runtime | `examples/backtest.rs`, `examples/pivot_point.rs` |
-| DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 | `examples/datamanager.rs` |
+| 任务 | 当前 canonical API | 备注 |
+|------|--------------------|------|
+| live Quote | `init_market()` -> `subscribe_quote()` -> `quote()` -> `wait_update()` / `load()` | 订阅 auto-start |
+| live 最新 K 线 / Tick | `kline_ref()` / `tick_ref()` | 读取 latest state |
+| live 窗口序列 | `kline()` / `tick()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，coalesced snapshot |
+| 一次性历史快照 | `get_kline_data_series()` / `get_tick_data_series()` | 语义为 `[start_dt, end_dt)` |
+| 长时间历史导出 | `spawn_data_downloader*()` | 后台下载任务，不是实时订阅 |
+| 合约 / 期权 / 参考数据 | `query_*()`、`get_trading_calendar()`、`get_trading_status()` | 走 `Client` facade |
+| 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 |
+| live target-pos | `ClientBuilder::trade_session*().build_runtime()` 或 `client.into_runtime()` | `runtime.account("broker:user")` |
+| replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` | `step()` 是唯一时间推进 |
+| replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | backtest runtime |
+| DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 |
 
 ## 当前推荐初始化顺序
 
@@ -83,30 +83,15 @@ Client::builder -> build
 
 - 用户只问 Quote / K 线 / Tick：不要默认切到 `TqRuntime` 或 `TradeSession`
 - 用户只问合约查询 / 期权筛选：不要展开 `InsAPI` 内部结构，直接给 `Client::query_*()`
-- 用户问回测：不要再讲 `BacktestHandle` 或 `init_market_backtest()`
+- 用户问回测：直接讲 `ReplaySession`
 - 用户问 target-pos：不要说这是 `TradeSession` 上的方法
-- 用户问“仓库现在的公开入口是什么”：先回答 `Client` / `TradeSession` / `ReplaySession` / `TqRuntime`
+- 用户问“公开入口是什么”：先回答 `Client` / `TradeSession` / `ReplaySession` / `TqRuntime`
 
-## 明确不要再用的旧写法
+## 避免的非 canonical 写法
 
-- `Client::tqapi()`
-- `Client::series()`
-- `Client::ins()`
-- `QuoteSubscription::start()`
-- `SeriesSubscription::start()`
-- `QuoteSubscription::on_quote()` / `quote_channel()`
-- `SeriesSubscription::on_update()` / `on_new_bar()` / `data_stream()`
-- `BacktestHandle`
-- `TargetPosTask::new(...)` / `TargetPosScheduler::new(...)` 作为默认答案
-- `TradeSession` 的 snapshot callback / best-effort channel 叙事
-
-## 仓库模块定位
-
-- live facade：`src/client/`
-- Quote 生命周期：`src/quote/`
-- live K 线 / Tick / 历史下载：`src/series/`
-- 合约与参考数据：`src/ins/`
-- 交易：`src/trade_session/`
-- replay / backtest：`src/replay/`
-- runtime / target-pos：`src/runtime/`
-- DIFF 状态中心：`src/datamanager/`
+- 把 helper facade 讲成主入口
+- 给 Quote / Series 订阅增加额外启动步骤
+- 把 Quote / Series 消费讲成 callback 或 stream fan-out
+- 把回测入口讲成别的 facade 名字
+- 把 target-pos 默认讲成裸构造器入口
+- 把 `TradeSession` 讲成 snapshot callback / best-effort channel 模型

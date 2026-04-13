@@ -1,147 +1,115 @@
 # AGENTS.md — tqsdk-rs
 
-## 项目概述
+## 作用域与优先级
 
-`tqsdk-rs` 是天勤 DIFF 协议的 Rust SDK，连接 Shinnytech 量化交易平台，提供以下能力：
+- 作用域：本文件适用于当前仓库根目录及其所有子目录。
+- 如果某个子目录后续出现更深层的 `AGENTS.md`，则该子树以更近的文件为准。
+- 用户的显式指令优先于本文件。
+- 把本文件当作仓库级执行说明；公开用法看 `README.md`，模块边界看 `docs/architecture.md`，具体行为以相关测试和示例为准。
 
-- 实时行情订阅：Quote、K 线、Tick、交易状态
-- 历史与基础数据：合约查询、结算价、持仓排名、EDB、交易日历
-- 交易与回测：实盘/模拟交易、回测时间推进
-- 可选数据分析：`polars` DataFrame 转换
+## 项目速写
 
-这是一个单 crate Rust 项目，不是 workspace。主入口在 `src/lib.rs`。
+- `tqsdk-rs` 是 Shinnytech 天勤 DIFF 协议的 Rust SDK。
+- 这是一个单 crate Rust 2024 项目，不是 workspace。
+- 主入口在 `src/lib.rs`。
+- 核心能力：实时 Quote / K 线 / Tick、合约与基础数据查询、交易会话、回放/回测、可选 `polars` DataFrame 转换。
+- 关键技术：`tokio`、`yawc`、`reqwest`、`serde`、`jsonwebtoken`、`tracing`、`thiserror`。
 
-## 技术栈
-
-- Rust 2024 edition
-- `tokio` 异步运行时
-- `yawc` WebSocket
-- `reqwest` HTTP
-- `serde` / `serde_json`
-- `jsonwebtoken`
-- `tracing` / `tracing-subscriber`
-- `thiserror`
-- 可选 feature：`polars`
-
-## 目录与职责
+## 目录速查
 
 ```text
 src/
-├── auth/           认证、token、权限检查
-├── websocket/      WebSocket 连接、背压、重连、消息分发
-├── datamanager/    DIFF 合并、查询、监听
-├── cache/          本地 K 线磁盘缓存（分段写入/压缩/区间读取）
-├── quote/          行情订阅
-├── series/         K 线/Tick 订阅与处理
+├── auth/           认证、token 解析、权限检查
+├── websocket/      WebSocket 传输、背压、重连、消息分发
+├── datamanager/    DIFF merge/query/watch 状态中心
+├── cache/          本地 K 线缓存
+├── quote/          Quote 订阅生命周期
+├── series/         K 线 / Tick 订阅与快照
 ├── ins/            合约与基础数据查询
-├── trade_session/  交易会话与交易操作
-├── replay/         回放内核、回测 session、仿真撮合
-├── runtime/        目标持仓运行时与任务调度
-├── polars_ext/     DataFrame 转换（feature = "polars"）
-├── types/          各类数据结构
+├── trade_session/  交易会话与订单/成交链路
+├── replay/         回放内核与回测 session
+├── runtime/        目标持仓运行时与 scheduler
+├── polars_ext/     `polars` feature 下的 DataFrame 转换
+├── types/          公共数据结构
 ├── prelude.rs      常用 re-export
 ├── logger.rs       日志初始化
-├── errors.rs       错误类型
+├── errors.rs       `TqError`
 └── utils.rs        通用工具
-
-examples/
-├── quote.rs
-├── history.rs
-├── trade.rs
-├── backtest.rs
-├── pivot_point.rs
-├── datamanager.rs
-├── option_levels.rs
-└── custom_logger.rs
-
-benches/
-├── marketdata_state.rs
-└── marketdata_state_stress.rs
 ```
 
-## 核心架构提示
+- 示例在 `examples/`。
+- 压测工件在 `benches/`。
 
-- `Client` / `ClientBuilder` 是统一入口，优先从这里开始理解调用路径。
-- WebSocket 层使用 I/O actor 模式，避免跨 `await` 持锁。
-- `ReplaySession` 是唯一推荐的公开回测入口；不要为新代码重新引入 `BacktestHandle` 风格的 facade。
-- `DataManager` 是 DIFF 协议状态中心，很多上层行为都依赖其 merge/watch/query 语义。
-- `DataManager` 的 merge 通知统一使用 `subscribe_epoch()`；旧的 `on_data` / `on_data_register` / `off_data` callback plumbing 已删除，不要重新引入。
-- breaking target：live API 继续收口到 `Client` 单入口；`tqapi()` 已删除，`series()` / `ins()` 也不应再扩大使用面。
-- `QuoteSubscription` 和 `SeriesSubscription` 已经是 auto-start；创建后立即生效，`close()` 只负责提前释放资源。
-- `QuoteSubscription` 只负责订阅生命周期；读取 Quote 的长期目标是 `Client::quote(symbol)`，不要重新引入 `on_quote` / `quote_channel` 一类 fan-out API。
-- `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`；不要重新引入 `on_update`、`on_new_bar`、`data_stream()` 一类 fan-out API。
-- `TqRuntime` 的目标持仓 canonical 入口是 `runtime.account(\"...\").target_pos(...).build()` 和 scheduler builder；`compat::` facade 已删除，不要重新引入。
-- `TradeSession` 对外分为两层：账户/持仓等仍以最新状态读取为主，`order` / `trade` 则使用可靠事件流 API。
-- `TradeSession` 的通知与异步错误已经并入可靠事件流；账户/持仓 callback/channel 已不再是推荐路径，不要为新代码新增依赖。
-- `TradeSession` 内部 watcher 已改为监听 DataManager epoch，再按 path epoch 拆分账户快照与可靠订单/成交事件。
-- `subscribe_order_events()` / `subscribe_trade_events()` 是按类型过滤的可靠事件视图；它们不应再因为通知或异步错误事件共享 retention 窗口而误报 `Lagged`。
-- 重连逻辑包含完整性校验，不要为了“简化”而破坏临时缓冲再合并的策略。
-- 行情与非关键状态更新存在有界缓冲和丢弃策略；但 `TradeSession` 的 `order` / `trade` 公开接口不再走 best-effort channel。
+## Canonical API 与架构约束
 
-## 环境准备
+- live 主路径从 `Client` / `ClientBuilder` 进入。
+- `ReplaySession` 是唯一推荐的公开回放/回测入口。
+- `DataManager` 是 DIFF 协议状态中心；merge 通知继续以 `subscribe_epoch()` 为主。
+- WebSocket 层继续保持 I/O actor 模式，避免跨 `await` 持锁。
+- `QuoteSubscription` 和 `SeriesSubscription` 已是 auto-start；创建后立即生效，`close()` 只负责提前释放资源。
+- Quote 的订阅生命周期归 `QuoteSubscription`；长期读取路径应收敛到 `Client::quote(symbol)`。
+- `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`。
+- `TqRuntime` 的目标持仓入口应使用 `runtime.account("...").target_pos(...).build()` 或 scheduler builder。
+- `TradeSession` 对外分成两层：
+  - 账户/持仓：最新状态读取 + 等待更新
+  - 订单/成交/通知/异步错误：可靠事件流
+- `subscribe_order_events()` / `subscribe_trade_events()` 是按类型过滤的可靠事件视图；不要再退回共享 retention 窗口导致误报 `Lagged` 的旧行为。
+- 重连逻辑必须保留“临时缓冲 + 完整性校验 + 再合并”的策略。
+- 行情与非关键状态更新上的有界缓冲和丢弃策略是刻意设计；不要无意改回无界队列。
 
-### 本地开发
+## 不要重新引入的 public surface
+
+- `BacktestHandle` 风格 facade
+- `Client::tqapi()`
+- 扩大 `Client::series()` 或 `Client::ins()` 的使用面
+- `QuoteSubscription::start()` / `SeriesSubscription::start()`
+- `on_data` / `on_data_register` / `off_data` callback plumbing
+- `on_quote`、`quote_channel` 或其他 Quote fan-out API
+- `on_update`、`on_new_bar`、`data_stream()` 或其他 series fan-out API
+- runtime `compat::` 目标持仓 facade
+- `on_order`、`on_trade`、`order_channel`、`trade_channel` 或其他 best-effort trade 事件 API
+- 账户/持仓 snapshot callback/channel 依赖
+
+## 本地常用命令
+
+这些命令默认不应触达真实交易：
 
 - 构建：`cargo build`
-- 运行测试：`cargo test`
+- 测试：`cargo test`
 - 严格 lint：`cargo clippy --all-targets --all-features -- -D warnings`
-- 检查格式：`cargo fmt --check`
-- 启用 Polars：`cargo build --features polars`
+- 格式检查：`cargo fmt --check`
+- 示例编译检查：`cargo check --examples`
+- Polars 构建：`cargo build --features polars`
 
-### 常用环境变量
+## 环境变量提示
 
-这些变量只在需要联网、登录或运行示例时才需要：
+只有在任务确实需要联网、登录或运行示例时再设置这些变量。
 
-| 变量 | 用途 |
-|------|------|
-| `TQ_AUTH_USER` | 天勤账号 |
-| `TQ_AUTH_PASS` | 天勤密码 |
-| `TQ_LOG_LEVEL` | 示例中的日志级别 |
-| `TQ_QUOTE_AU` | `quote` 示例中的第一个行情合约 |
-| `TQ_QUOTE_AG` | `quote` 示例中的第二个行情合约 |
-| `TQ_QUOTE_M` | `quote` 示例中的第三个行情合约 |
-| `TQ_TEST_SYMBOL` | live 查询示例/测试使用的合约 |
-| `TQ_HISTORY_BAR_SECONDS` | `history` 示例 K 线周期（秒），默认 `60` |
-| `TQ_HISTORY_LOOKBACK_MINUTES` | `history` 示例回看分钟数，默认 `240` |
-| `TQ_START_DT` | `backtest` 示例起始日期 |
-| `TQ_END_DT` | `backtest` 示例结束日期 |
-| `TQ_POSITION_SIZE` | `backtest` / `pivot_point` 示例使用的目标手数 |
-| `SIMNOW_USER_0` | `trade` 示例的 SimNow 账号 |
-| `SIMNOW_PASS_0` | `trade` 示例的 SimNow 密码 |
-| `TQ_TRADE_EXAMPLE_DURATION_SECS` | `trade` 示例持续运行秒数，默认 `300` |
-| `TQ_UNDERLYING` | `option_levels` 示例的标的合约 |
+- 认证：`TQ_AUTH_USER`、`TQ_AUTH_PASS`
+- 常见示例开关：`TQ_LOG_LEVEL`、`TQ_TEST_SYMBOL`、`TQ_HISTORY_BAR_SECONDS`、`TQ_HISTORY_LOOKBACK_MINUTES`、`TQ_START_DT`、`TQ_END_DT`、`TQ_POSITION_SIZE`、`TQ_UNDERLYING`
+- `trade` 示例相关：`SIMNOW_USER_0`、`SIMNOW_PASS_0`、`TQ_TRADE_EXAMPLE_DURATION_SECS`
+- 高级端点覆盖：`TQ_AUTH_URL`、`TQ_MD_URL`、`TQ_TD_URL`、`TQ_INS_URL`、`TQ_CHINESE_HOLIDAY_URL`
 
-还有少量高级环境变量会覆盖默认服务地址，例如 `TQ_AUTH_URL`、`TQ_MD_URL`、`TQ_TD_URL`、`TQ_INS_URL`、`TQ_CHINESE_HOLIDAY_URL`。只有在排查网络、联调特殊服务或切换服务端点时才应修改。
+除非任务明确要求，不要改默认服务端点、认证流程或权限检查逻辑。
 
-## 验证策略
+## 验证矩阵
 
-按改动范围选择验证，不要机械地只跑一条命令。
+按改动范围选验证，不要机械地只跑一条最大命令：
 
-### 安全的本地验证
-
-这些命令不应触达真实交易：
-
-- `cargo fmt --check`
-- `cargo test`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo build --features polars`
-
-### 建议的最小验证矩阵
-
-- 只改文档：检查改动内容是否与仓库现状一致
+- 只改文档：确认文本与当前仓库状态一致
 - 只改纯逻辑模块：`cargo test`
-- 改公开 API、trait、类型定义、模块导出：`cargo test` + `cargo clippy --all-targets --all-features -- -D warnings`
-- 改整体架构说明、对外 API 主路径、示例或 README canonical 用法：额外检查 `skills/tqsdk-rs/` 与根 `AGENTS.md` 是否仍然准确
-- 改 `polars_ext/`：额外运行 `cargo build --features polars`
+- 改公开 API、trait、导出类型、模块导出：`cargo test` 和 `cargo clippy --all-targets --all-features -- -D warnings`
+- 改 `polars_ext/`：追加 `cargo build --features polars`
 - 改示例：至少运行 `cargo check --examples`
-- 改 `websocket/`、`datamanager/`、`quote/`、`series/`、`trade_session/` 这类核心链路：优先补/改对应单元测试，再跑完整 `cargo test`
+- 改 `websocket/`、`datamanager/`、`quote/`、`series/`、`trade_session/` 等核心链路：优先补/改对应测试，再跑完整 `cargo test`
+- 改 README canonical 用法、架构说明或 agent 规则：额外确认 `skills/tqsdk-rs/`、`AGENTS.md`、`CLAUDE.md` 一致
 
-### 联网 / live 验证
+## 联网 / live 安全边界
 
-以下内容可能联网，甚至接近真实交易环境：
+下列动作可能触达外部服务，甚至接近交易环境：
 
-- 被 `#[ignore]` 标记的 live 测试，尤其是 `src/ins/tests.rs` 中依赖 `TQ_AUTH_USER` / `TQ_AUTH_PASS` 的测试
-- `cargo run --example history`（要求账户具备 `tq_dl` 历史下载权限）
+- `#[ignore]` 的 live 测试，尤其是 `src/ins/tests.rs` 中依赖 `TQ_AUTH_USER` / `TQ_AUTH_PASS` 的测试
+- `cargo run --example history`
 - `cargo run --example quote`
 - `cargo run --example option_levels`
 - `cargo run --example backtest`
@@ -150,62 +118,58 @@ benches/
 执行原则：
 
 - 未经明确授权，不要运行 live 测试或任何需要账号的示例。
-- 未经明确授权，不要运行 `trade` 示例。
-- 即使是模拟盘，也视为高风险外部操作。
-- 如果只是验证编译，请优先使用 `cargo check --examples`，不要直接运行示例。
+- 未经明确授权，绝不要运行 `cargo run --example trade`。
+- 即使是模拟盘，也按高风险外部操作处理。
+- 如果只是验证示例是否可编译，优先用 `cargo check --examples`。
 
 ## 修改代码时的工作准则
 
-- 优先保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
-- 修改公开 API 时，同时检查 `README.md`、`AGENTS.md`、示例代码、`prelude` re-export 是否需要同步。
-- `skills/tqsdk-rs/` 是仓库内给 AI / Vibe Coding 智能体使用的知识包；当整体架构、对外 API、示例、README canonical 路径或公开迁移建议发生变化时，必须在同一变更里同步更新对应的 `SKILL.md`、`references/*.md`、`assets/*`。
-- 如果这次改动删除或替换 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
-- 如果这次改动涉及 live API，优先把入口收口到 `Client`，不要继续把新能力挂到 `TqApi` / `SeriesAPI` / `InsAPI` 上。
-- 修改 `DataManager` merge/query/watch 语义时，要特别关注向后兼容性；这部分会影响多个上层模块。
-- 修改 `DataManager` 通知路径时，优先沿用 `subscribe_epoch()` + `get_path_epoch()` 的状态驱动模式，不要为新逻辑新增 callback plumbing。
-- 修改重连、背压、消息队列时，要明确说明是否改变了丢弃策略、顺序语义或完整性保证。
-- `TradeSession` 的 `order` / `trade` 事件以可靠事件流为 canonical API；不要新增或恢复 `on_order`、`on_trade`、`order_channel`、`trade_channel` 这类 best-effort public surface。
-- 不要为新代码新增或恢复 `Client::tqapi()` / `Client::series()` / `Client::ins()` 依赖、`QuoteSubscription::start()` / `SeriesSubscription::start()` 依赖、以及 `TradeSession` 的 snapshot callback/channel 依赖。
-- 新增错误类型时，优先复用 `TqError`，保持错误边界集中。
-- 示例代码是对外接口的一部分；如果 API 变了，示例必须同步更新。
-- 如果改动改变了 agent 未来应遵循的 canonical API、禁用 surface、验证策略或文档同步义务，也要同步更新根 `AGENTS.md`，不要只改代码与 README。
-- `benches/` 下的文件是内部性能验证工件，不属于公开 canonical API 示例；不要把依赖 advanced/internal path 的压测脚本重新放回 `examples/`。
+- 保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
+- 修改公开 API 时，同时检查 `README.md`、`examples/`、`prelude` re-export、`AGENTS.md`、`CLAUDE.md`。
+- `skills/tqsdk-rs/` 是当前 public shape 的知识包，不是历史归档；当架构、公开 API、README canonical 路径、示例、迁移建议或 agent 规则变化时，要同步更新。
+- 如果本次改动删除或替换了 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
+- live API 继续收口到 `Client`，不要把新能力重新挂回 `TqApi` / `SeriesAPI` / `InsAPI`。
+- 修改 `DataManager` merge/query/watch 语义时，要显式考虑向后兼容性。
+- 修改 `DataManager` 通知路径时，继续优先 `subscribe_epoch()` + `get_path_epoch()`，不要为新逻辑重新引入 callback plumbing。
+- 修改重连、背压或消息队列时，要说明是否改变了丢弃策略、顺序语义或完整性保证。
+- 新增错误边界时，优先扩展 `TqError`，不要把公开错误类型打散。
+- 示例代码属于公开接口的一部分；API 变了，示例必须同步。
+- `benches/` 是内部性能验证工件，不是公开 canonical 示例；不要把 advanced/internal 压测脚本搬回 `examples/`。
 
-## Skill / AI Workflow 同步
+## Agent 文档同步
 
-- `skills/tqsdk-rs/` 不是历史归档，而是当前仓库 public shape 的 AI 参考入口；它应持续反映 `README.md`、`src/lib.rs`、`examples/`、`docs/architecture.md` 与本文件中的最新规则。
-- 后续任何涉及 `Client`、`TradeSession`、`ReplaySession`、`TqRuntime`、`DataManager` 通知语义、端点配置、示例路径或移除旧 API 的变更，都要检查 `skills/tqsdk-rs/` 是否仍然准确。
-- 如果本次变更会让智能体继续生成旧接口、旧 callback/channel 写法、旧回测入口或旧 runtime facade，那么说明 `skills/tqsdk-rs/` / `AGENTS.md` 还没有同步完，不能算完成。
+- `skills/tqsdk-rs/` 应持续反映 `README.md`、`src/lib.rs`、`examples/`、`docs/architecture.md`、`AGENTS.md`、`CLAUDE.md` 的最新规则。
+- 如果某次改动会让未来智能体继续生成旧 API、旧 callback/channel 写法、旧回测入口或过时验证策略，说明文档同步还没完成。
+- 保持 `AGENTS.md` 作为较完整的仓库执行说明，保持 `CLAUDE.md` 作为更短、可导入的 Anthropic 项目记忆，两者在 canonical API 和安全边界上必须一致。
 
 ## 测试与示例约定
 
 - 单元测试主要分布在对应模块目录和 `src/*/tests.rs`。
 - 部分 `ins` 相关测试是 live 测试，默认被 `#[ignore]` 跳过。
-- `examples/custom_logger.rs` 会创建 `logs/` 目录；不要把这类产物加入版本控制。
-- 示例默认以“可读、可演示”为目标，不要为局部技巧牺牲 API 清晰度。
+- `examples/custom_logger.rs` 会创建 `logs/` 目录；不要提交产物。
+- 示例应以“可读、可演示”为目标，不要为了局部技巧牺牲 API 清晰度。
 
-## 安全边界
+## 安全要求
 
-- 不要在代码、测试、示例、文档中硬编码真实账号、密码、token 或服务器地址凭据。
+- 不要在代码、测试、示例、文档中硬编码真实账号、密码、token 或私有端点凭据。
 - 不要提交本地联调凭据或日志产物。
-- 不要擅自修改默认服务端点、认证流程或权限检查逻辑，除非任务明确要求。
-- 不要因为方便调试而绕过权限检查、重连完整性校验或背压边界。
+- 不要为了方便调试而绕过权限检查、重连完整性校验或背压边界。
 
 ## 提交前检查
 
-除非任务明确仅修改文档，否则提交前至少确认：
+除非任务明确仅修改文档，否则至少确认：
 
 - `cargo test`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 
-有以下情况时追加检查：
+按改动情况追加：
 
-- 涉及格式化或宏展开相关改动：`cargo fmt --check`
-- 涉及 `polars_ext/`：`cargo build --features polars`
-- 涉及示例或 README 中的命令：至少确认命令与当前代码一致
-- 涉及整体架构、公开 API、示例、README 主路径或 agent 规则：确认 `skills/tqsdk-rs/` 和根 `AGENTS.md` 已同步
+- `cargo fmt --check`
+- `cargo build --features polars`
+- README / 示例中的命令与当前代码一致
+- `skills/tqsdk-rs/`、`AGENTS.md`、`CLAUDE.md` 已随 API / 架构 / agent 规则变化同步
 
-## 给 Agent 的建议阅读顺序
+## 建议阅读顺序
 
 当任务不明确时，按这个顺序建立上下文：
 
@@ -216,11 +180,9 @@ benches/
 5. 对应模块的测试
 6. 相关示例
 
-如果任务涉及变更 API 或架构，先检查 README、示例和测试是否会一起受影响，再开始修改。
+如果任务涉及 API 或架构变更，开始修改前先检查 README、示例和测试是否都要同步。
 
-## 附录：架构速查
+## 附录：架构参考
 
-详细架构说明已抽出到 [docs/architecture.md](docs/architecture.md)。
-
-当你需要快速判断模块边界、调用层级、关键设计模式或某个改动的影响面时，直接阅读这份文档。
-当它与上面的可执行规则冲突时，以上面的操作规范为准。
+更完整的模块视图见 `docs/architecture.md`。
+如果它与本文件的可执行规则冲突，以本文件为准。

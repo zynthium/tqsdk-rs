@@ -35,7 +35,7 @@ let session = client
    - `subscribe_trade_events()`
    - `wait_order_update_reliable(order_id)`
 
-不要再给账户 / 持仓 callback 或 best-effort channel 的答案。
+把账户 / 持仓讲成最新状态读取，不要讲成 callback 或 best-effort channel fan-out。
 
 ## 正确连接顺序
 
@@ -128,14 +128,8 @@ session.cancel_order(&order_id).await?;
 
 默认问答不要把这些细节堆给普通用户。
 
-## 当前不要再推荐的旧 surface
+## 避免的非 canonical surface
 
-- `on_account`
-- `on_position`
-- `on_order`
-- `on_trade`
-- `account_channel`
-- `position_channel`
-- `order_channel`
-- `trade_channel`
+- 把账户 / 持仓讲成 callback / channel fan-out
+- 把订单 / 成交讲成 best-effort channel 模型
 - 把 `TargetPosTask` 说成 `TradeSession` 的方法

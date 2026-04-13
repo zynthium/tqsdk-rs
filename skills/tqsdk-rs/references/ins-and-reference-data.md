@@ -59,8 +59,6 @@ let atm = client
     .await?;
 ```
 
-`examples/option_levels.rs` 是当前最接近的仓库例子。
-
 ### 基础数据服务
 
 ```rust
@@ -95,8 +93,8 @@ while let Ok(status) = rx.recv().await {
 
 内部是按 symbol 聚合订阅意图的；receiver 释放后会自动减少引用计数。
 
-## 当前不要再推荐的旧路径
+## 避免的非 canonical 路径
 
-- 把 `series()` / `ins()` 讲成对外主入口
+- 把额外 helper facade 讲成对外主入口
 - 让用户直接操作 `ins/` 内部模块来完成普通查询
 - 在普通问答里展开 GraphQL 内部细节，除非用户明确要底层 query

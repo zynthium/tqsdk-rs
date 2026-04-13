@@ -14,7 +14,7 @@ client.init_market().await?;
 
 ## Quote / Series 创建后为什么没 `start()`
 
-因为现在已经 auto-start 了。
+因为创建后就已经 auto-start 了。
 
 - `QuoteSubscription`
 - `SeriesSubscription`
@@ -47,7 +47,7 @@ let data = sub.load().await?;
 2. 有没有等到 `is_ready()`
 3. 有没有持续消费 `wait_update()` 或可靠事件流
 
-账户 / 持仓等最新状态不再推荐走 callback/channel。
+账户 / 持仓等最新状态按“等待更新 + 最新状态读取”模型来解释。
 
 ## `TradeEventRecvError::Lagged`
 
@@ -58,7 +58,7 @@ let data = sub.load().await?;
 - 更快消费事件
 - 增大 `TradeSessionOptions.reliable_events_max_retained`
 
-不要把它解释成通知或异步错误事件“挤掉了”订单 / 成交事件；当前过滤视图已经避免这种误报。
+不要把它解释成通知或异步错误事件挤掉了订单 / 成交事件；优先从消费速度或 retention 排查。
 
 ## target-pos 不执行
 
