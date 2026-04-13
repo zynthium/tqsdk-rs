@@ -13,7 +13,6 @@ use std::env;
 use std::error::Error;
 use std::result::Result as StdResult;
 use std::time::Duration;
-use tqsdk_rs::Position;
 use tqsdk_rs::prelude::*;
 
 const ACCOUNT_KEY: &str = "TQSIM";
@@ -117,21 +116,11 @@ fn history_view_width(start_date: NaiveDate, end_date: NaiveDate) -> usize {
 fn format_shanghai_nanos(nanos: i64) -> String {
     let dt = DateTime::<Utc>::from_timestamp_nanos(nanos);
     let tz = FixedOffset::east_opt(8 * 3600).expect("固定东八区时区应可用");
-    dt.with_timezone(&tz).format("%Y-%m-%d %H:%M:%S").to_string()
+    dt.with_timezone(&tz).format("%Y-%m-%d %H:%M:%S%.6f").to_string()
 }
 
-fn net_position(position: &Position) -> i64 {
-    (position.volume_long_today + position.volume_long_his) - (position.volume_short_today + position.volume_short_his)
-}
-
-fn find_final_position<'a>(positions: &'a [Position], account_key: &str, symbol: &str) -> Option<&'a Position> {
-    positions
-        .iter()
-        .find(|position| {
-            position.user_id == account_key && format!("{}.{}", position.exchange_id, position.instrument_id) == symbol
-        })
-        .or_else(|| positions.iter().find(|position| position.user_id == account_key))
-        .or_else(|| positions.first())
+fn python_bool(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
 }
 
 fn apply_target(task: &TargetPosTask, volume: i64) -> StdResult<(), Box<dyn Error>> {
@@ -163,17 +152,15 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let mut session = client
         .create_backtest_session(ReplayConfig::new(start_dt, end_dt)?)
         .await?;
+    // Keep a replay quote feed alive so TargetPosTask can continue matching orders
+    // between daily-bar signal evaluations, mirroring Python TqApi semantics.
+    let _quote = session.quote(&symbol).await?;
     let daily_bars = session.kline(&symbol, DAILY_BAR, daily_width).await?;
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
     let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
     let task = account.target_pos(&symbol).build()?;
 
     println!("开始运行枢轴点反转策略...");
-    println!("  合约: {}", symbol);
-    println!("  区间: {} -> {}", start_date, end_date);
-    println!("  日线窗口宽度: {}", daily_width);
-    println!("  反转确认点数: {}", REVERSAL_CONFIRM);
-    println!("  止损点数: {}", STOP_LOSS_POINTS);
 
     let mut strategy = StrategyState::default();
     let mut processed_bar_id = None;
@@ -222,18 +209,18 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         println!("多头信号条件:");
         println!(
             "1. 价格在S1附近: {}",
-            current_price <= levels.s1 + REVERSAL_CONFIRM && current_price > levels.s1 - REVERSAL_CONFIRM
+            python_bool(current_price <= levels.s1 + REVERSAL_CONFIRM && current_price > levels.s1 - REVERSAL_CONFIRM)
         );
-        println!("2. 价格高于当日最低价: {}", current_price > current_low);
-        println!("3. 价格高于前一日收盘价: {}", current_price > previous.kline.close);
+        println!("2. 价格高于当日最低价: {}", python_bool(current_price > current_low));
+        println!("3. 价格高于前一日收盘价: {}", python_bool(current_price > previous.kline.close));
         println!();
         println!("空头信号条件:");
         println!(
             "1. 价格在R1附近: {}",
-            current_price >= levels.r1 - REVERSAL_CONFIRM && current_price < levels.r1 + REVERSAL_CONFIRM
+            python_bool(current_price >= levels.r1 - REVERSAL_CONFIRM && current_price < levels.r1 + REVERSAL_CONFIRM)
         );
-        println!("2. 价格低于当日最高价: {}", current_price < current_high);
-        println!("3. 价格低于前一日收盘价: {}", current_price < previous.kline.close);
+        println!("2. 价格低于当日最高价: {}", python_bool(current_price < current_high));
+        println!("3. 价格低于前一日收盘价: {}", python_bool(current_price < previous.kline.close));
 
         if strategy.current_direction == 0 {
             if current_price < levels.s1 {
@@ -297,25 +284,8 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     task.cancel().await?;
     task.wait_finished().await?;
 
-    let result = session.finish().await?;
-    let final_net_position = find_final_position(&result.final_positions, ACCOUNT_KEY, &symbol)
-        .map(net_position)
-        .unwrap_or(0);
-    let unrealized_pnl = match (strategy.current_direction, strategy.last_observed_price) {
-        (1, Some(price)) => (price - strategy.entry_price) * position_size as f64,
-        (-1, Some(price)) => (strategy.entry_price - price) * position_size as f64,
-        _ => 0.0,
-    };
-
-    println!();
+    session.finish().await?;
     println!("回测结束");
-    println!("策略汇总:");
-    println!("  处理交易日: {}", strategy.processed_days);
-    println!("  信号次数: {}", strategy.signal_count);
-    println!("  已实现盈亏: {:.2}", strategy.realized_pnl);
-    println!("  未实现盈亏: {:.2}", unrealized_pnl);
-    println!("  总成交笔数: {}", result.trades.len());
-    println!("  最终净持仓: {}", final_net_position);
 
     Ok(())
 }
