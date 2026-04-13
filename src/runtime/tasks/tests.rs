@@ -198,6 +198,71 @@ async fn child_order_runner_waits_for_trade_aggregation_after_finished_order() {
 }
 
 #[tokio::test]
+async fn child_order_runner_retries_after_external_unfilled_finish() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::default());
+    let runner = ChildOrderRunner::new(
+        market.clone(),
+        execution.clone(),
+        "SIM",
+        "SHFE.rb2601",
+        OrderDirection::Buy,
+        PlannedOffset::Open,
+        1,
+        None,
+        PriceMode::Active,
+    );
+
+    let task = tokio::spawn(async move { runner.run_until_all_traded().await });
+
+    execution.wait_for_insert_count(1).await;
+    let first_order = execution.latest_order_id().await.expect("first order should exist");
+    execution
+        .finish_order_externally(&first_order, 1, "交易日结束，自动撤销当日有效的委托单（GFD）")
+        .await;
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !task.is_finished(),
+        "runner should keep waiting for a fresh quote after an external unfilled finish"
+    );
+
+    market
+        .update_quote(Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            ask_price1: 102.0,
+            bid_price1: 101.0,
+            last_price: 101.0,
+            ..Quote::default()
+        })
+        .await;
+
+    execution.wait_for_insert_count(2).await;
+    let second_order = execution.latest_order_id().await.expect("second order should exist");
+    assert_ne!(first_order, second_order);
+
+    execution
+        .finish_order(&second_order, 0, vec![make_trade(&second_order, "trade-1", 1, 102.0)])
+        .await;
+
+    timeout(Duration::from_secs(1), task)
+        .await
+        .expect("runner should finish after retrying on the fresh quote")
+        .expect("join should succeed")
+        .expect("runner should treat external unfilled finishes as retryable");
+
+    assert_eq!(execution.inserted_prices().await, vec![101.0, 102.0]);
+}
+
+#[tokio::test]
 async fn target_pos_handle_latest_target_overrides_previous_target() {
     let market = Arc::new(FakeMarketAdapter::new(Quote {
         instrument_id: "SHFE.rb2601".to_string(),
@@ -899,6 +964,21 @@ impl FakeExecutionAdapter {
             }
         }
         state.trades_by_order.insert(order_id.to_string(), trades);
+        drop(state);
+        let _ = self.updates_tx.send(order_id.to_string());
+    }
+
+    async fn finish_order_externally(&self, order_id: &str, volume_left: i64, last_msg: &str) {
+        let mut state = self.state.lock().await;
+        if let Some(order) = state.orders.get_mut(order_id) {
+            order.status = ORDER_STATUS_FINISHED.to_string();
+            order.volume_left = volume_left;
+            order.exchange_order_id = order_id.to_string();
+            order.last_msg = last_msg.to_string();
+            order.is_dead = true;
+            order.is_online = false;
+            order.is_error = false;
+        }
         drop(state);
         let _ = self.updates_tx.send(order_id.to_string());
     }

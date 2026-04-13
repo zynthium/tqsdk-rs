@@ -9,7 +9,7 @@ use crate::types::{
     PRICE_TYPE_LIMIT, Tick,
 };
 use async_trait::async_trait;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use super::feed::{FeedCursor, FeedEvent, HistoricalSource};
 use super::kernel::ReplayKernel;
@@ -699,6 +699,68 @@ async fn replay_runtime_insert_order_bootstraps_symbol_without_explicit_quote_su
     let filled = runtime.execution().order("TQSIM", &order_id).await.unwrap();
     assert_eq!(filled.status, "FINISHED");
     assert_eq!(filled.volume_left, 0);
+}
+
+#[tokio::test]
+async fn replay_runtime_wait_order_update_ignores_quote_only_updates() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::from([(
+            (symbol.to_string(), 60_000_000_000),
+            vec![Kline {
+                id: 1,
+                datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                open: 10.0,
+                high: 10.0,
+                low: 10.0,
+                close: 10.0,
+                open_oi: 10,
+                close_oi: 10,
+                volume: 5,
+                epoch: None,
+            }],
+        )]),
+        ticks: HashMap::new(),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+
+    let order_id = account.insert_order(&limit_buy(symbol, 9.0, 1)).await.unwrap();
+    let pending = runtime.execution().order("TQSIM", &order_id).await.unwrap();
+    assert_eq!(pending.status, "ALIVE");
+    assert_eq!(pending.volume_left, 1);
+
+    let execution = Arc::clone(&runtime.execution());
+    let wait_order_id = order_id.clone();
+    let wait_task = tokio::spawn(async move { execution.wait_order_update("TQSIM", &wait_order_id).await });
+
+    tokio::task::yield_now().await;
+    let _ = session.step().await.unwrap().unwrap();
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !wait_task.is_finished(),
+        "quote-only replay updates should not wake a waiter for an unchanged order"
+    );
+
+    wait_task.abort();
 }
 
 #[test]

@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 
 use crate::replay::{InstrumentMetadata, ReplayQuote};
 use crate::runtime::{ExecutionAdapter, MarketAdapter, RuntimeError, RuntimeResult};
-use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade};
+use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade, ORDER_STATUS_FINISHED};
 
 use super::session::ReplayBootstrapper;
 use super::sim::SimBroker;
@@ -119,6 +119,33 @@ impl ReplayExecutionState {
     ) -> crate::Result<Option<crate::replay::DailySettlementLog>> {
         self.broker.lock().await.settle_day(trading_day)
     }
+
+    async fn order_update_signature(
+        &self,
+        account_key: &str,
+        order_id: &str,
+    ) -> RuntimeResult<ReplayOrderUpdateSignature> {
+        let broker = self.broker.lock().await;
+        let order = broker.order(account_key, order_id)?;
+        let traded_volume = broker
+            .trades_by_order(account_key, order_id)?
+            .iter()
+            .map(|trade| trade.volume)
+            .sum();
+
+        Ok(ReplayOrderUpdateSignature {
+            status: order.status,
+            volume_left: order.volume_left,
+            traded_volume,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplayOrderUpdateSignature {
+    status: String,
+    volume_left: i64,
+    traded_volume: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -243,17 +270,22 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
     }
 
     async fn wait_order_update(&self, account_key: &str, order_id: &str) -> RuntimeResult<()> {
-        if let Ok(order) = self.state.broker.lock().await.order(account_key, order_id)
-            && order.status == crate::types::ORDER_STATUS_FINISHED
-        {
+        let mut rx = self.state.updates_tx.subscribe();
+        let observed = self.state.order_update_signature(account_key, order_id).await?;
+        if observed.status == ORDER_STATUS_FINISHED {
             return Ok(());
         }
 
-        let mut rx = self.state.updates_tx.subscribe();
-        rx.recv().await.map_err(|_| RuntimeError::AdapterChannelClosed {
-            resource: "replay order updates",
-        })?;
-        Ok(())
+        loop {
+            rx.recv().await.map_err(|_| RuntimeError::AdapterChannelClosed {
+                resource: "replay order updates",
+            })?;
+
+            let current = self.state.order_update_signature(account_key, order_id).await?;
+            if current != observed {
+                return Ok(());
+            }
+        }
     }
 }
 

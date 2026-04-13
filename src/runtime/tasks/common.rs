@@ -169,10 +169,44 @@ impl ChildOrderRunner {
                 let order = self.execution.order(&self.account_key, &order_id).await?;
                 let trades = self.execution.trades_by_order(&self.account_key, &order_id).await?;
                 let filled = filled_volume(&order);
+                let traded_volume = traded_volume(&trades);
 
-                if order.status == ORDER_STATUS_FINISHED && traded_volume(&trades) >= filled {
+                if order.status == ORDER_STATUS_FINISHED && traded_volume >= filled {
+                    tracing::debug!(
+                        order_id,
+                        status = %order.status,
+                        volume_left = order.volume_left,
+                        filled,
+                        traded_volume,
+                        repriced_or_cancelled,
+                        interrupted,
+                        is_error = order.is_error,
+                        last_msg = %order.last_msg,
+                        "child order observed finished state"
+                    );
                     if order.volume_left > 0 && !repriced_or_cancelled {
-                        return Err(RuntimeError::OrderCompletionInvariant { order_id });
+                        if order.is_error {
+                            return Err(RuntimeError::OrderCompletionInvariant { order_id });
+                        }
+
+                        remaining -= filled;
+                        if interrupted {
+                            return Ok(ChildOrderStatus::Interrupted);
+                        }
+
+                        tokio::select! {
+                            quote_update = self.market.wait_quote_update(&self.symbol) => {
+                                quote_update?;
+                            }
+                            control_update = wait_control_change(control.as_mut()), if control.is_some() => {
+                                control_update?;
+                            }
+                        }
+
+                        if stop_requested(control.as_ref()) {
+                            return Ok(ChildOrderStatus::Interrupted);
+                        }
+                        break;
                     }
                     remaining -= filled;
                     if interrupted {

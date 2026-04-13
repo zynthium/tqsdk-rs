@@ -134,9 +134,8 @@ fn find_final_position<'a>(positions: &'a [Position], account_key: &str, symbol:
         .or_else(|| positions.first())
 }
 
-async fn apply_target_and_wait(task: &TargetPosTask, volume: i64) -> StdResult<(), Box<dyn Error>> {
+fn apply_target(task: &TargetPosTask, volume: i64) -> StdResult<(), Box<dyn Error>> {
     task.set_target_volume(volume)?;
-    task.wait_target_reached().await?;
     Ok(())
 }
 
@@ -242,7 +241,8 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
                 strategy.entry_price = current_price;
                 strategy.stop_loss_price = current_price - STOP_LOSS_POINTS;
                 strategy.signal_count += 1;
-                apply_target_and_wait(&task, position_size).await?;
+                // ReplaySession needs the step loop to keep advancing so orders can match.
+                apply_target(&task, position_size)?;
                 println!(
                     "\n多头开仓信号! 开仓价: {:.2}, 止损价: {:.2}",
                     strategy.entry_price, strategy.stop_loss_price
@@ -252,7 +252,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
                 strategy.entry_price = current_price;
                 strategy.stop_loss_price = current_price + STOP_LOSS_POINTS;
                 strategy.signal_count += 1;
-                apply_target_and_wait(&task, -position_size).await?;
+                apply_target(&task, -position_size)?;
                 println!(
                     "\n空头开仓信号! 开仓价: {:.2}, 止损价: {:.2}",
                     strategy.entry_price, strategy.stop_loss_price
@@ -267,14 +267,14 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
                 strategy.realized_pnl += profit;
                 strategy.current_direction = 0;
                 strategy.signal_count += 1;
-                apply_target_and_wait(&task, 0).await?;
+                apply_target(&task, 0)?;
                 println!("多头止盈平仓: 价格={:.2}, 盈利={:.2}", current_price, profit);
             } else if current_price <= strategy.stop_loss_price {
                 let loss = (strategy.entry_price - current_price) * position_size as f64;
                 strategy.realized_pnl -= loss;
                 strategy.current_direction = 0;
                 strategy.signal_count += 1;
-                apply_target_and_wait(&task, 0).await?;
+                apply_target(&task, 0)?;
                 println!("多头止损平仓: 价格={:.2}, 亏损={:.2}", current_price, loss);
             }
         } else if current_price <= levels.pivot {
@@ -282,14 +282,14 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
             strategy.realized_pnl += profit;
             strategy.current_direction = 0;
             strategy.signal_count += 1;
-            apply_target_and_wait(&task, 0).await?;
+            apply_target(&task, 0)?;
             println!("空头止盈平仓: 价格={:.2}, 盈利={:.2}", current_price, profit);
         } else if current_price >= strategy.stop_loss_price {
             let loss = (current_price - strategy.entry_price) * position_size as f64;
             strategy.realized_pnl -= loss;
             strategy.current_direction = 0;
             strategy.signal_count += 1;
-            apply_target_and_wait(&task, 0).await?;
+            apply_target(&task, 0)?;
             println!("空头止损平仓: 价格={:.2}, 亏损={:.2}", current_price, loss);
         }
     }

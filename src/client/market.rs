@@ -410,18 +410,23 @@ fn parse_instrument_metadata(symbol: &str, value: &Value) -> InstrumentMetadata 
         strike_price: value.get("strike_price").and_then(Value::as_f64).unwrap_or_default(),
         trading_time: value.get("trading_time").cloned().unwrap_or(Value::Null),
         price_tick: value.get("price_tick").and_then(Value::as_f64).unwrap_or_default(),
-        volume_multiple: value.get("volume_multiple").and_then(Value::as_i64).unwrap_or_default() as i32,
+        volume_multiple: numeric_i32_field(value, "volume_multiple"),
         margin: value.get("margin").and_then(Value::as_f64).unwrap_or_default(),
         commission: value.get("commission").and_then(Value::as_f64).unwrap_or_default(),
-        open_min_market_order_volume: value
-            .get("open_min_market_order_volume")
-            .and_then(Value::as_i64)
-            .unwrap_or_default() as i32,
-        open_min_limit_order_volume: value
-            .get("open_min_limit_order_volume")
-            .and_then(Value::as_i64)
-            .unwrap_or_default() as i32,
+        open_min_market_order_volume: numeric_i32_field(value, "open_min_market_order_volume"),
+        open_min_limit_order_volume: numeric_i32_field(value, "open_min_limit_order_volume"),
     }
+}
+
+fn numeric_i32_field(value: &Value, key: &str) -> i32 {
+    value
+        .get(key)
+        .and_then(|field| {
+            field
+                .as_i64()
+                .or_else(|| field.as_f64().filter(|number| number.is_finite()).map(|number| number as i64))
+        })
+        .unwrap_or_default() as i32
 }
 
 fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
@@ -542,4 +547,31 @@ fn build_preloaded_quote(source: &Map<String, Value>) -> Map<String, Value> {
 
 fn source_string(source: &Map<String, Value>, key: &str) -> Value {
     Value::String(source.get(key).and_then(Value::as_str).unwrap_or("").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_instrument_metadata;
+    use serde_json::json;
+
+    #[test]
+    fn parse_instrument_metadata_accepts_float_encoded_integer_fields() {
+        let metadata = parse_instrument_metadata(
+            "SHFE.au2606",
+            &json!({
+                "instrument_id": "SHFE.au2606",
+                "exchange_id": "SHFE",
+                "class": "FUTURE",
+                "volume_multiple": 1000.0,
+                "open_min_market_order_volume": 1.0,
+                "open_min_limit_order_volume": 2.0,
+                "price_tick": 0.02
+            }),
+        );
+
+        assert_eq!(metadata.volume_multiple, 1000);
+        assert_eq!(metadata.open_min_market_order_volume, 1);
+        assert_eq!(metadata.open_min_limit_order_volume, 2);
+        assert_eq!(metadata.class, "FUTURE");
+    }
 }
