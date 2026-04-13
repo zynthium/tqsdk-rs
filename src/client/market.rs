@@ -422,9 +422,12 @@ fn numeric_i32_field(value: &Value, key: &str) -> i32 {
     value
         .get(key)
         .and_then(|field| {
-            field
-                .as_i64()
-                .or_else(|| field.as_f64().filter(|number| number.is_finite()).map(|number| number as i64))
+            field.as_i64().or_else(|| {
+                field
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .map(|number| number as i64)
+            })
         })
         .unwrap_or_default() as i32
 }

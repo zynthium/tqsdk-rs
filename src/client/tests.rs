@@ -292,10 +292,12 @@ async fn close_invalidates_market_interfaces() {
 
     assert!(client.query_quotes(None, None, None, None, None).await.is_err());
     assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
-    assert!(client
-        .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
-        .await
-        .is_err());
+    assert!(
+        client
+            .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
+            .await
+            .is_err()
+    );
     assert!(client.get_tick_serial("SHFE.au2602", 64).await.is_err());
 }
 
@@ -567,8 +569,10 @@ async fn create_backtest_session_does_not_activate_client_market_state() {
 
     assert!(!client.market_active.load(std::sync::atomic::Ordering::SeqCst));
     assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
-    assert!(client
-        .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
-        .await
-        .is_err());
+    assert!(
+        client
+            .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
+            .await
+            .is_err()
+    );
 }

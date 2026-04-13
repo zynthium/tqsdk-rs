@@ -9,7 +9,7 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 
 use crate::replay::{InstrumentMetadata, ReplayQuote};
 use crate::runtime::{ExecutionAdapter, MarketAdapter, RuntimeError, RuntimeResult};
-use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade, ORDER_STATUS_FINISHED};
+use crate::types::{InsertOrderRequest, ORDER_STATUS_FINISHED, Order, Position, Quote, Trade};
 
 use super::session::ReplayBootstrapper;
 use super::sim::SimBroker;
