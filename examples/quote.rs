@@ -39,9 +39,11 @@ async fn main() -> Result<()> {
     let quote_sub = client.subscribe_quote(&[au.as_str(), ag.as_str(), m.as_str()]).await?;
 
     let kline_duration = Duration::from_secs(60);
-    let kline_sub = client.kline(au.as_str(), kline_duration, 256).await?;
+    let kline_sub = client
+        .get_kline_serial(au.as_str(), kline_duration, 256)
+        .await?;
 
-    let tick_sub = client.tick(au.as_str(), 256).await?;
+    let tick_sub = client.get_tick_serial(au.as_str(), 256).await?;
 
     let au_quote = client.quote(au.as_str());
     let ag_quote = client.quote(ag.as_str());

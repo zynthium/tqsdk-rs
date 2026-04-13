@@ -1,6 +1,7 @@
 use std::env;
 use std::time::Duration;
 
+use chrono::{Duration as ChronoDuration, Utc};
 use tqsdk_rs::prelude::*;
 use tracing::info;
 
@@ -18,12 +19,6 @@ fn parse_env_i64(name: &str, default: i64) -> i64 {
         .and_then(|raw| raw.parse::<i64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(default)
-}
-
-fn derive_data_length(bar_secs: u64, lookback_minutes: i64) -> usize {
-    let lookback_secs = (lookback_minutes.max(1) as u64) * 60;
-    let bars = (lookback_secs + bar_secs.saturating_sub(1)) / bar_secs.max(1);
-    bars.clamp(1, 10_000) as usize
 }
 
 async fn build_client(username: &str, password: &str) -> Result<Client> {
@@ -51,38 +46,26 @@ async fn main() -> Result<()> {
     let symbol = env::var("TQ_TEST_SYMBOL").unwrap_or_else(|_| "SHFE.au2512".to_string());
     let bar_secs = parse_env_u64("TQ_HISTORY_BAR_SECONDS", 60);
     let lookback_minutes = parse_env_i64("TQ_HISTORY_LOOKBACK_MINUTES", 240);
-    let data_length = derive_data_length(bar_secs, lookback_minutes);
+    let end_dt = Utc::now();
+    let start_dt = end_dt - ChronoDuration::minutes(lookback_minutes);
 
     info!(
-        "订阅 K 线 serial symbol={} duration={}s data_length={} capped_at=10000",
-        symbol, bar_secs, data_length
+        "拉取历史 K 线 data_series symbol={} duration={}s range=[{}, {})",
+        symbol, bar_secs, start_dt, end_dt
     );
 
-    let sub = client
-        .get_kline_serial(symbol.as_str(), Duration::from_secs(bar_secs), data_length)
+    let rows = client
+        .get_kline_data_series(symbol.as_str(), Duration::from_secs(bar_secs), start_dt, end_dt)
         .await?;
 
-    loop {
-        let snapshot = sub.wait_update().await?;
-        if snapshot.update.chart_ready {
-            break;
-        }
-    }
-
-    let window = sub.load().await?;
-    let series = window
-        .get_symbol_klines(symbol.as_str())
-        .expect("single-symbol serial should exist");
-
-    info!("K 线 serial 准备完成 count={}", series.data.len());
-    if let (Some(first), Some(last)) = (series.data.first(), series.data.last()) {
+    info!("历史 K 线 data_series 下载完成 count={}", rows.len());
+    if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
         info!(
             "样本 first_id={} first_dt={} last_id={} last_dt={} last_close={}",
             first.id, first.datetime, last.id, last.datetime, last.close
         );
     }
 
-    sub.close().await?;
     client.close().await?;
     Ok(())
 }
