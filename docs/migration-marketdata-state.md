@@ -21,7 +21,7 @@
 | 概念 | 旧版 Channel/Callback 模型 | 新版 State-driven API |
 |---|---|---|
 | **获取入口** | `Client` | `Client` 直接暴露状态引用与等待接口 |
-| **发起订阅** | `client.subscribe_quote(...)`<br>`client.kline(...)` / `client.tick(...)` | 保持不变（仍作为驱动网络下发的入口） |
+| **发起订阅** | `client.subscribe_quote(...)`<br>`client.get_kline_serial(...)` / `client.get_tick_serial(...)` | Python 对齐的 bounded serial 入口，仍作为驱动网络下发的入口 |
 | **数据读取** | `channel.recv().await`<br>或 callback 消费 | `client.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
 | **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing()` 检测本地是否过期 |
 | **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `client.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
@@ -111,16 +111,20 @@ loop {
 
 ### 4. K 线（Kline）与 Tick 订阅迁移
 
-最新一根 K 线仍然推荐通过 `KlineRef` 读取；如果你需要历史窗口、多合约对齐窗口或后续 DataFrame 转换，则应通过 `SeriesSubscription` 的快照接口消费。
+最新一根 K 线仍然推荐通过 `KlineRef` 读取；如果你需要 bounded serial、多合约对齐窗口或后续 DataFrame 转换，则应通过 `SeriesSubscription` 的快照接口消费。
 
 **旧代码：**
 ```rust
-let sub = client.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
+let sub = client
+    .get_kline_serial("SHFE.cu2605", Duration::from_secs(60), 1000)
+    .await?;
 ```
 
 **新代码：**
 ```rust
-let sub = client.kline("SHFE.cu2605", Duration::from_secs(60), 1000).await?;
+let sub = client
+    .get_kline_serial("SHFE.cu2605", Duration::from_secs(60), 1000)
+    .await?;
 
 loop {
     let snapshot = sub.wait_update().await?;

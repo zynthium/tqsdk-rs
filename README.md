@@ -90,7 +90,7 @@
 
 - 单元测试：`cargo test`
 - 静态检查：`cargo clippy --all-targets --all-features -- -D warnings`
-- 示例联调：`cargo run --example history`
+- 示例联调：`cargo run --example quote`
 - 账户权限：`query_edb_data` 需要账号具备非价量数据权限，否则会返回权限提示，不影响其他接口。
 - 交易示例：`cargo run --example trade` 会连接交易环境，运行前请确认使用的是模拟账户并已正确配置环境变量。
 
@@ -438,7 +438,7 @@ use std::time::Duration;
 let symbol = "SHFE.au2602";
 let duration = Duration::from_secs(60);
 
-let _sub = client.kline(symbol, duration, 300).await?;
+let _sub = client.get_kline_serial(symbol, duration, 300).await?;
 
 let kline_ref = client.kline_ref(symbol, duration);
 
@@ -785,8 +785,11 @@ match auth.has_md_grants(&["SSE.000300"]) {
 # 行情订阅
 cargo run --example quote
 
-# 历史数据与接口联调
+# 最近 10000 条以内的序列历史与接口联调
 cargo run --example history
+
+# 显式时间范围历史下载
+cargo run --example data_series
 
 # 实盘/模拟交易
 cargo run --example trade
@@ -811,8 +814,9 @@ cargo run --example option_levels
 
 | 示例文件 | 主要内容 | 额外环境变量 |
 |------|------|------|
-| `quote.rs` | Quote、单合约 K 线、多合约对齐 K 线、Tick | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
-| `history.rs` | 一次性历史 K 线下载、接口联调 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL`、`TQ_HISTORY_BAR_SECONDS`、`TQ_HISTORY_LOOKBACK_MINUTES`；要求账户具备 `tq_dl` 历史下载权限 |
+| `quote.rs` | Quote、单合约 K 线 serial、多合约对齐 K 线 serial、Tick serial | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_LOG_LEVEL`、`TQ_LOG` |
+| `history.rs` | 最近 `10000` 条以内的 K 线 serial、接口联调 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL`、`TQ_HISTORY_BAR_SECONDS`、`TQ_HISTORY_LOOKBACK_MINUTES` |
+| `data_series.rs` | 一次性时间范围历史 K 线下载 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_TEST_SYMBOL`、`TQ_HISTORY_BAR_SECONDS`、`TQ_HISTORY_LOOKBACK_MINUTES`；要求账户具备 `tq_dl` 历史下载权限 |
 | `trade.rs` | 可靠事件流、账户/持仓监听、订单等待 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0`，可选 `TQ_TRADE_EXAMPLE_DURATION_SECS` |
 | `backtest.rs` | `ReplaySession` 构建、K 线注册、runtime 驱动、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `pivot_point.rs` | 基于 `ReplaySession` 的日线枢轴点反转策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
@@ -868,6 +872,7 @@ tqsdk-rs/
 ├── examples/
 │   ├── quote.rs
 │   ├── history.rs
+│   ├── data_series.rs
 │   ├── trade.rs
 │   ├── backtest.rs
 │   ├── pivot_point.rs
@@ -901,7 +906,7 @@ tqsdk-rs/
 ### Canonical 接口
 
 - Quote：`QuoteSubscription` 负责订阅生命周期，`Client::quote()` 负责读取最新状态。
-- Series：`Client::{kline,tick}` 负责发起实时窗口订阅，`Client::{get_kline_data_series,get_tick_data_series}` 负责一次性历史快照下载，`Client::{kline_ref,tick_ref}` 负责读取 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口并通过 `wait_update()` / `load()` 暴露快照。
+- Series：`Client::{get_kline_serial,get_tick_serial}` 负责发起 Python 对齐的 bounded serial 订阅，`Client::{get_kline_data_series,get_tick_data_series}` 负责一次性时间范围下载，`Client::{kline_ref,tick_ref}` 负责读取 latest bar/tick，`SeriesSubscription` 负责多合约对齐窗口并通过 `wait_update()` / `snapshot()` / `load()` 暴露快照。
 - Downloader：`Client::spawn_data_downloader()` 负责后台历史下载与 CSV 导出工作流。
 - TradeSession：最新账户/持仓走快照读取，订单/成交走可靠事件流。
 
@@ -1018,7 +1023,7 @@ let layer = create_logger_layer("info", false);
 **Q: 如何调试网络或权限问题？**
 
 - 将日志级别切到 `debug`。
-- 先运行 `cargo run --example history` 验证认证、GraphQL 和交易状态接口。
+- 先运行 `cargo run --example quote` 验证认证和行情链路；如果要检查历史下载权限，再运行 `cargo run --example data_series`。
 - 单独检查账号是否有目标合约和扩展数据权限。
 
 ### 报告问题

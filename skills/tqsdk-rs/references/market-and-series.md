@@ -53,7 +53,9 @@ loop {
 ```rust
 use std::time::Duration;
 
-let sub = client.kline("SHFE.au2602", Duration::from_secs(60), 256).await?;
+let sub = client
+    .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 256)
+    .await?;
 
 let snapshot = sub.wait_update().await?;
 if snapshot.update.has_new_bar {
@@ -67,7 +69,8 @@ if snapshot.update.has_new_bar {
 
 关键点：
 
-- `client.kline(...)` / `client.tick(...)` 返回 `Arc<SeriesSubscription>`
+- `client.get_kline_serial(...)` / `client.get_tick_serial(...)` 返回 `Arc<SeriesSubscription>`
+- `data_length` 会归一化到 `1..=10000`
 - 创建后立即生效，不需要 `start()`
 - `wait_update()` 等下一次 coalesced snapshot
 - `snapshot()` 读取当前快照（可能是 `None`）
@@ -78,7 +81,7 @@ if snapshot.update.has_new_bar {
 
 ```rust
 let sub = client
-    .kline(["SHFE.au2602", "SHFE.ag2512"], Duration::from_secs(60), 256)
+    .get_kline_serial(["SHFE.au2602", "SHFE.ag2512"], Duration::from_secs(60), 256)
     .await?;
 
 let snapshot = sub.wait_update().await?;
@@ -94,6 +97,7 @@ println!("has_new_bar = {}", snapshot.update.has_new_bar);
 - Tick：`get_tick_data_series(symbol, start_dt, end_dt)`
 
 语义都是 `[start_dt, end_dt)`，它们不是持续更新订阅。
+不要把它们讲成无限长 serial；那是 `get_*_serial()` 的语义边界之外的显式下载接口。
 
 ## 长时间历史导出
 
@@ -115,6 +119,6 @@ println!("has_new_bar = {}", snapshot.update.has_new_bar);
 
 - 只想读最新行情：`subscribe_quote()` + `quote()`
 - 只想读 latest bar / tick：`kline_ref()` / `tick_ref()`
-- 想读窗口态序列：`kline()` / `tick()` + `SeriesSubscription`
+- 想读窗口态序列：`get_kline_serial()` / `get_tick_serial()` + `SeriesSubscription`
 - 想拿固定时间范围历史：`get_*_data_series()`
 - 想后台导出：`spawn_data_downloader*()`

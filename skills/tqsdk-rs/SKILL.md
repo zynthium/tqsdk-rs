@@ -46,7 +46,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 ## 当前 canonical 心智模型
 
 1. `Client` 是 live API 单入口。行情、序列和合约查询都优先走 `Client` facade。
-2. `init_market()` 是 live market/query 能力的前置条件。没初始化就不要推荐 `subscribe_quote()`、`kline()`、`tick()`、`query_*()`。
+2. `init_market()` 是 live market/query 能力的前置条件。没初始化就不要推荐 `subscribe_quote()`、`get_kline_serial()`、`get_tick_serial()`、`query_*()`。
 3. `QuoteSubscription` 只负责服务端订阅生命周期；Quote 读取统一走 `Client::quote()` 返回的 `QuoteRef`。
 4. `SeriesSubscription` 是 coalesced snapshot API；窗口消费统一走 `wait_update()` / `snapshot()` / `load()`。
 5. `TradeSession` 分成两层：
@@ -60,7 +60,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - `Client::builder(...)`, `Client::new(...)`
 - `Client::init_market()`
 - `Client::subscribe_quote()`, `Client::quote()`, `Client::wait_update()`, `Client::wait_update_and_drain()`
-- `Client::kline()`, `Client::tick()`, `Client::kline_ref()`, `Client::tick_ref()`
+- `Client::get_kline_serial()`, `Client::get_tick_serial()`, `Client::kline_ref()`, `Client::tick_ref()`
 - `Client::get_kline_data_series()`, `Client::get_tick_data_series()`
 - `Client::query_*()`, `Client::get_trading_calendar()`, `Client::get_trading_status()`
 - `Client::create_trade_session*()`, `TradeSession::connect()`, `TradeSession::wait_update()`, `TradeSession::subscribe_*_events()`

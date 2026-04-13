@@ -102,6 +102,7 @@ Client (facade + builder + market)
 - 当前现状：`QuoteSubscription`、`SeriesSubscription` 已改为 auto-start，只保留 `close()` 作为提前释放资源接口。
 - 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
 - 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐窗口状态。
+- serial 收口：`Client::{get_kline_serial,get_tick_serial}` 走更新中的 bounded sequence 路径，`data_length` 会归一化到 `1..=10000`。
 - 历史下载收口：`Client::{get_kline_data_series,get_tick_data_series}` 走 one-shot 下载路径，内部复用分页 `set_chart` 协议，并在入口检查 `tq_dl`。
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。

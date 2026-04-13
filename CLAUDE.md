@@ -11,6 +11,8 @@
 - 回放/回测主路径优先 `ReplaySession`。
 - `DataManager` 是 DIFF 状态中心，通知逻辑优先 `subscribe_epoch()` 驱动。
 - `QuoteSubscription` / `SeriesSubscription` 已是 auto-start，`close()` 只负责提前释放资源。
+- live bounded 序列入口优先 `Client::{get_kline_serial,get_tick_serial}`。
+- `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要和 serial 混用。
 - `TradeSession` 的快照读取保持状态驱动；订单/成交/通知/异步错误保持可靠事件流。
 
 ## 不要重新引入

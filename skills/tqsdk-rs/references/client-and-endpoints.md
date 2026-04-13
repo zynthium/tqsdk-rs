@@ -40,7 +40,7 @@ client.init_market().await?;
 ## `init_market()` 的规则
 
 - `subscribe_quote()`、`quote()` 的有效更新
-- `kline()` / `tick()`
+- `get_kline_serial()` / `get_tick_serial()`
 - `kline_ref()` / `tick_ref()`
 - `query_*()`、`get_trading_calendar()`、`get_trading_status()`
 

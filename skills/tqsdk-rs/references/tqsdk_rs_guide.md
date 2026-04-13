@@ -19,7 +19,7 @@
 |------|--------------------|------|
 | live Quote | `init_market()` -> `subscribe_quote()` -> `quote()` -> `wait_update()` / `load()` | 订阅 auto-start |
 | live 最新 K 线 / Tick | `kline_ref()` / `tick_ref()` | 读取 latest state |
-| live 窗口序列 | `kline()` / `tick()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，coalesced snapshot |
+| live 窗口序列 | `get_kline_serial()` / `get_tick_serial()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，bounded to `10000` |
 | 一次性历史快照 | `get_kline_data_series()` / `get_tick_data_series()` | 语义为 `[start_dt, end_dt)` |
 | 长时间历史导出 | `spawn_data_downloader*()` | 后台下载任务，不是实时订阅 |
 | 合约 / 期权 / 参考数据 | `query_*()`、`get_trading_calendar()`、`get_trading_status()` | 走 `Client` facade |

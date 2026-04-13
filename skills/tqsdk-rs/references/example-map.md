@@ -7,13 +7,15 @@
 - `Client::init_market()`
 - `subscribe_quote()`
 - `quote()`
-- `kline()` / `tick()`
+- `get_kline_serial()` / `get_tick_serial()`
 - `kline_ref()` / `tick_ref()`
 - `wait_update_and_drain()`
 
 ## 一次性历史快照场景
 
 - `get_kline_data_series()`
+- `examples/history.rs` 演示 bounded serial
+- `examples/data_series.rs` 演示显式时间范围下载
 - 时间区间 `[start_dt, end_dt)`
 - 环境变量驱动的历史查询参数
 

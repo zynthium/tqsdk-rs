@@ -49,6 +49,8 @@ src/
 - `QuoteSubscription` 和 `SeriesSubscription` 已是 auto-start；创建后立即生效，`close()` 只负责提前释放资源。
 - Quote 的订阅生命周期归 `QuoteSubscription`；长期读取路径应收敛到 `Client::quote(symbol)`。
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`。
+- `SeriesSubscription` 的 canonical 发起入口应使用 `Client::{get_kline_serial,get_tick_serial}`。
+- `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要把它们讲成普通“历史窗口”。
 - `TqRuntime` 的目标持仓入口应使用 `runtime.account("...").target_pos(...).build()` 或 scheduler builder。
 - `TradeSession` 对外分成两层：
   - 账户/持仓：最新状态读取 + 等待更新
@@ -110,6 +112,7 @@ src/
 
 - `#[ignore]` 的 live 测试，尤其是 `src/ins/tests.rs` 中依赖 `TQ_AUTH_USER` / `TQ_AUTH_PASS` 的测试
 - `cargo run --example history`
+- `cargo run --example data_series`
 - `cargo run --example quote`
 - `cargo run --example option_levels`
 - `cargo run --example backtest`

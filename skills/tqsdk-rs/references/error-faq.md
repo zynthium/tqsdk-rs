@@ -2,7 +2,7 @@
 
 当用户描述“没数据”“不更新”“报未初始化”“回测不动”“事件 lagged”这类问题时，先读本文件。
 
-## `subscribe_quote()` / `kline()` / `query_*()` 报未初始化
+## `subscribe_quote()` / `get_kline_serial()` / `query_*()` 报未初始化
 
 先检查是不是漏了：
 
@@ -85,6 +85,7 @@ live / replay 下都先检查“驱动循环”有没有跑起来：
 ## 历史数据 / EDB 权限问题
 
 - `get_kline_data_series()` / 历史下载相关能力依赖历史数据权限
+- `examples/history.rs` 现在只演示 bounded serial；需要排查 `tq_dl` 权限时，应看 `examples/data_series.rs`
 - `query_edb_data()` 依赖非价量数据权限
 
 这类问题优先说权限边界，不要虚构本地绕过方案。
