@@ -1,91 +1,90 @@
-# 常见问题与排查
+# 常见问题
 
-## “为什么没有某个我预期中的统一更新入口？”
+当用户描述“没数据”“不更新”“报未初始化”“回测不动”“事件 lagged”这类问题时，先读本文件。
 
-直接把回答收束到当前仓库真实存在的入口：
+## `subscribe_quote()` / `kline()` / `query_*()` 报未初始化
 
-- `QuoteSubscription` / `SeriesSubscription` 回调
-- channel / stream 消费
-- 回测场景下用 `BacktestHandle`
+先检查是不是漏了：
 
-如果用户问的是目标持仓任务，不要沿用这条回答，直接切到：
+```rust
+client.init_market().await?;
+```
 
-- `TqRuntime`
-- `TargetPosTask`
-- `TargetPosScheduler`
+当前 live market / query 能力都依赖 `init_market()`。
 
-不要为了迁就预期而虚构仓库中不存在的公共 API。
+## Quote / Series 创建后为什么没 `start()`
 
-## `series()` / `ins()` 报未初始化
+因为现在已经 auto-start 了。
 
-最常见原因：
+- `QuoteSubscription`
+- `SeriesSubscription`
 
-- 还没调用 `init_market()`
-- 或者还没调用 `init_market_backtest()`
+都在创建后立即生效。`close()` 只负责提前释放资源。
 
-优先把答案收束到初始化顺序，不要一开始就讲底层连接细节。
+## 为什么 `QuoteSubscription` 上拿不到数据对象
 
-## 订阅创建了但没有回调
+因为现在订阅和读取已经分离：
 
-优先检查：
+- 订阅生命周期：`QuoteSubscription`
+- 数据读取：`Client::quote(symbol)` -> `QuoteRef`
 
-1. 是否已经 `start()`
-2. 是否先注册回调再 `start()`
-3. 是否订阅了有效合约
+## `SeriesSubscription::load()` 报错或拿不到数据
 
-## `TradeSession` 没有回调或查不到数据
+通常是首次快照还没到。
 
-优先检查：
+先：
 
-1. 是否已经 `connect()`
-2. 是否在 `connect()` 前注册了回调
-3. 账户参数是否正确
+```rust
+sub.wait_update().await?;
+let data = sub.load().await?;
+```
 
-## 用户问旧 auth 环境变量
+## `TradeSession` 连接了但没有快照 / 没事件
 
-不要继续扩散旧设计。优先解释新的公开端点变量：
+先检查：
 
-- `TQ_AUTH_URL`
-- `TQ_MD_URL`
-- `TQ_TD_URL`
-- `TQ_INS_URL`
-- `TQ_CHINESE_HOLIDAY_URL`
+1. 有没有先 `connect()`
+2. 有没有等到 `is_ready()`
+3. 有没有持续消费 `wait_update()` 或可靠事件流
 
-## 用户把行情初始化和交易初始化混为一谈
+账户 / 持仓等最新状态不再推荐走 callback/channel。
 
-直接指出：
+## `TradeEventRecvError::Lagged`
 
-- 行情链路：`init_market` / `init_market_backtest`
-- 交易链路：`create_trade_session*` + `connect`
+说明可靠事件流消费者太慢，或者 retention 太小。
 
-它们相关，但不是同一个开关。
+优先建议：
 
-## 用户把 `TradeSession` 和 `TargetPosTask` 混为一谈
+- 更快消费事件
+- 增大 `TradeSessionOptions.reliable_events_max_retained`
 
-直接指出：
+不要把它解释成通知或异步错误事件“挤掉了”订单 / 成交事件；当前过滤视图已经避免这种误报。
 
-- `TradeSession`：手工交易
-- `TqRuntime`：目标持仓任务
-- `TargetPosTask` / `TargetPosScheduler` 不属于 `TradeSession`
+## target-pos 不执行
 
-如果用户要 Python `TargetPosTask` 对齐能力，优先给 compat facade。
+live / replay 下都先检查“驱动循环”有没有跑起来：
 
-## 手工单被拒绝了
+- live 手工交易：`TradeSession` 已连接并 ready
+- replay：持续调用 `ReplaySession::step()`
 
-优先检查同一 `runtime + account + symbol` 上是不是已经有 target-pos 任务或 scheduler。
+如果没有驱动循环，任务不会推进。
 
-当前 runtime 会阻止这类冲突。
+## 回测不推进
 
-## 权限问题
+`ReplaySession::step()` 是唯一时间推进入口。
 
-有些接口会因为权限不足而失败，尤其是扩展基础数据类接口。回答时不要把权限错误说成 SDK bug。
+如果用户只创建了 `quote()` / `kline()` / `runtime()` 但没循环 `step()`，回测就不会动。
 
-## 服务地址覆盖怎么讲
+## `runtime.account(...)` 找不到账户
 
-优先顺序：
+先检查 account key：
 
-1. `ClientBuilder` 上的端点方法
-2. `EndpointConfig::from_env()`
-3. `TradeSessionOptions`
+- live：通常是 `broker:user_id`
+- replay：是 `session.runtime([...])` 里传进去的名字
 
-不要把 auth 内部变量重新包装成公开解法。
+## 历史数据 / EDB 权限问题
+
+- `get_kline_data_series()` / 历史下载相关能力依赖历史数据权限
+- `query_edb_data()` 依赖非价量数据权限
+
+这类问题优先说权限边界，不要虚构本地绕过方案。

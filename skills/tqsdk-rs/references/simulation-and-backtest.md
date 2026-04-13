@@ -1,95 +1,106 @@
-# 回测与回放
+# 回放与回测
 
-当用户问下面这些问题时，优先读本文件：
+当用户问 `ReplaySession`、`ReplayConfig`、回放句柄、时间推进、回测结果或 replay runtime 时，读本文件。
 
-- 如何初始化回测
-- `init_market_backtest` 和 `init_market` 的区别
-- `BacktestHandle` 怎么推进
-- live 和 backtest 怎么切换
-- 回测下怎么挂 `TqRuntime` 跑 `TargetPosTask` / `TargetPosScheduler`
-
-## 基本思路
-
-```text
-Client::builder
-  -> build
-  -> init_market_backtest
-  -> 使用 quote / series / ins
-  -> 通过 BacktestHandle 推进
-```
-
-## 常见入口
-
-- `init_market_backtest`
-- `switch_to_backtest`
-- `switch_to_live`
-- `BacktestHandle::next`
-- `BacktestHandle::peek`
-- `BacktestHandle::current_dt`
-- `BacktestExecutionAdapter`
-- `TqRuntime::with_id(..., RuntimeMode::Backtest, ...)`
-
-## 用户提问时的回答重点
-
-### “回测为什么不往前走？”
-
-优先解释 `BacktestHandle` 推进机制，而不是先怀疑行情 API。
-
-### “回测下还能不能用 quote / series / ins？”
-
-可以，但前提是已经通过回测初始化行情链路。
-
-### “回测下能不能跑 TargetPosTask / TargetPosScheduler？”
-
-可以，但要区分两层：
-
-- `BacktestHandle` 负责推进市场时间
-- `TqRuntime + BacktestExecutionAdapter` 负责任务执行
-
-常用 wiring：
+## 当前唯一推荐入口
 
 ```rust
-use std::sync::Arc;
-use tqsdk_rs::prelude::*;
-use tqsdk_rs::runtime::LiveMarketAdapter;
+use tqsdk_rs::{Client, EndpointConfig, ReplayConfig};
 
-fn build_backtest_runtime(backtest: &BacktestHandle) -> Arc<TqRuntime> {
-    Arc::new(TqRuntime::with_id(
-        "backtest-runtime",
-        RuntimeMode::Backtest,
-        Arc::new(LiveMarketAdapter::new(backtest.dm())),
-        Arc::new(BacktestExecutionAdapter::new(vec!["TQSIM".to_string()])),
-    ))
-}
+let client = Client::builder(username, password)
+    .endpoints(EndpointConfig::from_env())
+    .build()
+    .await?;
+
+let mut session = client
+    .create_backtest_session(ReplayConfig::new(start_dt, end_dt)?)
+    .await?;
 ```
 
-### “怎么在 live 和 backtest 间切换？”
+不要再把 `BacktestHandle` 或 `init_market_backtest()` 当公开回测入口。
 
-直接指向：
+## 当前 replay 句柄
 
-- `switch_to_backtest`
-- `switch_to_live`
+- `quote(symbol)` -> `ReplayQuoteHandle`
+- `kline(symbol, duration, width)` -> `ReplayKlineHandle`
+- `tick(symbol, width)` -> `ReplayTickHandle`
+- `aligned_kline(symbols, duration, width)` -> `AlignedKlineHandle`
 
-同时提醒用户，切换会影响后续数据来源和时间推进语义。
+这些句柄都由 `ReplaySession::step()` 驱动更新。
 
-## 常见坑
+## 当前推荐回测循环
 
-### “回测里数据不更新”
+```rust
+let quote = session.quote("SHFE.rb2605").await?;
+let bars = session.kline("SHFE.rb2605", std::time::Duration::from_secs(60), 128).await?;
 
-先检查是否真的在推进 `BacktestHandle`。
+while let Some(step) = session.step().await? {
+    if step.updated_handles.iter().any(|id| id == bars.id()) {
+        let rows = bars.rows().await;
+        println!("rows={}", rows.len());
+    }
 
-### “拿不到 Series / Ins”
+    if step.updated_quotes.iter().any(|symbol| symbol == "SHFE.rb2605") {
+        if let Some(snapshot) = quote.snapshot().await {
+            println!("last={}", snapshot.last_price);
+        }
+    }
+}
 
-仍然先检查初始化顺序：是不是已经走了回测版初始化。
+let result = session.finish().await?;
+println!("trades={}", result.trades.len());
+```
 
-### “回测和实盘代码能不能共用？”
+## `step()` 的语义
 
-可以共用大量上层逻辑，但回答时要明确指出：
+`ReplaySession::step()` 是唯一时间推进入口。
 
-- 数据推进方式不同
-- 时间语义不同
-- 交易链路和权限语义也可能不同
+每次返回 `ReplayStep`，常用字段：
 
-对于 target-pos 任务，还要补一句：
+- `current_dt`
+- `updated_handles`
+- `updated_quotes`
+- `settled_trading_day`
 
-- `BacktestExecutionAdapter` 当前是内存内立即成交模型，不是完整交易所撮合模拟器
+如果用户说“回测不动”“target-pos 不执行”“quote 不刷新”，先检查是不是没有持续调用 `step()`。
+
+## `quote()` 的隐式驱动
+
+`session.quote(symbol)` 在没有显式 tick / kline feed 时，会自动补一个隐式 1 分钟 quote 驱动。
+
+因此：
+
+- 只看 replay quote 时，通常先 `quote(symbol)` 就够
+- runtime 下单也会为未显式订阅的 symbol 建立必要的 quote 驱动
+
+## replay runtime
+
+回测下的 target-pos 入口：
+
+```rust
+let runtime = session.runtime(["TQSIM"]).await?;
+let account = runtime.account("TQSIM")?;
+let task = account.target_pos("SHFE.rb2605").build()?;
+```
+
+最接近的仓库例子是：
+
+- `examples/backtest.rs`
+- `examples/pivot_point.rs`
+
+## `finish()` 的结果
+
+`finish()` 返回 `BacktestResult`，可读：
+
+- `settlements`
+- `final_accounts`
+- `final_positions`
+- `trades`
+
+这是回测结束后的汇总结果，不是实时更新对象。
+
+## 当前不要再推荐的旧写法
+
+- `BacktestHandle`
+- `switch_to_backtest()` / `switch_to_live()` 叙事
+- 把 replay 说成 `Client` live 状态机的一部分

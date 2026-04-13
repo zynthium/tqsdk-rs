@@ -1,130 +1,125 @@
 # 行情与序列
 
-当用户问下面这些问题时，优先读本文件：
+当用户问 Quote、K 线、Tick、`wait_update()`、`SeriesSubscription`、历史快照或下载时，读本文件。
 
-- `subscribe_quote` 怎么用
-- `QuoteSubscription`、`SeriesAPI`、`SeriesSubscription` 的区别
-- K线、Tick、历史数据怎么订阅
-- 为什么没收到回调 / 为什么 `series()` 不可用
-- 多合约对齐 K 线怎么写
-
-## 总顺序
-
-```text
-Client::builder
-  -> build
-  -> init_market / init_market_backtest
-  -> subscribe_quote / series()
-  -> 注册回调
-  -> start()
-```
-
-## Quote
+## 当前 live 行情主路径
 
 ```rust
-let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
+use std::time::Duration;
+use tqsdk_rs::prelude::*;
 
-quote_sub
-    .on_quote(|quote| {
-        println!("{} 最新价={}", quote.instrument_id, quote.last_price);
-    })
-    .await;
+let mut client = Client::builder(username, password)
+    .endpoints(EndpointConfig::from_env())
+    .build()
+    .await?;
+client.init_market().await?;
 
-quote_sub.start().await?;
+let symbol = "SHFE.au2602";
+let _quote_sub = client.subscribe_quote(&[symbol]).await?;
+let quote = client.quote(symbol);
+
+loop {
+    quote.wait_update().await?;
+    let q = quote.load().await;
+    println!("{} {}", q.instrument_id, q.last_price);
+}
 ```
 
-### Quote 要点
+也可以用 `client.wait_update_and_drain()` 做统一 update loop，再按 `updates.quotes / updates.klines / updates.ticks` 分发。
 
-- 先 `init_market()`
-- 先 `on_quote(...)`，再 `start()`
-- `quote_channel()` 适合 `select!` / channel 消费
-- `add_symbols()` / `remove_symbols()` 可动态调整订阅
+## `QuoteSubscription` 的当前语义
 
-## Series
+- 创建后立即生效，已经 auto-start
+- 只负责服务端订阅生命周期
+- 读取行情统一走 `Client::quote()`
+- 动态改订阅用 `add_symbols()` / `remove_symbols()`
+- 提前释放资源用 `close()`
 
-### 单合约 K 线
+不要再推荐：
+
+- `start()`
+- `on_quote(...)`
+- `quote_channel()`
+
+## latest Quote / K 线 / Tick
+
+- Quote：`Client::quote(symbol)` -> `QuoteRef`
+- latest K 线：`Client::kline_ref(symbol, duration)` -> `KlineRef`
+- latest Tick：`Client::tick_ref(symbol)` -> `TickRef`
+
+这些 ref 适合状态驱动策略循环；通常与 `client.wait_update()` 或 `client.wait_update_and_drain()` 配合使用。
+
+## live 窗口序列
 
 ```rust
 use std::time::Duration;
 
+let sub = client.kline("SHFE.au2602", Duration::from_secs(60), 256).await?;
+
+let snapshot = sub.wait_update().await?;
+if snapshot.update.has_new_bar {
+    let data = sub.load().await?;
+    let series = data.single.as_ref().expect("single-symbol kline");
+    if let Some(last) = series.data.last() {
+        println!("last close = {}", last.close);
+    }
+}
+```
+
+关键点：
+
+- `client.kline(...)` / `client.tick(...)` 返回 `Arc<SeriesSubscription>`
+- 创建后立即生效，不需要 `start()`
+- `wait_update()` 等下一次 coalesced snapshot
+- `snapshot()` 读取当前快照（可能是 `None`）
+- `load()` 读取当前 `Arc<SeriesData>`；首次快照前可能报错
+- `close()` 提前释放窗口订阅
+
+## 多合约对齐 K 线
+
+```rust
 let sub = client
-    .series()?
-    .kline("SHFE.au2602", Duration::from_secs(60), 300)
+    .kline(["SHFE.au2602", "SHFE.ag2512"], Duration::from_secs(60), 256)
     .await?;
+
+let snapshot = sub.wait_update().await?;
+let data = sub.load().await?;
+let aligned = data.multi.as_ref().expect("multi-symbol kline");
+println!("aligned bars = {}", aligned.data.len());
+println!("has_new_bar = {}", snapshot.update.has_new_bar);
 ```
 
-### Tick
+## 一次性历史快照
 
-```rust
-let sub = client.series()?.tick("SHFE.au2602", 200).await?;
-```
+- K 线：`get_kline_data_series(symbol, duration, start_dt, end_dt)`
+- Tick：`get_tick_data_series(symbol, start_dt, end_dt)`
 
-### 历史 K 线
+语义都是 `[start_dt, end_dt)`，它们不是持续更新订阅。
 
-```rust
-let sub = client
-    .series()?
-    .kline_history("SHFE.au2602", Duration::from_secs(60), 8000, left_kline_id)
-    .await?;
-```
+最接近的仓库例子是 `examples/history.rs`。
 
-### 带 focus 的历史 K 线
+## 长时间历史导出
 
-```rust
-let sub = client
-    .series()?
-    .kline_history_with_focus(symbol, duration, data_length, focus_datetime, focus_position)
-    .await?;
-```
+如果用户要“后台下载”“导出 CSV”“长时间区间异步落盘”，优先讲：
 
-### 多合约对齐 K 线
+- `spawn_data_downloader()`
+- `spawn_data_downloader_with_options()`
+- `spawn_data_downloader_to_writer()`
 
-```rust
-use std::time::Duration;
+不要把 `get_kline_data_series()` 讲成无限长历史导出器。
 
-let symbols = vec!["SHFE.au2602".to_string(), "SHFE.ag2602".to_string()];
-let sub = client.series()?.kline(&symbols, Duration::from_secs(60), 100).await?;
-```
+## 当前不要再推荐的旧写法
 
-## Series 回调
+- `SeriesSubscription::start()`
+- `SeriesSubscription::on_update()`
+- `SeriesSubscription::on_new_bar()`
+- `SeriesSubscription::data_stream()`
+- 直接从 `SeriesAPI` / `InsAPI` 作为普通用户主路径出发
 
-常见入口：
+## 什么时候选哪条路径
 
-- `on_update`
-- `on_new_bar`
-- `on_bar_update`
-- `data_stream`
-
-推荐顺序：
-
-```text
-创建订阅
--> 注册回调 / stream 消费
--> start()
-```
-
-## 常见坑
-
-### “`series()` 报未初始化”
-
-通常是还没调 `init_market()` 或 `init_market_backtest()`。
-
-### “K线没有回调”
-
-先检查：
-
-1. 是否已经 `start()`
-2. 是否在 `start()` 前注册了回调
-3. 是否合约和周期参数写对
-
-### “想拿很多历史数据”
-
-优先说明：
-
-- 历史序列接口有自己的定位方式
-- 不要把实时订阅接口讲成无限历史下载器
-
-### “Quote 和 Series 该选哪个？”
-
-- 只关心最新行情快照：`subscribe_quote`
-- 关心 K线、Tick、历史定位、对齐数据：`series()`
+- 只想读最新行情：`subscribe_quote()` + `quote()`
+- 只想读 latest bar / tick：`kline_ref()` / `tick_ref()`
+- 想读窗口态序列：`kline()` / `tick()` + `SeriesSubscription`
+- 想拿固定时间范围历史：`get_*_data_series()`
+- 想后台导出：`spawn_data_downloader*()`

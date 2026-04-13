@@ -131,6 +131,7 @@ benches/
 - 只改文档：检查改动内容是否与仓库现状一致
 - 只改纯逻辑模块：`cargo test`
 - 改公开 API、trait、类型定义、模块导出：`cargo test` + `cargo clippy --all-targets --all-features -- -D warnings`
+- 改整体架构说明、对外 API 主路径、示例或 README canonical 用法：额外检查 `skills/tqsdk-rs/` 与根 `AGENTS.md` 是否仍然准确
 - 改 `polars_ext/`：额外运行 `cargo build --features polars`
 - 改示例：至少运行 `cargo check --examples`
 - 改 `websocket/`、`datamanager/`、`quote/`、`series/`、`trade_session/` 这类核心链路：优先补/改对应单元测试，再跑完整 `cargo test`
@@ -157,6 +158,7 @@ benches/
 
 - 优先保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
 - 修改公开 API 时，同时检查 `README.md`、`AGENTS.md`、示例代码、`prelude` re-export 是否需要同步。
+- `skills/tqsdk-rs/` 是仓库内给 AI / Vibe Coding 智能体使用的知识包；当整体架构、对外 API、示例、README canonical 路径或公开迁移建议发生变化时，必须在同一变更里同步更新对应的 `SKILL.md`、`references/*.md`、`assets/*`。
 - 如果这次改动删除或替换 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
 - 如果这次改动涉及 live API，优先把入口收口到 `Client`，不要继续把新能力挂到 `TqApi` / `SeriesAPI` / `InsAPI` 上。
 - 修改 `DataManager` merge/query/watch 语义时，要特别关注向后兼容性；这部分会影响多个上层模块。
@@ -166,7 +168,14 @@ benches/
 - 不要为新代码新增或恢复 `Client::tqapi()` / `Client::series()` / `Client::ins()` 依赖、`QuoteSubscription::start()` / `SeriesSubscription::start()` 依赖、以及 `TradeSession` 的 snapshot callback/channel 依赖。
 - 新增错误类型时，优先复用 `TqError`，保持错误边界集中。
 - 示例代码是对外接口的一部分；如果 API 变了，示例必须同步更新。
+- 如果改动改变了 agent 未来应遵循的 canonical API、禁用 surface、验证策略或文档同步义务，也要同步更新根 `AGENTS.md`，不要只改代码与 README。
 - `benches/` 下的文件是内部性能验证工件，不属于公开 canonical API 示例；不要把依赖 advanced/internal path 的压测脚本重新放回 `examples/`。
+
+## Skill / AI Workflow 同步
+
+- `skills/tqsdk-rs/` 不是历史归档，而是当前仓库 public shape 的 AI 参考入口；它应持续反映 `README.md`、`src/lib.rs`、`examples/`、`docs/architecture.md` 与本文件中的最新规则。
+- 后续任何涉及 `Client`、`TradeSession`、`ReplaySession`、`TqRuntime`、`DataManager` 通知语义、端点配置、示例路径或移除旧 API 的变更，都要检查 `skills/tqsdk-rs/` 是否仍然准确。
+- 如果本次变更会让智能体继续生成旧接口、旧 callback/channel 写法、旧回测入口或旧 runtime facade，那么说明 `skills/tqsdk-rs/` / `AGENTS.md` 还没有同步完，不能算完成。
 
 ## 测试与示例约定
 
@@ -194,6 +203,7 @@ benches/
 - 涉及格式化或宏展开相关改动：`cargo fmt --check`
 - 涉及 `polars_ext/`：`cargo build --features polars`
 - 涉及示例或 README 中的命令：至少确认命令与当前代码一致
+- 涉及整体架构、公开 API、示例、README 主路径或 agent 规则：确认 `skills/tqsdk-rs/` 和根 `AGENTS.md` 已同步
 
 ## 给 Agent 的建议阅读顺序
 

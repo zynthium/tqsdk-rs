@@ -1,88 +1,102 @@
 # 合约与基础数据
 
-当用户问下面这些问题时，优先读本文件：
+当用户问合约查询、主连、期权筛选、结算价、持仓排名、EDB、交易日历或交易状态时，读本文件。
 
-- `ins()` 是什么
-- 合约查询、期权筛选、主连查询怎么做
-- 结算价、持仓排名、EDB、交易日历、交易状态怎么查
-- 为什么 `ins()` 不能用
+## 当前主路径
 
-## 入口
+这些能力都优先走 `Client` facade：
+
+- `query_graphql()`
+- `query_quotes()`
+- `query_cont_quotes()`
+- `query_options()`
+- `query_atm_options()`
+- `query_all_level_options()`
+- `query_all_level_finance_options()`
+- `query_symbol_info()`
+- `query_symbol_settlement()`
+- `query_symbol_ranking()`
+- `query_edb_data()`
+- `get_trading_calendar()`
+- `get_trading_status()`
+
+不要把 `InsAPI` 当作普通用户主路径。
+
+## 使用前提
+
+先完成：
 
 ```rust
+let mut client = Client::builder(username, password)
+    .endpoints(EndpointConfig::from_env())
+    .build()
+    .await?;
+
 client.init_market().await?;
-let ins = client.ins()?;
 ```
 
-先说明：`InsAPI` 依赖行情初始化，没做 `init_market()` 或 `init_market_backtest()` 时不要直接调用。
+## 常见查询
 
-## 常用查询
-
-### 报价 / 合约
-
-- `query_quotes`
-- `query_cont_quotes`
-- `query_options`
-- `query_symbol_info`
-
-### 基础数据
-
-- `query_symbol_settlement`
-- `query_symbol_ranking`
-- `query_edb_data`
-- `get_trading_calendar`
-- `get_trading_status`
-
-## 回答策略
-
-### 用户问“怎么查某个交易所全部合约”
-
-优先给 `query_quotes`。
-
-### 用户问“怎么查主连”
-
-优先给 `query_cont_quotes`。
-
-### 用户问“怎么筛期权”
-
-优先给 `query_options`，并说明筛选维度来自标的、近月、价位层等参数。
-
-### 用户问“怎么查字段含义”
-
-不要一次性解释所有字段，只解释用户当前真正在用的那几个字段。
-
-## 交易日历与交易状态
-
-### 交易日历
+### 合约 / 主连
 
 ```rust
-let days = ins.get_trading_calendar(start_dt, end_dt).await?;
+let futures = client
+    .query_quotes(Some("FUTURE"), Some("SHFE"), None, Some(false), None)
+    .await?;
+
+let cont = client.query_cont_quotes(Some("SHFE"), None, None).await?;
 ```
 
-### 交易状态
+### 期权筛选
 
 ```rust
-let status = ins.get_trading_status("SHFE.au2602").await?;
+let options = client
+    .query_options("SSE.510300", Some("CALL"), None, None, None, Some(false), None)
+    .await?;
+
+let atm = client
+    .query_atm_options("SSE.510300", underlying_price, &[1, 0, -1], "CALL", None, None, None)
+    .await?;
 ```
 
-如果用户问“状态一直拿不到”：
+`examples/option_levels.rs` 是当前最接近的仓库例子。
 
-- 先检查是否有权限
-- 再检查是否已经完成市场初始化
+### 基础数据服务
 
-## 常见坑
+```rust
+let info = client.query_symbol_info(&["SHFE.au2602"]).await?;
+let settlement = client.query_symbol_settlement(&["SHFE.au2602"], 5, None).await?;
+let ranking = client
+    .query_symbol_ranking("SHFE.au2602", "volume", 5, None, None)
+    .await?;
+let calendar = client.get_trading_calendar(start_date, end_date).await?;
+```
 
-### “`ins()` 报未初始化”
+### EDB
 
-最常见原因是没先 `init_market()`。
+```rust
+let rows = client.query_edb_data(&[100000001], 30, Some("left"), Some("none")).await?;
+```
 
-### “为什么某些接口报权限不足”
+这类接口受账号权限约束。若用户只是在排查权限问题，直接指出“接口存在，但账号可能缺少对应授权”，不要虚构代码层 workaround。
 
-不同基础数据接口可能受权限控制，尤其是：
+## `get_trading_status()`
 
-- `query_edb_data`
-- 部分交易状态或扩展行情
+`get_trading_status(symbol)` 返回一个 `async_channel::Receiver<TradingStatus>`。
 
-### “这是不是 GraphQL？”
+使用时可以：
 
-可以说底层会经过相关查询链路，但回答时优先讲公共 API，不要先把重点放在底层协议实现上。
+```rust
+let rx = client.get_trading_status("SHFE.au2602").await?;
+while let Ok(status) = rx.recv().await {
+    println!("{:?}", status);
+}
+```
+
+内部是按 symbol 聚合订阅意图的；receiver 释放后会自动减少引用计数。
+
+## 当前不要再推荐的旧路径
+
+- 把 `series()` / `ins()` 讲成对外主入口
+- 让用户直接操作 `ins/` 内部模块来完成普通查询
+- 在普通问答里展开 GraphQL 内部细节，除非用户明确要底层 query

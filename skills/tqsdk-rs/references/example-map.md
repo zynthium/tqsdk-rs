@@ -1,65 +1,73 @@
 # 示例索引
 
-当用户要“仓库里有现成例子吗”“给我一个最接近的 example”时，优先读本文件。
+当用户说“仓库里有现成例子吗”“给我一个最接近的 example”时，先读本文件。
 
-## 行情订阅
+## live 行情 / 序列
 
 - `examples/quote.rs`
-  - Quote、K线、Tick、多合约序列的综合示例
+  - `Client::init_market()`
+  - `subscribe_quote()`
+  - `quote()`
+  - `kline()` / `tick()`
+  - `kline_ref()` / `tick_ref()`
+  - `wait_update_and_drain()`
 
-## 历史数据
+## 一次性历史快照
 
 - `examples/history.rs`
-  - `kline_history`
-  - `kline_history_with_focus`
-  - 大量历史 K 线分片接收
+  - `get_kline_data_series()`
+  - 时间区间 `[start_dt, end_dt)`
+  - 环境变量驱动的历史查询参数
 
 ## 交易
 
 - `examples/trade.rs`
   - `TradeSession`
-  - 回调注册顺序
-  - 下单、撤单、查询
-  - `TQ_TD_URL` / `TradeSessionOptions` 风格
+  - `subscribe_events()`
+  - `wait_update()`
+  - `connect()` / `is_ready()`
+  - 手工下单 / 撤单片段
 
-## TargetPos / Runtime
-
-- `README.md`
-  - `TargetPosTask` compat facade
-  - `TargetPosScheduler` compat facade
-  - backtest runtime wiring 片段
-- `src/runtime/`
-  - `TqRuntime`
-  - `AccountHandle`
-  - `TargetPosTask` / `TargetPosScheduler`
-  - `BacktestExecutionAdapter`
-
-## 回测
+## replay / backtest
 
 - `examples/backtest.rs`
-  - 回测初始化
-  - 回放与推进
-  - build backtest runtime helper
+  - `create_backtest_session()`
+  - `ReplaySession::quote()` / `kline()`
+  - `ReplaySession::runtime()`
+  - `TargetPosTask`
+  - `step()` / `finish()`
 
-## 合约与基础数据
+- `examples/pivot_point.rs`
+  - 基于 `ReplaySession` 的完整策略例子
+  - 日线开盘事件
+  - `TargetPosTask`
+
+## 合约与期权
+
+- `examples/option_levels.rs`
+  - `query_atm_options()`
+  - `query_all_level_options()`
+  - `query_all_level_finance_options()`
+
+## DIFF / DataManager
 
 - `examples/datamanager.rs`
-  - `DataManager` 风格使用
-- `examples/option_levels.rs`
-  - 期权层级与合约筛选
+  - `watch()` / `unwatch()`
+  - `get_by_path()`
+  - `subscribe_epoch()`
 
 ## 日志
 
 - `examples/custom_logger.rs`
-  - 自定义日志初始化
+  - 自定义 logger 初始化
 
-## 当用户问“看哪个模块源码”
+## 如果用户要“看哪个模块源码”
 
-- 客户端与公开入口：`src/client/`
-- 行情：`src/quote/`
-- K线 / Tick：`src/series/`
+- live facade：`src/client/`
+- Quote 生命周期：`src/quote/`
+- K 线 / Tick / 历史：`src/series/`
 - 合约与基础数据：`src/ins/`
 - 交易：`src/trade_session/`
-- 目标持仓运行时：`src/runtime/`
-- 认证：`src/auth/`
-- 回测：`src/backtest/`
+- 回放：`src/replay/`
+- runtime / target-pos：`src/runtime/`
+- DIFF 状态中心：`src/datamanager/`

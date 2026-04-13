@@ -1,48 +1,28 @@
 # 客户端与端点
 
-当用户问下面这些问题时，优先读本文件：
+当用户问 `Client`、`ClientBuilder`、端点覆盖、初始化顺序或 runtime 构造时，读本文件。
 
-- `Client` 和 `ClientBuilder` 怎么选
-- `ClientConfig`、`EndpointConfig` 怎么配
-- `TQ_AUTH_URL`、`TQ_MD_URL`、`TQ_TD_URL`、`TQ_INS_URL`、`TQ_CHINESE_HOLIDAY_URL` 有什么用
-- 如何覆盖服务地址
-- 为什么现在推荐 builder + endpoints 风格
-
-## 推荐入口
+## 推荐的 live 客户端构造
 
 ```rust
 use tqsdk_rs::{Client, ClientConfig, EndpointConfig};
 
-let client = Client::builder(username, password)
-    .config(ClientConfig::default())
+let mut client = Client::builder(username, password)
+    .config(ClientConfig {
+        log_level: "info".to_string(),
+        view_width: 10_000,
+        ..Default::default()
+    })
     .endpoints(EndpointConfig::from_env())
     .build()
     .await?;
+
+client.init_market().await?;
 ```
 
-## 什么时候用什么
+如果用户没有特别要求，优先推荐 builder 风格，而不是直接把 `Client::new(...)` 当主写法。
 
-### `Client::builder`
-
-优先推荐。适合：
-
-- 显式配置 `ClientConfig`
-- 覆盖端点
-- 逐步讲清初始化顺序
-- 给用户可扩展模板
-
-### `Client::new`
-
-便捷入口。适合：
-
-- 用户只要最短可运行代码
-- 不需要展示端点或更细配置
-
-但如果用户问题涉及端点、环境变量、迁移旧写法、交易地址覆盖，优先切回 `Client::builder`。
-
-## `ClientConfig`
-
-常见字段：
+## `ClientConfig` 里值得提的项
 
 - `log_level`
 - `view_width`
@@ -51,26 +31,24 @@ let client = Client::builder(username, password)
 - `message_queue_capacity`
 - `message_backlog_warn_step`
 - `message_batch_max`
+- `series_disk_cache_enabled`
+- `series_disk_cache_max_bytes`
+- `series_disk_cache_retention_days`
 
-如果用户只是做普通行情或策略 demo，通常从 `ClientConfig::default()` 开始，再按需改字段。
+如果用户只做普通 live 行情，通常只需要 `log_level` 与 `view_width`。
 
-## `EndpointConfig`
+## `init_market()` 的规则
 
-字段：
+- `subscribe_quote()`、`quote()` 的有效更新
+- `kline()` / `tick()`
+- `kline_ref()` / `tick_ref()`
+- `query_*()`、`get_trading_calendar()`、`get_trading_status()`
 
-- `auth_url`
-- `md_url`
-- `td_url`
-- `ins_url`
-- `holiday_url`
+这些 live market / query 能力都应在 `init_market()` 之后使用。
 
-### 推荐来源
+## 当前公开端点配置
 
-```rust
-let endpoints = EndpointConfig::from_env();
-```
-
-### 公开推荐环境变量
+优先讲 `EndpointConfig` 与 `ClientBuilder` 的端点方法，不要把 auth 内部细节当公开推荐路径。
 
 - `TQ_AUTH_URL`
 - `TQ_MD_URL`
@@ -78,28 +56,28 @@ let endpoints = EndpointConfig::from_env();
 - `TQ_INS_URL`
 - `TQ_CHINESE_HOLIDAY_URL`
 
-### 不再推荐的旧 auth 内部变量
+常见写法：
 
-不要把下面这些讲成正式公开配置：
+```rust
+let endpoints = EndpointConfig::from_env();
 
-- `TQ_NS_URL`
-- `TQ_CLIENT_ID`
-- `TQ_CLIENT_SECRET`
-- `TQ_AUTH_PROXY`
-- `TQ_AUTH_NO_PROXY`
-- `TQ_AUTH_VERIFY_JWT`
-
-## 端点覆盖优先级
-
-### 行情 / 合约 / 假期数据
-
-```text
-builder 显式设置
-> EndpointConfig::from_env()
-> 默认值
+let client = Client::builder(username, password)
+    .endpoints(endpoints)
+    .build()
+    .await?;
 ```
 
-### 交易地址
+也可以用 builder 单独覆盖：
+
+- `.auth_url(...)`
+- `.md_url(...)`
+- `.td_url(...)`
+- `.ins_url(...)`
+- `.holiday_url(...)`
+
+## 交易地址优先级
+
+对 `TradeSession` 来说，交易地址优先级是：
 
 ```text
 TradeSessionOptions.td_url_override
@@ -108,24 +86,54 @@ TradeSessionOptions.td_url_override
 > 鉴权返回的默认交易地址
 ```
 
-## 常见问法的回答方向
+## `build_runtime()` 的当前语义
 
-### “怎么切换测试环境 / 私有服务地址？”
+`ClientBuilder::build_runtime()` 只是：
 
-先给 `ClientBuilder::{auth_url, md_url, td_url, ins_url, holiday_url}` 或 `EndpointConfig::from_env()`。
+```text
+build() -> into_runtime()
+```
 
-### “环境变量应该怎么设？”
-
-优先讲公开端点变量，不要展开讲 auth 内部实现细节。
-
-### “旧代码里都是 `Client::new`，现在怎么迁移？”
-
-先给 builder 写法，再强调：
+所以 live 模式下若想直接拿到可用账户句柄，推荐先在 builder 上预配置交易会话：
 
 ```rust
-Client::builder(user, pass)
-    .config(config)
-    .endpoints(EndpointConfig::from_env())
-    .build()
+use std::sync::Arc;
+use tqsdk_rs::{Client, TradeSessionOptions, TqRuntime};
+
+let runtime: Arc<TqRuntime> = Client::builder(username, password)
+    .trade_session_with_options(
+        "simnow",
+        user_id,
+        trade_password,
+        TradeSessionOptions::default(),
+    )
+    .build_runtime()
     .await?;
+
+let account = runtime.account("simnow:user_id")?;
 ```
+
+如果没有预配置任何 trade session，`build_runtime()` 得到的是一个没有 live 账户句柄的 runtime 外壳。
+
+## `into_runtime()` 什么时候用
+
+当用户已经先创建了 `Client`，并通过 `create_trade_session*()` 配好了交易账户时：
+
+```rust
+let client = Client::builder(username, password).build().await?;
+let _session = client
+    .create_trade_session("simnow", user_id, trade_password)
+    .await?;
+
+let runtime = client.into_runtime();
+let account = runtime.account("simnow:user_id")?;
+```
+
+## `Client::close()` 的语义
+
+`Client::close()` 会：
+
+- 关闭 live market 相关资源
+- 关闭当前 `Client` 上已跟踪的 `TradeSession`
+
+普通文档 / 问答里可以把它讲成“退出前显式释放资源”的收尾动作。

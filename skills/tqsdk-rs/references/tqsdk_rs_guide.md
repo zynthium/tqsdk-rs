@@ -1,269 +1,112 @@
-# TqSdk-RS 参考指南
+# tqsdk-rs API 地图
 
-## 先记住：以 Rust 源码为准
+当用户只要一个当前版本的总览时，先读本文件。
 
-回答用户时优先遵守 Rust 源码的真实公共 API、examples 和公开导出的类型。
+## 当前四条主路径
 
-最重要的心智是：
+1. `Client`
+   live 行情、序列、合约查询的统一入口。
+2. `TradeSession`
+   手工交易链路，负责连接交易前置、读取交易快照、消费可靠事件流。
+3. `ReplaySession`
+   回测 / 回放入口，负责注册 replay 句柄、推进时间、产出最终结果。
+4. `TqRuntime`
+   目标持仓和 scheduler 运行时，只在用户明确问 target-pos / runtime 时展开。
 
-- 订阅消费围绕 `QuoteSubscription` / `SeriesSubscription`
-- 手工交易入口围绕 `TradeSession`
-- 配置入口围绕 `Client::builder + EndpointConfig`
-- 回测推进围绕 `BacktestHandle`
-- 目标持仓任务入口围绕 `TqRuntime` / `AccountHandle`，但这不是大多数问题的默认起点
-- target-pos 回测执行围绕 `BacktestHandle + TqRuntime + BacktestExecutionAdapter`
+## 当前公开 API 地图
 
-## 快速定位
+| 任务 | 当前 canonical API | 备注 | 例子 |
+|------|--------------------|------|------|
+| live Quote | `init_market()` -> `subscribe_quote()` -> `quote()` -> `wait_update()` / `load()` | 订阅 auto-start | `examples/quote.rs` |
+| live 最新 K 线 / Tick | `kline_ref()` / `tick_ref()` | 读取 latest state | `examples/quote.rs` |
+| live 窗口序列 | `kline()` / `tick()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，coalesced snapshot | `examples/quote.rs` |
+| 一次性历史快照 | `get_kline_data_series()` / `get_tick_data_series()` | 语义为 `[start_dt, end_dt)` | `examples/history.rs` |
+| 长时间历史导出 | `spawn_data_downloader*()` | 后台下载任务，不是实时订阅 | `src/download/` |
+| 合约 / 期权 / 参考数据 | `query_*()`、`get_trading_calendar()`、`get_trading_status()` | 走 `Client` facade，不是 `InsAPI` 主路径 | `examples/option_levels.rs` |
+| 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 | `examples/trade.rs` |
+| live target-pos | `ClientBuilder::trade_session*().build_runtime()` 或 `client.into_runtime()` | `runtime.account("broker:user")` | `README.md` |
+| replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` | `step()` 是唯一时间推进 | `examples/backtest.rs` |
+| replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | backtest runtime | `examples/backtest.rs`, `examples/pivot_point.rs` |
+| DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 | `examples/datamanager.rs` |
 
-### 我应该从哪个入口开始？
+## 当前推荐初始化顺序
 
-| 目标 | 入口 |
-|------|------|
-| 创建客户端 | `Client::builder` |
-| 覆盖服务地址 | `EndpointConfig::from_env` 或 `ClientBuilder::{auth_url, md_url, td_url, ins_url, holiday_url}` |
-| 初始化行情 | `init_market` / `init_market_backtest` |
-| 实时行情 | `subscribe_quote` |
-| K线 / Tick / 历史序列 | `series()` |
-| 合约、结算价、排名、交易日历 | `ins()` |
-| 创建交易会话 | `create_trade_session` / `create_trade_session_with_options` |
-| 创建目标持仓 runtime | `Client::into_runtime`（仅目标持仓相关时展开） / `ClientBuilder::build_runtime`（runtime 外壳） |
-| 创建目标持仓任务 | `runtime.account(...)? .target_pos(...)` / `TargetPosTask::new(...)` |
-| 创建调仓 scheduler | `runtime.account(...)? .target_pos_scheduler(...)` / `TargetPosScheduler::new(...)` |
-| 控制回测推进 | `BacktestHandle` |
-
-## 推荐初始化模板
-
-```rust
-use tqsdk_rs::{Client, ClientConfig, EndpointConfig};
-
-let mut client = Client::builder(username, password)
-    .config(ClientConfig::default())
-    .endpoints(EndpointConfig::from_env())
-    .build()
-    .await?;
-```
-
-如果要做行情、K线、Tick、历史、合约查询，后续还需要：
-
-```rust
-client.init_market().await?;
-```
-
-## 端点与环境变量
-
-公开推荐的端点环境变量只有：
-
-- `TQ_AUTH_URL`
-- `TQ_MD_URL`
-- `TQ_TD_URL`
-- `TQ_INS_URL`
-- `TQ_CHINESE_HOLIDAY_URL`
-
-推荐优先级：
+### live 行情 / 查询
 
 ```text
-显式 builder 参数
-> EndpointConfig::from_env()
-> 默认值
+Client::builder -> build -> init_market
+  -> subscribe_quote / quote
+  -> kline / tick / kline_ref / tick_ref
+  -> query_* / get_trading_calendar / get_trading_status
 ```
 
-交易地址优先级：
+### 手工交易
 
 ```text
-TradeSessionOptions.td_url_override
-> ClientBuilder::td_url / EndpointConfig.td_url
-> TQ_TD_URL
-> 鉴权返回的默认交易地址
+Client::builder -> build
+  -> create_trade_session*
+  -> 建立 wait_update / reliable event 消费路径
+  -> connect
 ```
 
-## 行情与订阅
-
-### Quote
-
-```rust
-let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-
-quote_sub
-    .on_quote(|quote| {
-        println!("{} 最新价={}", quote.instrument_id, quote.last_price);
-    })
-    .await;
-
-quote_sub.start().await?;
-```
-
-要点：
-
-- 先 `init_market`
-- 先注册回调，再 `start()`
-- 可以用 `quote_channel()` 改成 channel 消费
-- 可以用 `add_symbols()` / `remove_symbols()` 动态调整
-
-### Series
-
-```rust
-use std::time::Duration;
-
-let series_api = client.series()?;
-let sub = series_api.kline("SHFE.au2602", Duration::from_secs(60), 300).await?;
-
-sub.on_update(|data, info| {
-    if let Some(single) = &data.single {
-        if let Some(last) = single.data.last() {
-            if info.has_new_bar {
-                println!("新K线");
-            }
-            println!("close={}", last.close);
-        }
-    }
-})
-.await;
-
-sub.start().await?;
-```
-
-常用入口：
-
-- `kline`
-- `tick`
-- `kline_history`
-- `kline_history_with_focus`
-
-### 多合约对齐 K 线
-
-```rust
-use std::time::Duration;
-
-let symbols = vec!["SHFE.au2602".to_string(), "SHFE.ag2602".to_string()];
-let sub = client
-    .series()?
-    .kline(&symbols, Duration::from_secs(60), 100)
-    .await?;
-```
-
-## 合约与基础数据
-
-先拿到 `InsAPI`：
-
-```rust
-let ins = client.ins()?;
-```
-
-然后再按需求调用：
-
-- `query_quotes`
-- `query_cont_quotes`
-- `query_options`
-- `query_symbol_info`
-- `query_symbol_settlement`
-- `query_symbol_ranking`
-- `query_edb_data`
-- `get_trading_calendar`
-- `get_trading_status`
-
-如果用户问“为什么 `ins()` 报错”，优先检查是否已经 `init_market()`。
-
-## 交易会话
-
-```rust
-use tqsdk_rs::{TradeSessionOptions, types::*};
-
-let session = client
-    .create_trade_session_with_options(
-        "simnow",
-        "user_id",
-        "password",
-        TradeSessionOptions {
-            td_url_override: None,
-        },
-    )
-    .await?;
-
-session.on_account(|account| {
-    println!("权益={} 可用={}", account.balance, account.available);
-}).await;
-
-session.on_position(|symbol, position| {
-    println!("{} 净持仓={}", symbol, position.volume_long_today);
-}).await;
-
-session.connect().await?;
-
-let order_id = session.insert_order(&InsertOrderRequest {
-    symbol: "SHFE.au2602".to_string(),
-    exchange_id: None,
-    instrument_id: None,
-    direction: DIRECTION_BUY.to_string(),
-    offset: OFFSET_OPEN.to_string(),
-    price_type: PRICE_TYPE_LIMIT.to_string(),
-    limit_price: 650.0,
-    volume: 1,
-}).await?;
-
-session.cancel_order(&order_id).await?;
-```
-
-关键顺序：
-
-1. 创建会话
-2. 注册回调 / channel
-3. `connect()`
-4. 下单 / 撤单 / 主动查询
-
-## Runtime / TargetPos
-
-这是特定能力分支，不是全局默认入口。
-
-如果用户问的是 Python `TargetPosTask` 对齐、目标净持仓、时间分片调仓，不要继续讲 `TradeSession` 主路径，直接切到：
-
-- `Client::into_runtime`
-- `ClientBuilder::build_runtime`（仅在用户明确问这个 API 时解释其当前语义）
-- `runtime.account(account_key)?`
-- `account.target_pos(symbol)`
-- `account.target_pos_scheduler(symbol)`
-- `TargetPosTask::new(...)`
-- `TargetPosScheduler::new(...)`
-
-## 回测
-
-入口：
-
-- `init_market_backtest`
-- `BacktestHandle::next`
-- `BacktestHandle::peek`
-- `BacktestHandle::current_dt`
-- `switch_to_backtest`
-- `switch_to_live`
-
-如果用户要“回测 + K线策略”，优先建议：
+### live target-pos
 
 ```text
-builder -> build -> init_market_backtest -> series/quote/ins -> BacktestHandle
+Client::builder
+  -> trade_session* (预配置 live 账户)
+  -> build_runtime
+  -> runtime.account("broker:user")
+  -> target_pos / target_pos_scheduler
 ```
 
-如果用户要“回测 + 目标持仓任务”，要补一句：
+或：
 
 ```text
-BacktestHandle 推进市场时间
-+ TqRuntime::with_id(..., RuntimeMode::Backtest, LiveMarketAdapter, BacktestExecutionAdapter)
+Client::builder -> build
+  -> create_trade_session*
+  -> into_runtime
+  -> runtime.account("broker:user")
 ```
 
-## 常见坑
+### replay / backtest
 
-### 1. `series()` / `ins()` 不可用
-通常是没有先 `init_market()` 或 `init_market_backtest()`。
+```text
+Client::builder -> build
+  -> create_backtest_session(ReplayConfig)
+  -> quote / kline / tick / aligned_kline
+  -> 可选 runtime([account])
+  -> step() 循环
+  -> finish()
+```
 
-### 2. 回调没有触发
-通常是少了 `start()` 或 `connect()`，或者注册顺序反了。
+## 什么时候不要切错路径
 
-### 3. 用户还在问旧环境变量
-优先把答案收束到端点变量，不要继续放大 auth 内部配置。
+- 用户只问 Quote / K 线 / Tick：不要默认切到 `TqRuntime` 或 `TradeSession`
+- 用户只问合约查询 / 期权筛选：不要展开 `InsAPI` 内部结构，直接给 `Client::query_*()`
+- 用户问回测：不要再讲 `BacktestHandle` 或 `init_market_backtest()`
+- 用户问 target-pos：不要说这是 `TradeSession` 上的方法
+- 用户问“仓库现在的公开入口是什么”：先回答 `Client` / `TradeSession` / `ReplaySession` / `TqRuntime`
 
-### 4. 想用交易地址覆盖
-优先给 `TradeSessionOptions { td_url_override }` 或 `ClientBuilder::td_url(...)`。
+## 明确不要再用的旧写法
 
-### 5. 想做 DataFrame 分析
-提醒用户需要启用 `polars` feature。
+- `Client::tqapi()`
+- `Client::series()`
+- `Client::ins()`
+- `QuoteSubscription::start()`
+- `SeriesSubscription::start()`
+- `QuoteSubscription::on_quote()` / `quote_channel()`
+- `SeriesSubscription::on_update()` / `on_new_bar()` / `data_stream()`
+- `BacktestHandle`
+- `TargetPosTask::new(...)` / `TargetPosScheduler::new(...)` 作为默认答案
+- `TradeSession` 的 snapshot callback / best-effort channel 叙事
 
-### 6. 用户问 Python `TargetPosTask` 在 Rust 里的对应物
-直接回答 `TqRuntime` + `TargetPosTask` / `TargetPosScheduler`，不要再说“Rust 暂时没有”。
+## 仓库模块定位
+
+- live facade：`src/client/`
+- Quote 生命周期：`src/quote/`
+- live K 线 / Tick / 历史下载：`src/series/`
+- 合约与参考数据：`src/ins/`
+- 交易：`src/trade_session/`
+- replay / backtest：`src/replay/`
+- runtime / target-pos：`src/runtime/`
+- DIFF 状态中心：`src/datamanager/`
