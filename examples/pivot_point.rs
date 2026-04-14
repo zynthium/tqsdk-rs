@@ -212,7 +212,10 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
             python_bool(current_price <= levels.s1 + REVERSAL_CONFIRM && current_price > levels.s1 - REVERSAL_CONFIRM)
         );
         println!("2. 价格高于当日最低价: {}", python_bool(current_price > current_low));
-        println!("3. 价格高于前一日收盘价: {}", python_bool(current_price > previous.kline.close));
+        println!(
+            "3. 价格高于前一日收盘价: {}",
+            python_bool(current_price > previous.kline.close)
+        );
         println!();
         println!("空头信号条件:");
         println!(
@@ -220,7 +223,10 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
             python_bool(current_price >= levels.r1 - REVERSAL_CONFIRM && current_price < levels.r1 + REVERSAL_CONFIRM)
         );
         println!("2. 价格低于当日最高价: {}", python_bool(current_price < current_high));
-        println!("3. 价格低于前一日收盘价: {}", python_bool(current_price < previous.kline.close));
+        println!(
+            "3. 价格低于前一日收盘价: {}",
+            python_bool(current_price < previous.kline.close)
+        );
 
         if strategy.current_direction == 0 {
             if current_price < levels.s1 {

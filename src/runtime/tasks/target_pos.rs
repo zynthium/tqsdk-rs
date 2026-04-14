@@ -265,7 +265,7 @@ impl TargetPosTaskInner {
         request: TargetRequest,
         command_rx: &mut watch::Receiver<TaskCommand>,
     ) -> RuntimeResult<()> {
-        loop {
+        'drive: loop {
             let command = command_rx.borrow().clone();
             match command {
                 TaskCommand::Cancel => {
@@ -297,9 +297,10 @@ impl TargetPosTaskInner {
             }
 
             for batch in plan {
-                let interrupted = self.run_batch(request, batch, command_rx).await?;
-                if interrupted {
-                    return Ok(());
+                match self.run_batch(request, batch, command_rx).await? {
+                    BatchStatus::Completed => {}
+                    BatchStatus::Interrupted => return Ok(()),
+                    BatchStatus::NeedsReplan => continue 'drive,
                 }
             }
         }
@@ -310,9 +311,9 @@ impl TargetPosTaskInner {
         request: TargetRequest,
         batch: PlannedBatch,
         command_rx: &watch::Receiver<TaskCommand>,
-    ) -> RuntimeResult<bool> {
+    ) -> RuntimeResult<BatchStatus> {
         if self.command_changed(command_rx, request.seq) {
-            return Ok(true);
+            return Ok(BatchStatus::Interrupted);
         }
 
         let runtime = self.account.runtime();
@@ -351,19 +352,28 @@ impl TargetPosTaskInner {
         }
 
         let mut interrupted = false;
+        let mut needs_replan = false;
         while let Some(joined) = runners.join_next().await {
             let outcome = joined.map_err(|err| RuntimeError::TargetTaskFailed {
                 symbol: self.symbol.clone(),
                 reason: format!("child order runner join failed: {err}"),
             })??;
 
-            if matches!(outcome, ChildOrderStatus::Interrupted) {
-                interrupted = true;
+            match outcome {
+                ChildOrderStatus::Completed => {}
+                ChildOrderStatus::Interrupted => interrupted = true,
+                ChildOrderStatus::NeedsReplan => needs_replan = true,
             }
         }
 
         forward.abort();
-        Ok(interrupted)
+        if interrupted {
+            Ok(BatchStatus::Interrupted)
+        } else if needs_replan {
+            Ok(BatchStatus::NeedsReplan)
+        } else {
+            Ok(BatchStatus::Completed)
+        }
     }
 
     fn command_changed(&self, command_rx: &watch::Receiver<TaskCommand>, request_seq: u64) -> bool {
@@ -438,6 +448,13 @@ impl TargetPosTaskInner {
         *self.trades.lock().expect("target task trades lock poisoned") = trades;
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchStatus {
+    Completed,
+    Interrupted,
+    NeedsReplan,
 }
 
 impl Drop for TargetPosTaskInner {

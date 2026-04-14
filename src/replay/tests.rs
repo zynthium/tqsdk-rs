@@ -763,6 +763,152 @@ async fn replay_runtime_wait_order_update_ignores_quote_only_updates() {
     wait_task.abort();
 }
 
+#[tokio::test]
+async fn replay_target_pos_replans_shfe_close_today_after_settlement_retry() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::new(),
+        ticks: HashMap::from([(
+            symbol.to_string(),
+            vec![
+                Tick {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 9, 14, 58, 0),
+                    last_price: 100.0,
+                    average: 100.0,
+                    highest: 100.0,
+                    lowest: 100.0,
+                    ask_price1: 101.0,
+                    ask_volume1: 1,
+                    bid_price1: 99.0,
+                    bid_volume1: 1,
+                    volume: 1,
+                    amount: 100.0,
+                    open_interest: 100,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 2,
+                    datetime: shanghai_nanos(2026, 4, 9, 14, 59, 0),
+                    last_price: 100.0,
+                    average: 100.0,
+                    highest: 100.0,
+                    lowest: 100.0,
+                    ask_price1: 101.0,
+                    ask_volume1: 1,
+                    bid_price1: 99.0,
+                    bid_volume1: 1,
+                    volume: 2,
+                    amount: 200.0,
+                    open_interest: 101,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 3,
+                    datetime: shanghai_nanos(2026, 4, 10, 9, 0, 0),
+                    last_price: 100.0,
+                    average: 100.0,
+                    highest: 100.0,
+                    lowest: 100.0,
+                    ask_price1: 101.0,
+                    ask_volume1: 1,
+                    bid_price1: 99.0,
+                    bid_volume1: 1,
+                    volume: 3,
+                    amount: 300.0,
+                    open_interest: 102,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 4,
+                    datetime: shanghai_nanos(2026, 4, 10, 9, 1, 0),
+                    last_price: 100.0,
+                    average: 100.0,
+                    highest: 100.0,
+                    lowest: 100.0,
+                    ask_price1: 101.0,
+                    ask_volume1: 1,
+                    bid_price1: 99.0,
+                    bid_volume1: 1,
+                    volume: 4,
+                    amount: 400.0,
+                    open_interest: 103,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 5,
+                    datetime: shanghai_nanos(2026, 4, 10, 9, 2, 0),
+                    last_price: 100.0,
+                    average: 100.0,
+                    highest: 100.0,
+                    lowest: 100.0,
+                    ask_price1: 101.0,
+                    ask_volume1: 1,
+                    bid_price1: 99.0,
+                    bid_volume1: 1,
+                    volume: 5,
+                    amount: 500.0,
+                    open_interest: 104,
+                    ..Tick::default()
+                },
+            ],
+        )]),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 14, 57, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 10, 9, 5, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _quote = session.quote(symbol).await.unwrap();
+    let _ticks = session.tick(symbol, 8).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+
+    let open_order = account.insert_order(&limit_buy(symbol, 1_000.0, 1)).await.unwrap();
+    let _ = session.step().await.unwrap().unwrap();
+    let _ = session.step().await.unwrap().unwrap();
+
+    let open_state = runtime.execution().order("TQSIM", &open_order).await.unwrap();
+    assert_eq!(open_state.status, "FINISHED");
+    let long_position = runtime.execution().position("TQSIM", symbol).await.unwrap();
+    assert_eq!(long_position.volume_long_today, 1);
+    assert_eq!(long_position.volume_long_his, 0);
+
+    let task: TargetPosTask = account.target_pos(symbol).build().unwrap();
+    task.set_target_volume(0).unwrap();
+    tokio::task::yield_now().await;
+
+    let _ = session.step().await.unwrap().unwrap();
+    let after_settlement = runtime.execution().position("TQSIM", symbol).await.unwrap();
+    assert_eq!(after_settlement.volume_long_today, 0);
+    assert_eq!(after_settlement.volume_long_his, 1);
+
+    let _ = session.step().await.unwrap().unwrap();
+    let _ = session.step().await.unwrap().unwrap();
+
+    timeout(Duration::from_secs(1), task.wait_target_reached())
+        .await
+        .expect("task should resolve after the next trading-day quotes")
+        .expect("task should replan a carried SHFE close-today order instead of failing");
+
+    let flat_position = runtime.execution().position("TQSIM", symbol).await.unwrap();
+    assert_eq!(flat_position.volume_long, 0);
+    assert_eq!(flat_position.volume_short, 0);
+}
+
 #[test]
 fn replay_config_rejects_inverted_range() {
     let start_dt = DateTime::<Utc>::from_timestamp(1_700_000_100, 0).unwrap();

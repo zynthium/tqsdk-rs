@@ -40,6 +40,7 @@ pub struct PlannedBatch {
 pub(crate) enum ChildOrderStatus {
     Completed,
     Interrupted,
+    NeedsReplan,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +132,7 @@ impl ChildOrderRunner {
     #[cfg(test)]
     pub async fn run_until_all_traded(&self) -> RuntimeResult<()> {
         match self.run().await? {
-            ChildOrderStatus::Completed => Ok(()),
+            ChildOrderStatus::Completed | ChildOrderStatus::NeedsReplan => Ok(()),
             ChildOrderStatus::Interrupted => Ok(()),
         }
     }
@@ -189,7 +190,6 @@ impl ChildOrderRunner {
                             return Err(RuntimeError::OrderCompletionInvariant { order_id });
                         }
 
-                        remaining -= filled;
                         if interrupted {
                             return Ok(ChildOrderStatus::Interrupted);
                         }
@@ -206,6 +206,12 @@ impl ChildOrderRunner {
                         if stop_requested(control.as_ref()) {
                             return Ok(ChildOrderStatus::Interrupted);
                         }
+
+                        if matches!(self.offset, PlannedOffset::CloseToday) {
+                            return Ok(ChildOrderStatus::NeedsReplan);
+                        }
+
+                        remaining -= filled;
                         break;
                     }
                     remaining -= filled;

@@ -68,7 +68,7 @@
 
 - `ClientBuilder` 配置式构建。
 - `tracing` 日志集成和自定义 Layer。
-- 8 个示例程序覆盖主要使用路径。
+- 12 个示例程序覆盖主要使用路径。
 
 ## 近期修复与更新
 
@@ -124,8 +124,8 @@ tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3" }
 | `SIMNOW_USER_0` | 否 | `trade` 示例使用的 SimNow 账号 |
 | `SIMNOW_PASS_0` | 否 | `trade` 示例使用的 SimNow 密码 |
 | `TQ_TRADE_EXAMPLE_DURATION_SECS` | 否 | `trade` 示例持续运行秒数，默认 `300` |
-| `TQ_START_DT` | 否 | `backtest` 示例起始日期，格式 `YYYY-MM-DD` |
-| `TQ_END_DT` | 否 | `backtest` 示例结束日期，格式 `YYYY-MM-DD` |
+| `TQ_START_DT` | 否 | `backtest` / `pivot_point` / `doublema` / `dualthrust` / `rbreaker` 示例起始日期，格式 `YYYY-MM-DD` |
+| `TQ_END_DT` | 否 | `backtest` / `pivot_point` / `doublema` / `dualthrust` / `rbreaker` 示例结束日期，格式 `YYYY-MM-DD` |
 | `TQ_TEST_SYMBOL` | 否 | `history` 示例联调用的测试合约 |
 | `TQ_HISTORY_BAR_SECONDS` | 否 | `history` 示例 K 线周期（秒），默认 `60` |
 | `TQ_HISTORY_LOOKBACK_MINUTES` | 否 | `history` 示例回看分钟数，默认 `240` |
@@ -328,7 +328,11 @@ println!("trades={}", result.trades.len());
 - runtime 在 `step()` 返回后新发出的订单，最早从下一次 `step()` 开始参与撮合，不会回头消费已处理过的本 step 价格路径。
 - `quote()` 在没有显式 tick / kline 订阅时会自动补一个隐式 1 分钟 feed；runtime 下单也会自动为未显式订阅的 symbol 建立回放 quote 驱动。
 
-日线开盘信号策略可参考 `examples/pivot_point.rs`。
+基于 `ReplaySession` 的日线 / 盘中策略示例可参考：
+- `examples/pivot_point.rs`
+- `examples/doublema.rs`
+- `examples/dualthrust.rs`
+- `examples/rbreaker.rs`
 
 ### 后台历史下载到 CSV
 
@@ -800,6 +804,15 @@ cargo run --example backtest
 # 枢轴点回放策略
 cargo run --example pivot_point
 
+# 双均线回放策略
+cargo run --example doublema
+
+# Dual Thrust 回放策略
+cargo run --example dualthrust
+
+# R-Breaker 回放策略
+cargo run --example rbreaker
+
 # DataManager 高级用法
 cargo run --example datamanager
 
@@ -820,6 +833,9 @@ cargo run --example option_levels
 | `trade.rs` | 可靠事件流、账户/持仓监听、订单等待 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`、`SIMNOW_USER_0`、`SIMNOW_PASS_0`，可选 `TQ_TRADE_EXAMPLE_DURATION_SECS` |
 | `backtest.rs` | `ReplaySession` 构建、K 线注册、runtime 驱动、结果汇总 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
 | `pivot_point.rs` | 基于 `ReplaySession` 的日线枢轴点反转策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_POSITION_SIZE`、`TQ_LOG_LEVEL` |
+| `doublema.rs` | 基于 `ReplaySession` 的双均线交叉策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_LOG_LEVEL` |
+| `dualthrust.rs` | 基于 `ReplaySession` 的 Dual Thrust 日线突破策略示例 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_LOG_LEVEL` |
+| `rbreaker.rs` | 基于 `ReplaySession` 的 R-Breaker 策略示例；默认改用可回放的 `SHFE.au2606` | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_START_DT`、`TQ_END_DT`、`TQ_TEST_SYMBOL`、`TQ_LOG_LEVEL` |
 | `datamanager.rs` | `watch` / `unwatch`、路径读取、epoch | 无 |
 | `custom_logger.rs` | `create_logger_layer()` 与业务日志组合 | 无 |
 | `option_levels.rs` | 平值/实值/虚值期权查询 | `TQ_AUTH_USER`、`TQ_AUTH_PASS`，可选 `TQ_UNDERLYING`、`TQ_LOG_LEVEL`；默认标的为 ETF，要求账户具备股票行情权限 |
@@ -876,6 +892,9 @@ tqsdk-rs/
 │   ├── trade.rs
 │   ├── backtest.rs
 │   ├── pivot_point.rs
+│   ├── doublema.rs
+│   ├── dualthrust.rs
+│   ├── rbreaker.rs
 │   ├── datamanager.rs
 │   ├── custom_logger.rs
 │   └── option_levels.rs

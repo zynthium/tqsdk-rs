@@ -38,6 +38,11 @@
 - 基于 `ReplaySession` 的完整策略例子
 - 日线开盘事件
 - `TargetPosTask`
+- `examples/backtest.rs` 演示基础回放 / runtime 汇总
+- `examples/pivot_point.rs` 演示日线枢轴点反转
+- `examples/doublema.rs` 演示双均线交叉
+- `examples/dualthrust.rs` 演示 Dual Thrust 日线突破
+- `examples/rbreaker.rs` 演示 R-Breaker 日内突破 / 反转
 
 ## 合约与期权场景
 
