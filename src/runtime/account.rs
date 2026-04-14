@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::trade_session::{OrderEventStream, TradeEventStream, TradeOnlyEventStream};
 use crate::types::InsertOrderRequest;
 
 use super::{TargetPosBuilder, TargetPosSchedulerBuilder, TqRuntime};
@@ -43,5 +44,17 @@ impl AccountHandle {
             .engine()
             .insert_manual_order(&self.runtime, &self.account_key, req)
             .await
+    }
+
+    pub fn subscribe_events(&self) -> super::RuntimeResult<TradeEventStream> {
+        self.runtime.execution().subscribe_events(&self.account_key)
+    }
+
+    pub fn subscribe_order_events(&self) -> super::RuntimeResult<OrderEventStream> {
+        self.runtime.execution().subscribe_order_events(&self.account_key)
+    }
+
+    pub fn subscribe_trade_events(&self) -> super::RuntimeResult<TradeOnlyEventStream> {
+        self.runtime.execution().subscribe_trade_events(&self.account_key)
     }
 }

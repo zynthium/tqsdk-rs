@@ -3,7 +3,6 @@ use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use tqsdk_rs::prelude::*;
-use tracing::info;
 
 fn parse_env_u64(name: &str, default: u64) -> u64 {
     env::var(name)
@@ -21,10 +20,14 @@ fn parse_env_i64(name: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+fn example_log_level() -> String {
+    env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "warn".to_string())
+}
+
 async fn build_client(username: &str, password: &str) -> Result<Client> {
     Client::builder(username, password)
         .config(ClientConfig {
-            log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            log_level: example_log_level(),
             view_width: 10000,
             ..Default::default()
         })
@@ -35,7 +38,7 @@ async fn build_client(username: &str, password: &str) -> Result<Client> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logger(&env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()), false);
+    init_logger(&example_log_level(), false);
 
     let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
     let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
@@ -49,7 +52,7 @@ async fn main() -> Result<()> {
     let end_dt = Utc::now();
     let start_dt = end_dt - ChronoDuration::minutes(lookback_minutes);
 
-    info!(
+    println!(
         "拉取历史 K 线 data_series symbol={} duration={}s range=[{}, {})",
         symbol, bar_secs, start_dt, end_dt
     );
@@ -58,9 +61,9 @@ async fn main() -> Result<()> {
         .get_kline_data_series(symbol.as_str(), Duration::from_secs(bar_secs), start_dt, end_dt)
         .await?;
 
-    info!("历史 K 线 data_series 下载完成 count={}", rows.len());
+    println!("历史 K 线 data_series 下载完成 count={}", rows.len());
     if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
-        info!(
+        println!(
             "样本 first_id={} first_dt={} last_id={} last_dt={} last_close={}",
             first.id, first.datetime, last.id, last.datetime, last.close
         );

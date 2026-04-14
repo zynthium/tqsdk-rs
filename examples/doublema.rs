@@ -3,6 +3,8 @@ use std::error::Error;
 use std::result::Result as StdResult;
 use std::time::Duration;
 
+#[path = "support/python_trade_log.rs"]
+mod python_trade_log;
 #[path = "support/replay_dates.rs"]
 mod replay_dates;
 
@@ -52,6 +54,13 @@ fn env_or_default(name: &str, default: &str) -> String {
     env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
+fn env_flag(name: &str) -> bool {
+    matches!(
+        env::var(name).ok().as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES")
+    )
+}
+
 fn parse_env_date(name: &str, default: (i32, u32, u32)) -> StdResult<NaiveDate, Box<dyn Error>> {
     match env::var(name) {
         Ok(raw) => Ok(NaiveDate::parse_from_str(&raw, "%Y-%m-%d")?),
@@ -91,6 +100,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let log_level = env_or_default("TQ_LOG_LEVEL", "warn");
     let start_date = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)?;
     let end_date = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)?;
+    let debug_signal_ts = env_flag("TQ_DEBUG_SIGNAL_TS");
     let replay_start_dt = strategy_start_dt(replay_start_date(start_date, WARMUP_TRADING_DAYS))?;
     let replay_end_dt = strategy_end_dt(end_date)?;
 
@@ -106,11 +116,12 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let mut session = client
         .create_backtest_session(ReplayConfig::new(replay_start_dt, replay_end_dt)?)
         .await?;
-    let _quote = session.quote(&symbol).await?;
+    let quote = session.quote(&symbol).await?;
     let bars = session.kline(&symbol, BAR_DURATION, LONG + 4).await?;
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
     let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
     let task = account.target_pos(&symbol).build()?;
+    let order_log_task = python_trade_log::spawn_order_logger(&account)?;
 
     println!("策略开始运行");
 
@@ -138,6 +149,30 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         processed_bar_id = Some(last.kline.id);
         let closes = rows.iter().map(|row| row.kline.close).collect::<Vec<_>>();
         if let Some(target) = cross_signal(&closes, SHORT, LONG, TARGET_VOLUME) {
+            if debug_signal_ts {
+                if let Some(snapshot) = quote.snapshot().await {
+                    eprintln!(
+                        "DEBUG_REPLAY_QUOTE dt={} quote_dt={} last={:.6} ask1={:.6} bid1={:.6}",
+                        step.current_dt,
+                        DateTime::<Utc>::from_timestamp_nanos(snapshot.datetime_nanos),
+                        snapshot.last_price,
+                        snapshot.ask_price1,
+                        snapshot.bid_price1
+                    );
+                }
+                let prev = &closes[..closes.len() - 1];
+                let prev_short = sma(prev, SHORT).unwrap_or(f64::NAN);
+                let prev_long = sma(prev, LONG).unwrap_or(f64::NAN);
+                let curr_short = sma(&closes, SHORT).unwrap_or(f64::NAN);
+                let curr_long = sma(&closes, LONG).unwrap_or(f64::NAN);
+                eprintln!(
+                    "DEBUG_SIGNAL dt={} bar_dt={} state={:?} prev_short={prev_short:.6} prev_long={prev_long:.6} curr_short={curr_short:.6} curr_long={curr_long:.6} last_close={:.6}",
+                    step.current_dt,
+                    DateTime::<Utc>::from_timestamp_nanos(last.kline.datetime),
+                    last.state,
+                    last.kline.close
+                );
+            }
             if target > 0 {
                 println!("均线上穿，做多");
             } else {
@@ -149,6 +184,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
 
     task.cancel().await?;
     task.wait_finished().await?;
+    order_log_task.abort();
     session.finish().await?;
     println!("回测结束");
     Ok(())

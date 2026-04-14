@@ -2,7 +2,6 @@ use std::env;
 use std::time::Duration;
 
 use tqsdk_rs::prelude::*;
-use tracing::info;
 
 fn parse_env_u64(name: &str, default: u64) -> u64 {
     env::var(name)
@@ -26,10 +25,14 @@ fn derive_data_length(bar_secs: u64, lookback_minutes: i64) -> usize {
     bars.clamp(1, 10_000) as usize
 }
 
+fn example_log_level() -> String {
+    env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "warn".to_string())
+}
+
 async fn build_client(username: &str, password: &str) -> Result<Client> {
     Client::builder(username, password)
         .config(ClientConfig {
-            log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+            log_level: example_log_level(),
             view_width: 10000,
             ..Default::default()
         })
@@ -40,7 +43,7 @@ async fn build_client(username: &str, password: &str) -> Result<Client> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logger(&env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()), false);
+    init_logger(&example_log_level(), false);
 
     let username = env::var("TQ_AUTH_USER").expect("请设置 TQ_AUTH_USER 环境变量");
     let password = env::var("TQ_AUTH_PASS").expect("请设置 TQ_AUTH_PASS 环境变量");
@@ -53,7 +56,7 @@ async fn main() -> Result<()> {
     let lookback_minutes = parse_env_i64("TQ_HISTORY_LOOKBACK_MINUTES", 240);
     let data_length = derive_data_length(bar_secs, lookback_minutes);
 
-    info!(
+    println!(
         "订阅 K 线 serial symbol={} duration={}s data_length={} capped_at=10000",
         symbol, bar_secs, data_length
     );
@@ -74,9 +77,9 @@ async fn main() -> Result<()> {
         .get_symbol_klines(symbol.as_str())
         .expect("single-symbol serial should exist");
 
-    info!("K 线 serial 准备完成 count={}", series.data.len());
+    println!("K 线 serial 准备完成 count={}", series.data.len());
     if let (Some(first), Some(last)) = (series.data.first(), series.data.last()) {
-        info!(
+        println!(
             "样本 first_id={} first_dt={} last_id={} last_dt={} last_close={}",
             first.id, first.datetime, last.id, last.datetime, last.close
         );

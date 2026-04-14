@@ -90,9 +90,9 @@
 
 - 单元测试：`cargo test`
 - 静态检查：`cargo clippy --all-targets --all-features -- -D warnings`
-- 示例联调：`cargo run --example quote`
+- 示例联调：`cargo run --quiet --example quote`
 - 账户权限：`query_edb_data` 需要账号具备非价量数据权限，否则会返回权限提示，不影响其他接口。
-- 交易示例：`cargo run --example trade` 会连接交易环境，运行前请确认使用的是模拟账户并已正确配置环境变量。
+- 交易示例：`cargo run --quiet --example trade` 会连接交易环境，运行前请确认使用的是模拟账户并已正确配置环境变量。
 
 ## 快速开始
 
@@ -117,7 +117,7 @@ tqsdk-rs = { git = "https://github.com/zynthium/tqsdk-rs.git", tag = "v0.1.3" }
 |------|------|------|
 | `TQ_AUTH_USER` | 是 | 天勤账号 |
 | `TQ_AUTH_PASS` | 是 | 天勤密码 |
-| `TQ_LOG_LEVEL` | 否 | 常见示例使用的日志级别，如 `info`、`debug` |
+| `TQ_LOG_LEVEL` | 否 | 常见示例使用的日志级别；默认 `warn`，如需 SDK 详细日志可设为 `info`、`debug` |
 | `TQ_QUOTE_AU` | 否 | `quote` 示例中的第一个行情合约 |
 | `TQ_QUOTE_AG` | 否 | `quote` 示例中的第二个行情合约 |
 | `TQ_QUOTE_M` | 否 | `quote` 示例中的第三个行情合约 |
@@ -787,40 +787,46 @@ match auth.has_md_grants(&["SSE.000300"]) {
 
 ```bash
 # 行情订阅
-cargo run --example quote
+cargo run --quiet --example quote
 
 # 最近 10000 条以内的序列历史与接口联调
-cargo run --example history
+cargo run --quiet --example history
 
 # 显式时间范围历史下载
-cargo run --example data_series
+cargo run --quiet --example data_series
 
 # 实盘/模拟交易
-cargo run --example trade
+cargo run --quiet --example trade
 
 # 回测
-cargo run --example backtest
+cargo run --quiet --example backtest
 
 # 枢轴点回放策略
-cargo run --example pivot_point
+cargo run --quiet --example pivot_point
 
 # 双均线回放策略
-cargo run --example doublema
+cargo run --quiet --example doublema
 
 # Dual Thrust 回放策略
-cargo run --example dualthrust
+cargo run --quiet --example dualthrust
 
 # R-Breaker 回放策略
-cargo run --example rbreaker
+cargo run --quiet --example rbreaker
 
 # DataManager 高级用法
-cargo run --example datamanager
+cargo run --quiet --example datamanager
 
 # 自定义 tracing Layer
-cargo run --example custom_logger
+cargo run --quiet --example custom_logger
 
 # 期权平值/实值/虚值查询
-cargo run --example option_levels
+cargo run --quiet --example option_levels
+```
+
+如需更短的命令，仓库内置了 cargo alias：
+
+```bash
+cargo qexample pivot_point
 ```
 
 ### 示例说明
@@ -1042,7 +1048,7 @@ let layer = create_logger_layer("info", false);
 **Q: 如何调试网络或权限问题？**
 
 - 将日志级别切到 `debug`。
-- 先运行 `cargo run --example quote` 验证认证和行情链路；如果要检查历史下载权限，再运行 `cargo run --example data_series`。
+- 先运行 `cargo run --quiet --example quote` 验证认证和行情链路；如果要检查历史下载权限，再运行 `cargo run --quiet --example data_series`。
 - 单独检查账号是否有目标合约和扩展数据权限。
 
 ### 报告问题

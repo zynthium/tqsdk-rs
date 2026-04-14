@@ -49,11 +49,20 @@ struct RegistryState {
     manual_guard_keys_by_id: HashMap<TaskId, TaskKey>,
     order_owners: HashMap<String, TaskId>,
     task_orders: HashMap<TaskId, HashSet<String>>,
+    task_progress: HashMap<TaskId, TaskProgress>,
 }
 
 #[derive(Debug, Default)]
 pub struct TaskRegistry {
     state: Mutex<RegistryState>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TaskProgress {
+    requested_seq: u64,
+    observed_seq: u64,
+    finished: bool,
+    inflight_ops: usize,
 }
 
 impl TaskRegistry {
@@ -142,6 +151,61 @@ impl TaskRegistry {
         TaskId(state.next_task_id)
     }
 
+    pub fn register_task_progress(&self, task_id: TaskId) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        state.task_progress.entry(task_id).or_default();
+    }
+
+    pub fn mark_task_requested(&self, task_id: TaskId, requested_seq: u64) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        let progress = state.task_progress.entry(task_id).or_default();
+        progress.requested_seq = progress.requested_seq.max(requested_seq);
+        progress.finished = false;
+    }
+
+    pub fn mark_task_observed(&self, task_id: TaskId, observed_seq: u64) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        let progress = state.task_progress.entry(task_id).or_default();
+        progress.observed_seq = progress.observed_seq.max(observed_seq);
+    }
+
+    pub fn mark_task_finished(&self, task_id: TaskId) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        if let Some(progress) = state.task_progress.get_mut(&task_id) {
+            progress.finished = true;
+        }
+    }
+
+    pub fn has_pending_target_requests(&self) -> bool {
+        let state = self.state.lock().expect("task registry lock poisoned");
+        state
+            .task_progress
+            .values()
+            .any(|progress| !progress.finished && progress.requested_seq > progress.observed_seq)
+    }
+
+    pub fn mark_task_busy(&self, task_id: TaskId) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        let progress = state.task_progress.entry(task_id).or_default();
+        progress.inflight_ops += 1;
+    }
+
+    pub fn mark_task_idle(&self, task_id: TaskId) {
+        let mut state = self.state.lock().expect("task registry lock poisoned");
+        let Some(progress) = state.task_progress.get_mut(&task_id) else {
+            return;
+        };
+        progress.inflight_ops = progress.inflight_ops.saturating_sub(1);
+    }
+
+    pub fn has_inflight_target_work(&self) -> bool {
+        let state = self.state.lock().expect("task registry lock poisoned");
+        state
+            .task_progress
+            .values()
+            .any(|progress| !progress.finished && progress.inflight_ops > 0)
+    }
+
     pub fn unregister_task(&self, task_id: TaskId) {
         let mut state = self.state.lock().expect("task registry lock poisoned");
 
@@ -158,6 +222,8 @@ impl TaskRegistry {
                 state.order_owners.remove(&order_id);
             }
         }
+
+        state.task_progress.remove(&task_id);
     }
 
     pub fn bind_order_owner(&self, order_id: &str, task_id: TaskId) {

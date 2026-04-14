@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::trade_session::TradeSession;
-use crate::types::{InsertOrderRequest, Order, Position, Trade};
+use crate::trade_session::{OrderEventStream, TradeEventStream, TradeOnlyEventStream, TradeSession};
+use crate::types::{InsertOrderRequest, Order, Position, Quote, Trade};
 
 use super::{RuntimeError, RuntimeResult};
 
@@ -17,6 +17,15 @@ pub trait ExecutionAdapter: Send + Sync {
 
     async fn insert_order(&self, _account_key: &str, _req: &InsertOrderRequest) -> RuntimeResult<String> {
         Err(RuntimeError::Unsupported("insert_order"))
+    }
+
+    async fn insert_order_with_quote_hint(
+        &self,
+        account_key: &str,
+        req: &InsertOrderRequest,
+        _quote: &Quote,
+    ) -> RuntimeResult<String> {
+        self.insert_order(account_key, req).await
     }
 
     async fn cancel_order(&self, _account_key: &str, _order_id: &str) -> RuntimeResult<()> {
@@ -38,6 +47,18 @@ pub trait ExecutionAdapter: Send + Sync {
     async fn wait_order_update(&self, _account_key: &str, _order_id: &str) -> RuntimeResult<()> {
         Err(RuntimeError::Unsupported("wait_order_update"))
     }
+
+    fn subscribe_events(&self, _account_key: &str) -> RuntimeResult<TradeEventStream> {
+        Err(RuntimeError::Unsupported("subscribe_events"))
+    }
+
+    fn subscribe_order_events(&self, _account_key: &str) -> RuntimeResult<OrderEventStream> {
+        Err(RuntimeError::Unsupported("subscribe_order_events"))
+    }
+
+    fn subscribe_trade_events(&self, _account_key: &str) -> RuntimeResult<TradeOnlyEventStream> {
+        Err(RuntimeError::Unsupported("subscribe_trade_events"))
+    }
 }
 
 #[derive(Default)]
@@ -50,7 +71,7 @@ impl LiveExecutionAdapter {
         Self { trade_sessions }
     }
 
-    async fn session(&self, account_key: &str) -> RuntimeResult<Arc<TradeSession>> {
+    fn session_sync(&self, account_key: &str) -> RuntimeResult<Arc<TradeSession>> {
         let sessions = self.trade_sessions.read().unwrap();
         sessions
             .get(account_key)
@@ -58,6 +79,10 @@ impl LiveExecutionAdapter {
             .ok_or_else(|| RuntimeError::AccountNotFound {
                 account_key: account_key.to_string(),
             })
+    }
+
+    async fn session(&self, account_key: &str) -> RuntimeResult<Arc<TradeSession>> {
+        self.session_sync(account_key)
     }
 }
 
@@ -113,5 +138,17 @@ impl ExecutionAdapter for LiveExecutionAdapter {
             .wait_order_update_reliable(order_id)
             .await
             .map_err(RuntimeError::Tq)
+    }
+
+    fn subscribe_events(&self, account_key: &str) -> RuntimeResult<TradeEventStream> {
+        Ok(self.session_sync(account_key)?.subscribe_events())
+    }
+
+    fn subscribe_order_events(&self, account_key: &str) -> RuntimeResult<OrderEventStream> {
+        Ok(self.session_sync(account_key)?.subscribe_order_events())
+    }
+
+    fn subscribe_trade_events(&self, account_key: &str) -> RuntimeResult<TradeOnlyEventStream> {
+        Ok(self.session_sync(account_key)?.subscribe_trade_events())
     }
 }

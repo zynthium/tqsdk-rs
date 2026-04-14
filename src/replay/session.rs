@@ -1,9 +1,9 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
-use tokio::sync::Mutex;
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::errors::{Result, TqError};
 use crate::replay::{
@@ -39,7 +39,7 @@ impl ReplayQuoteHandle {
 pub struct ReplaySession {
     config: ReplayConfig,
     bootstrap: ReplayBootstrapper,
-    kernel: Arc<Mutex<ReplayKernel>>,
+    kernel: Arc<TokioMutex<ReplayKernel>>,
     market: Arc<ReplayMarketState>,
     execution: Option<Arc<ReplayExecutionState>>,
     runtime: Option<Arc<TqRuntime>>,
@@ -51,9 +51,9 @@ pub struct ReplaySession {
 pub(crate) struct ReplayBootstrapper {
     config: ReplayConfig,
     source: Arc<dyn HistoricalSource>,
-    kernel: Arc<Mutex<ReplayKernel>>,
+    kernel: Arc<TokioMutex<ReplayKernel>>,
     market: Arc<ReplayMarketState>,
-    registered_feeds: Arc<Mutex<HashSet<(String, i64)>>>,
+    registered_feeds: Arc<StdMutex<HashSet<(String, i64)>>>,
 }
 
 impl ReplayBootstrapper {
@@ -105,7 +105,10 @@ impl ReplayBootstrapper {
     ) -> Result<()> {
         let key = (symbol.to_string(), duration_nanos);
         {
-            let registered_feeds = self.registered_feeds.lock().await;
+            let registered_feeds = self
+                .registered_feeds
+                .lock()
+                .expect("replay registered feeds lock poisoned");
             if registered_feeds.contains(&key) {
                 return Ok(());
             }
@@ -119,13 +122,16 @@ impl ReplayBootstrapper {
             symbol.to_string(),
             FeedCursor::from_kline_rows(symbol, duration_nanos, rows.clone()),
         );
-        self.registered_feeds.lock().await.insert(key);
+        self.registered_feeds
+            .lock()
+            .expect("replay registered feeds lock poisoned")
+            .insert(key);
 
         if self.market.replay_quote(symbol).await.is_none()
             && let Some(first) = rows.first()
         {
             self.market
-                .update_quote(preview_bar_open_quote(symbol, metadata, first, duration_nanos))
+                .seed_quote(preview_bar_open_quote(symbol, metadata, first, duration_nanos))
                 .await;
         }
 
@@ -138,7 +144,10 @@ impl ReplayBootstrapper {
 
         let key = (symbol.to_string(), 0);
         {
-            let registered_feeds = self.registered_feeds.lock().await;
+            let registered_feeds = self
+                .registered_feeds
+                .lock()
+                .expect("replay registered feeds lock poisoned");
             if registered_feeds.contains(&key) {
                 return Ok(metadata);
             }
@@ -152,12 +161,15 @@ impl ReplayBootstrapper {
             .lock()
             .await
             .push_feed(symbol.to_string(), FeedCursor::from_tick_rows(symbol, rows.clone()));
-        self.registered_feeds.lock().await.insert(key);
+        self.registered_feeds
+            .lock()
+            .expect("replay registered feeds lock poisoned")
+            .insert(key);
 
         if self.market.replay_quote(symbol).await.is_none()
             && let Some(first) = rows.first()
         {
-            self.market.update_quote(replay_quote_from_tick(symbol, first)).await;
+            self.market.seed_quote(replay_quote_from_tick(symbol, first)).await;
         }
 
         Ok(metadata)
@@ -166,14 +178,14 @@ impl ReplayBootstrapper {
 
 impl ReplaySession {
     pub(crate) async fn from_source(config: ReplayConfig, source: Arc<dyn HistoricalSource>) -> Result<Self> {
-        let kernel = Arc::new(Mutex::new(ReplayKernel::default()));
+        let kernel = Arc::new(TokioMutex::new(ReplayKernel::default()));
         let market = Arc::new(ReplayMarketState::default());
         let bootstrap = ReplayBootstrapper {
             config: config.clone(),
             source,
             kernel: Arc::clone(&kernel),
             market: Arc::clone(&market),
-            registered_feeds: Arc::new(Mutex::new(HashSet::new())),
+            registered_feeds: Arc::new(StdMutex::new(HashSet::new())),
         };
         Ok(Self {
             config,
@@ -266,10 +278,10 @@ impl ReplaySession {
             .into_iter()
             .map(|account| account.as_ref().to_string())
             .collect::<Vec<_>>();
-        let execution = Arc::new(ReplayExecutionState::new(SimBroker::new(
-            account_keys.clone(),
-            self.config.initial_balance,
-        )));
+        let execution = Arc::new(ReplayExecutionState::new(
+            &account_keys,
+            SimBroker::new(account_keys.clone(), self.config.initial_balance),
+        ));
         for metadata in self.market.all_metadata().await {
             execution.register_symbol(metadata).await;
         }
@@ -280,7 +292,7 @@ impl ReplaySession {
             Arc::clone(&self.market),
             self.bootstrap.clone(),
         ));
-        let runtime = Arc::new(TqRuntime::new(RuntimeMode::Backtest, market, adapter));
+        let runtime = Arc::new(TqRuntime::new_step_gated(RuntimeMode::Backtest, market, adapter));
 
         self.execution = Some(execution);
         self.runtime = Some(Arc::clone(&runtime));
@@ -288,6 +300,7 @@ impl ReplaySession {
     }
 
     pub async fn step(&mut self) -> Result<Option<ReplayStep>> {
+        self.flush_runtime_tasks().await;
         let Some(mut step) = self.kernel.lock().await.step().await? else {
             return Ok(None);
         };
@@ -362,6 +375,61 @@ impl ReplaySession {
             && let Some(underlying) = self.market.metadata_for(&metadata.underlying_symbol).await
         {
             execution.register_symbol(underlying).await;
+        }
+    }
+
+    async fn flush_runtime_tasks(&self) {
+        let Some(runtime) = &self.runtime else {
+            tokio::task::yield_now().await;
+            return;
+        };
+        let Some(execution) = &self.execution else {
+            tokio::task::yield_now().await;
+            return;
+        };
+        let registry = runtime.registry();
+        let has_pending = registry.has_pending_target_requests();
+        let can_start_pending = if runtime.step_gate_enabled() && has_pending {
+            let next_timestamp = { self.kernel.lock().await.peek_next_timestamp() };
+            next_timestamp
+                .map(|ts| self.active_trading_day_end_nanos.is_none_or(|end| ts <= end))
+                .unwrap_or(false)
+        } else {
+            has_pending
+        };
+
+        // Match Python wait_update semantics: consume any pending target-position
+        // commands before advancing replay market time.
+        if runtime.step_gate_enabled() && can_start_pending {
+            runtime.advance_step_gate();
+        }
+        if !can_start_pending {
+            while registry.has_inflight_target_work() {
+                tokio::task::yield_now().await;
+            }
+            return;
+        }
+
+        while registry.has_pending_target_requests() || registry.has_inflight_target_work() {
+            tokio::task::yield_now().await;
+        }
+
+        let mut last_seq = execution.current_update_seq();
+        let mut stable_rounds = 0_u8;
+        while stable_rounds < 2 {
+            tokio::task::yield_now().await;
+            if registry.has_pending_target_requests() || registry.has_inflight_target_work() {
+                last_seq = execution.current_update_seq();
+                stable_rounds = 0;
+                continue;
+            }
+            let current_seq = execution.current_update_seq();
+            if current_seq == last_seq {
+                stable_rounds += 1;
+            } else {
+                last_seq = current_seq;
+                stable_rounds = 0;
+            }
         }
     }
 }

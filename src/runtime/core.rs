@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tokio::sync::watch;
+
 use super::{
     AccountHandle, ExecutionAdapter, ExecutionEngine, MarketAdapter, RuntimeError, RuntimeMode, RuntimeResult,
     TaskRegistry,
@@ -15,20 +17,43 @@ pub struct TqRuntime {
     market: Arc<dyn MarketAdapter>,
     execution: Arc<dyn ExecutionAdapter>,
     engine: Arc<ExecutionEngine>,
+    step_gate_enabled: bool,
+    step_gate_tx: watch::Sender<u64>,
 }
 
 impl TqRuntime {
     pub(crate) fn new(mode: RuntimeMode, market: Arc<dyn MarketAdapter>, execution: Arc<dyn ExecutionAdapter>) -> Self {
         let id = format!("runtime-{}", NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed));
-        Self::with_id(id, mode, market, execution)
+        Self::with_options(id, mode, market, execution, false)
     }
 
+    pub(crate) fn new_step_gated(
+        mode: RuntimeMode,
+        market: Arc<dyn MarketAdapter>,
+        execution: Arc<dyn ExecutionAdapter>,
+    ) -> Self {
+        let id = format!("runtime-{}", NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed));
+        Self::with_options(id, mode, market, execution, true)
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_id(
         id: impl Into<String>,
         mode: RuntimeMode,
         market: Arc<dyn MarketAdapter>,
         execution: Arc<dyn ExecutionAdapter>,
     ) -> Self {
+        Self::with_options(id, mode, market, execution, false)
+    }
+
+    fn with_options(
+        id: impl Into<String>,
+        mode: RuntimeMode,
+        market: Arc<dyn MarketAdapter>,
+        execution: Arc<dyn ExecutionAdapter>,
+        step_gate_enabled: bool,
+    ) -> Self {
+        let (step_gate_tx, _) = watch::channel(0_u64);
         Self {
             id: id.into(),
             mode,
@@ -36,6 +61,8 @@ impl TqRuntime {
             market,
             execution,
             engine: Arc::new(ExecutionEngine),
+            step_gate_enabled,
+            step_gate_tx,
         }
     }
 
@@ -61,6 +88,26 @@ impl TqRuntime {
 
     pub(crate) fn engine(&self) -> Arc<ExecutionEngine> {
         Arc::clone(&self.engine)
+    }
+
+    pub(crate) fn step_gate_enabled(&self) -> bool {
+        self.step_gate_enabled
+    }
+
+    pub(crate) fn subscribe_step_gate(&self) -> watch::Receiver<u64> {
+        self.step_gate_tx.subscribe()
+    }
+
+    pub(crate) fn current_step_gate(&self) -> u64 {
+        *self.step_gate_tx.borrow()
+    }
+
+    pub(crate) fn advance_step_gate(&self) {
+        if !self.step_gate_enabled {
+            return;
+        }
+        let next = *self.step_gate_tx.borrow() + 1;
+        self.step_gate_tx.send_replace(next);
     }
 
     pub fn account(self: &Arc<Self>, account_key: &str) -> RuntimeResult<AccountHandle> {

@@ -8,6 +8,8 @@
 //! - 枢轴点使用上一交易日的 high/low/close 计算
 //! - 调仓通过 `TqRuntime` + `TargetPosTask` 完成
 
+#[path = "support/python_trade_log.rs"]
+mod python_trade_log;
 #[path = "support/replay_dates.rs"]
 mod replay_dates;
 
@@ -154,6 +156,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
     let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
     let task = account.target_pos(&symbol).build()?;
+    let order_log_task = python_trade_log::spawn_order_logger(&account)?;
 
     println!("开始运行枢轴点反转策略...");
 
@@ -285,7 +288,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
 
     task.cancel().await?;
     task.wait_finished().await?;
-
+    order_log_task.abort();
     session.finish().await?;
     println!("回测结束");
 

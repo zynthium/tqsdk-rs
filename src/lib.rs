@@ -94,7 +94,10 @@ pub use runtime::{
     TargetPosScheduler, TargetPosTask, TqRuntime, VolumeSplitPolicy,
 };
 pub use series::SeriesSubscription;
-pub use trade_session::{TradeFrontConfig, TradeLoginOptions, TradeSession, TradeSessionEventKind};
+pub use trade_session::{
+    OrderEventStream, TradeEventRecvError, TradeEventStream, TradeFrontConfig, TradeLoginOptions, TradeOnlyEventStream,
+    TradeSession, TradeSessionEventKind,
+};
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
 
 // Polars 扩展

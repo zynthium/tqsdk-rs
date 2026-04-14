@@ -331,6 +331,33 @@ impl SimBroker {
         })
     }
 
+    pub(crate) fn order_snapshots_for_symbol(&self, symbol: &str) -> Vec<(String, Order)> {
+        let mut orders = self
+            .orders
+            .iter()
+            .filter(|(_, order)| matches_symbol(order, symbol))
+            .map(|(order_id, order)| (order_id.clone(), order.clone()))
+            .collect::<Vec<_>>();
+        orders.sort_by(|left, right| left.0.cmp(&right.0));
+        orders
+    }
+
+    pub(crate) fn trades_for_symbol(&self, symbol: &str) -> Vec<Trade> {
+        let mut trades = self
+            .all_trades
+            .iter()
+            .filter(|trade| trade_symbol(trade) == symbol)
+            .cloned()
+            .collect::<Vec<_>>();
+        trades.sort_by(|left, right| {
+            left.trade_date_time
+                .cmp(&right.trade_date_time)
+                .then_with(|| left.order_id.cmp(&right.order_id))
+                .then_with(|| left.trade_id.cmp(&right.trade_id))
+        });
+        trades
+    }
+
     fn ensure_account(&self, account_key: &str) -> Result<()> {
         if self.accounts.contains_key(account_key) {
             Ok(())
@@ -1058,6 +1085,10 @@ fn matches_symbol(order: &Order, symbol: &str) -> bool {
 
 fn order_symbol(order: &Order) -> String {
     format!("{}.{}", order.exchange_id, order.instrument_id)
+}
+
+fn trade_symbol(trade: &Trade) -> String {
+    format!("{}.{}", trade.exchange_id, trade.instrument_id)
 }
 
 fn ensure_account_owns_order(account_key: &str, order: &Order) -> Result<()> {

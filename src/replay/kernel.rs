@@ -130,13 +130,15 @@ impl ReplayKernel {
         self.quote_paths.get(symbol).map(Vec::as_slice)
     }
 
-    pub async fn step(&mut self) -> Result<Option<ReplayStep>> {
-        let Some(next_timestamp) = self
-            .feeds
+    pub fn peek_next_timestamp(&self) -> Option<i64> {
+        self.feeds
             .iter()
             .filter_map(|(_, cursor)| cursor.peek_timestamp())
             .min()
-        else {
+    }
+
+    pub async fn step(&mut self) -> Result<Option<ReplayStep>> {
+        let Some(next_timestamp) = self.peek_next_timestamp() else {
             return Ok(None);
         };
 

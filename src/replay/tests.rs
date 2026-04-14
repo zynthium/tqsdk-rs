@@ -764,6 +764,394 @@ async fn replay_runtime_wait_order_update_ignores_quote_only_updates() {
 }
 
 #[tokio::test]
+async fn replay_account_trade_event_streams_publish_order_and_trade_updates() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::from([(
+            (symbol.to_string(), 60_000_000_000),
+            vec![Kline {
+                id: 1,
+                datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                open: 10.0,
+                high: 12.0,
+                low: 9.0,
+                close: 11.0,
+                open_oi: 10,
+                close_oi: 11,
+                volume: 5,
+                epoch: None,
+            }],
+        )]),
+        ticks: HashMap::new(),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+    let mut order_events = account.subscribe_order_events().unwrap();
+    let mut trade_events = account.subscribe_trade_events().unwrap();
+
+    let order_id = account.insert_order(&limit_buy(symbol, 11.0, 1)).await.unwrap();
+    let submitted = timeout(Duration::from_secs(1), order_events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match submitted.kind {
+        crate::TradeSessionEventKind::OrderUpdated {
+            order_id: got_order_id,
+            order,
+        } => {
+            assert_eq!(got_order_id, order_id);
+            assert_eq!(order.status, "ALIVE");
+            assert_eq!(order.last_msg, "报单成功");
+            assert_eq!(order.volume_left, 1);
+        }
+        other => panic!("unexpected order event after insert: {other:?}"),
+    }
+
+    let _ = session.step().await.unwrap().unwrap();
+
+    let finished = timeout(Duration::from_secs(1), order_events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match finished.kind {
+        crate::TradeSessionEventKind::OrderUpdated {
+            order_id: got_order_id,
+            order,
+        } => {
+            assert_eq!(got_order_id, order_id);
+            assert_eq!(order.status, "FINISHED");
+            assert_eq!(order.last_msg, "全部成交");
+            assert_eq!(order.volume_left, 0);
+        }
+        other => panic!("unexpected order event after fill: {other:?}"),
+    }
+
+    let trade_event = timeout(Duration::from_secs(1), trade_events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match trade_event.kind {
+        crate::TradeSessionEventKind::TradeCreated { trade_id, trade } => {
+            assert_eq!(trade.order_id, order_id);
+            assert_eq!(trade.trade_id, trade_id);
+            assert_eq!(trade.direction, DIRECTION_BUY);
+            assert_eq!(trade.offset, OFFSET_OPEN);
+            assert_eq!(trade.volume, 1);
+            assert_eq!(trade.price, 11.0);
+            assert_eq!(trade.trade_date_time, shanghai_nanos(2026, 4, 9, 9, 1, 0));
+        }
+        other => panic!("unexpected trade event after fill: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn replay_insert_order_matches_immediately_against_current_quote_snapshot() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::new(),
+        ticks: HashMap::from([(
+            symbol.to_string(),
+            vec![Tick {
+                id: 1,
+                datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                last_price: 10.0,
+                average: 10.0,
+                highest: 10.0,
+                lowest: 10.0,
+                ask_price1: 10.5,
+                ask_volume1: 10,
+                bid_price1: 9.5,
+                bid_volume1: 10,
+                volume: 10,
+                amount: 1_000.0,
+                open_interest: 100,
+                ..Tick::default()
+            }],
+        )]),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _ticks = session.tick(symbol, 8).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+    let mut order_events = account.subscribe_order_events().unwrap();
+    let mut trade_events = account.subscribe_trade_events().unwrap();
+
+    let first_step = session.step().await.unwrap().unwrap();
+    assert_eq!(
+        first_step.current_dt,
+        DateTime::<Utc>::from_timestamp_nanos(shanghai_nanos(2026, 4, 9, 9, 1, 0))
+    );
+
+    let order_id = account.insert_order(&limit_buy(symbol, 10.5, 1)).await.unwrap();
+
+    let submitted = timeout(Duration::from_secs(1), order_events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match submitted.kind {
+        crate::TradeSessionEventKind::OrderUpdated {
+            order_id: got_order_id,
+            order,
+        } => {
+            assert_eq!(got_order_id, order_id);
+            assert_eq!(order.status, "ALIVE");
+            assert_eq!(order.last_msg, "报单成功");
+            assert_eq!(order.volume_left, 1);
+        }
+        other => panic!("unexpected order event after insert: {other:?}"),
+    }
+
+    let finished = timeout(Duration::from_millis(200), order_events.recv())
+        .await
+        .expect("crossing order should finish immediately against current quote snapshot")
+        .unwrap();
+    match finished.kind {
+        crate::TradeSessionEventKind::OrderUpdated {
+            order_id: got_order_id,
+            order,
+        } => {
+            assert_eq!(got_order_id, order_id);
+            assert_eq!(order.status, "FINISHED");
+            assert_eq!(order.last_msg, "全部成交");
+            assert_eq!(order.volume_left, 0);
+        }
+        other => panic!("unexpected order event after immediate fill: {other:?}"),
+    }
+
+    let trade_event = timeout(Duration::from_millis(200), trade_events.recv())
+        .await
+        .expect("crossing order should publish trade immediately against current quote snapshot")
+        .unwrap();
+    match trade_event.kind {
+        crate::TradeSessionEventKind::TradeCreated { trade_id, trade } => {
+            assert_eq!(trade.order_id, order_id);
+            assert_eq!(trade.trade_id, trade_id);
+            assert_eq!(trade.direction, DIRECTION_BUY);
+            assert_eq!(trade.offset, OFFSET_OPEN);
+            assert_eq!(trade.volume, 1);
+            assert_eq!(trade.price, 10.5);
+            assert_eq!(trade.trade_date_time, shanghai_nanos(2026, 4, 9, 9, 1, 0));
+        }
+        other => panic!("unexpected trade event after immediate fill: {other:?}"),
+    }
+
+    let result = session.finish().await.unwrap();
+    assert_eq!(result.trades.len(), 1);
+    assert_eq!(result.trades[0].order_id, order_id);
+}
+
+#[tokio::test]
+async fn replay_step_flushes_pending_target_pos_commands_before_advancing_market() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::new(),
+        ticks: HashMap::from([(
+            symbol.to_string(),
+            vec![
+                Tick {
+                    id: 1,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                    last_price: 10.0,
+                    average: 10.0,
+                    highest: 10.0,
+                    lowest: 10.0,
+                    ask_price1: 10.5,
+                    ask_volume1: 10,
+                    bid_price1: 9.5,
+                    bid_volume1: 10,
+                    volume: 10,
+                    amount: 1_000.0,
+                    open_interest: 100,
+                    ..Tick::default()
+                },
+                Tick {
+                    id: 2,
+                    datetime: shanghai_nanos(2026, 4, 9, 9, 2, 0),
+                    last_price: 12.0,
+                    average: 12.0,
+                    highest: 12.0,
+                    lowest: 12.0,
+                    ask_price1: 12.5,
+                    ask_volume1: 10,
+                    bid_price1: 11.5,
+                    bid_volume1: 10,
+                    volume: 20,
+                    amount: 2_400.0,
+                    open_interest: 110,
+                    ..Tick::default()
+                },
+            ],
+        )]),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _ticks = session.tick(symbol, 8).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+    let task: TargetPosTask = account.target_pos(symbol).build().unwrap();
+    let mut trade_events = account.subscribe_trade_events().unwrap();
+
+    let first_step = session.step().await.unwrap().unwrap();
+    assert_eq!(
+        first_step.current_dt,
+        DateTime::<Utc>::from_timestamp_nanos(shanghai_nanos(2026, 4, 9, 9, 1, 0))
+    );
+
+    task.set_target_volume(1).unwrap();
+
+    let second_step = session.step().await.unwrap().unwrap();
+    assert_eq!(
+        second_step.current_dt,
+        DateTime::<Utc>::from_timestamp_nanos(shanghai_nanos(2026, 4, 9, 9, 2, 0))
+    );
+
+    let trade_event = timeout(Duration::from_secs(1), trade_events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match trade_event.kind {
+        crate::TradeSessionEventKind::TradeCreated { trade, .. } => {
+            assert_eq!(trade.price, 10.5);
+            assert_eq!(trade.trade_date_time, shanghai_nanos(2026, 4, 9, 9, 1, 0));
+        }
+        other => panic!("unexpected trade event after target_pos command: {other:?}"),
+    }
+
+    task.cancel().await.unwrap();
+    task.wait_finished().await.unwrap();
+    let result = session.finish().await.unwrap();
+    assert_eq!(result.trades.len(), 1);
+    assert_eq!(result.trades[0].trade_date_time, shanghai_nanos(2026, 4, 9, 9, 1, 0));
+}
+
+#[tokio::test]
+async fn replay_step_flushes_target_pos_against_opening_bar_quote_before_close_event() {
+    let symbol = "SHFE.rb2605";
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::from([(symbol.to_string(), future_metadata(symbol))]),
+        klines: HashMap::from([(
+            (symbol.to_string(), 60_000_000_000),
+            vec![Kline {
+                id: 1,
+                datetime: shanghai_nanos(2026, 4, 9, 9, 1, 0),
+                open: 10.0,
+                high: 12.0,
+                low: 9.0,
+                close: 11.0,
+                open_oi: 100,
+                close_oi: 110,
+                volume: 10,
+                epoch: None,
+            }],
+        )]),
+        ticks: HashMap::new(),
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 9, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 15, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _quote = session.quote(symbol).await.unwrap();
+    let _bars = session.kline(symbol, Duration::from_secs(60), 8).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let account = runtime.account("TQSIM").unwrap();
+    let task: TargetPosTask = account.target_pos(symbol).build().unwrap();
+    let mut trade_events = account.subscribe_trade_events().unwrap();
+
+    let first_step = session.step().await.unwrap().unwrap();
+    assert_eq!(
+        first_step.current_dt,
+        DateTime::<Utc>::from_timestamp_nanos(shanghai_nanos(2026, 4, 9, 9, 1, 0))
+    );
+
+    task.set_target_volume(1).unwrap();
+
+    let second_step = session.step().await.unwrap().unwrap();
+    assert_eq!(
+        second_step.current_dt,
+        DateTime::<Utc>::from_timestamp_nanos(shanghai_nanos(2026, 4, 9, 9, 1, 59) + 999_999_999)
+    );
+
+    let trade_event = timeout(Duration::from_secs(1), trade_events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    match trade_event.kind {
+        crate::TradeSessionEventKind::TradeCreated { trade, .. } => {
+            assert_eq!(trade.price, 11.0);
+            assert_eq!(trade.trade_date_time, shanghai_nanos(2026, 4, 9, 9, 1, 0));
+        }
+        other => panic!("unexpected trade event after kline-driven target_pos command: {other:?}"),
+    }
+
+    task.cancel().await.unwrap();
+    task.wait_finished().await.unwrap();
+}
+
+#[tokio::test]
 async fn replay_target_pos_replans_shfe_close_today_after_settlement_retry() {
     let symbol = "SHFE.rb2605";
     let source = Arc::new(FakeHistoricalSource {

@@ -84,6 +84,7 @@ pub struct ChildOrderRunner {
     volume: i64,
     split_policy: Option<VolumeSplitPolicy>,
     price_mode: PriceMode,
+    initial_quote: Option<Quote>,
     owner: Option<ChildOrderOwner>,
     control: Option<watch::Receiver<ChildOrderControl>>,
 }
@@ -114,9 +115,15 @@ impl ChildOrderRunner {
             volume,
             split_policy,
             price_mode,
+            initial_quote: None,
             owner: None,
             control: None,
         }
+    }
+
+    pub(crate) fn with_initial_quote(mut self, quote: Quote) -> Self {
+        self.initial_quote = Some(quote);
+        self
     }
 
     pub fn with_owner(mut self, registry: Arc<TaskRegistry>, task_id: TaskId) -> Self {
@@ -127,6 +134,18 @@ impl ChildOrderRunner {
     pub(crate) fn with_control(mut self, control: watch::Receiver<ChildOrderControl>) -> Self {
         self.control = Some(control);
         self
+    }
+
+    fn mark_owner_busy(&self) {
+        if let Some(owner) = &self.owner {
+            owner.registry.mark_task_busy(owner.task_id);
+        }
+    }
+
+    fn mark_owner_idle(&self) {
+        if let Some(owner) = &self.owner {
+            owner.registry.mark_task_idle(owner.task_id);
+        }
     }
 
     #[cfg(test)]
@@ -140,15 +159,38 @@ impl ChildOrderRunner {
     pub(crate) async fn run(&self) -> RuntimeResult<ChildOrderStatus> {
         let mut remaining = self.volume;
         let mut control = self.control.clone();
+        let mut next_quote = self.initial_quote.clone();
+        let mut owner_busy = false;
 
         while remaining > 0 {
             if stop_requested(control.as_ref()) {
+                if owner_busy {
+                    self.mark_owner_idle();
+                }
                 return Ok(ChildOrderStatus::Interrupted);
             }
 
-            let quote = self.market.latest_quote(&self.symbol).await?;
+            if !owner_busy {
+                self.mark_owner_busy();
+                owner_busy = true;
+            }
+            let quote = match next_quote.take() {
+                Some(quote) => quote,
+                None => self.market.latest_quote(&self.symbol).await?,
+            };
             let order_price = resolve_order_price(&self.symbol, self.direction, &self.price_mode, &quote)?;
             let order_volume = split_order_volume(remaining, self.split_policy);
+            tracing::debug!(
+                symbol = %self.symbol,
+                account_key = %self.account_key,
+                direction = %self.direction.as_api_str(),
+                offset = %self.offset.as_api_str(),
+                quote_datetime = %quote.datetime,
+                order_price,
+                order_volume,
+                remaining,
+                "child order runner submitting order against latest quote"
+            );
             let req = InsertOrderRequest {
                 symbol: self.symbol.clone(),
                 exchange_id: None,
@@ -159,7 +201,10 @@ impl ChildOrderRunner {
                 limit_price: order_price,
                 volume: order_volume,
             };
-            let order_id = self.execution.insert_order(&self.account_key, &req).await?;
+            let order_id = self
+                .execution
+                .insert_order_with_quote_hint(&self.account_key, &req, &quote)
+                .await?;
             if let Some(owner) = &self.owner {
                 owner.registry.bind_order_owner(&order_id, owner.task_id);
             }
@@ -173,6 +218,10 @@ impl ChildOrderRunner {
                 let traded_volume = traded_volume(&trades);
 
                 if order.status == ORDER_STATUS_FINISHED && traded_volume >= filled {
+                    if owner_busy {
+                        self.mark_owner_idle();
+                        owner_busy = false;
+                    }
                     tracing::debug!(
                         order_id,
                         status = %order.status,
@@ -229,6 +278,10 @@ impl ChildOrderRunner {
                     }
                 }
 
+                if owner_busy {
+                    self.mark_owner_idle();
+                    owner_busy = false;
+                }
                 tokio::select! {
                     update = self.execution.wait_order_update(&self.account_key, &order_id) => {
                         update?;
@@ -249,9 +302,16 @@ impl ChildOrderRunner {
                         control_update?;
                     }
                 }
+                if !owner_busy {
+                    self.mark_owner_busy();
+                    owner_busy = true;
+                }
             }
         }
 
+        if owner_busy {
+            self.mark_owner_idle();
+        }
         Ok(ChildOrderStatus::Completed)
     }
 }

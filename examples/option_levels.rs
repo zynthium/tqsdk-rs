@@ -2,6 +2,10 @@ use std::env;
 use std::time::Duration;
 use tqsdk_rs::prelude::*;
 
+fn example_log_level() -> String {
+    env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "warn".to_string())
+}
+
 async fn build_client(user: &str, pass: &str, config: ClientConfig) -> Result<Client> {
     Client::builder(user, pass)
         .config(config)
@@ -32,7 +36,7 @@ async fn main() -> Result<()> {
     let price_level = vec![1, 0, -1];
 
     let config = ClientConfig {
-        log_level: env::var("TQ_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
+        log_level: example_log_level(),
         stock: true,
         ..Default::default()
     };

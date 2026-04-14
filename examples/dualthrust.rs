@@ -3,12 +3,16 @@ use std::error::Error;
 use std::result::Result as StdResult;
 use std::time::Duration;
 
+#[path = "support/python_trade_log.rs"]
+mod python_trade_log;
 #[path = "support/replay_dates.rs"]
 mod replay_dates;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use tqsdk_rs::prelude::*;
+use tqsdk_rs::replay::BacktestResult;
 use tqsdk_rs::replay::BarState;
+use tqsdk_rs::{Account, Position};
 
 const ACCOUNT_KEY: &str = "TQSIM";
 const DAILY_BAR: Duration = Duration::from_secs(60 * 60 * 24);
@@ -107,6 +111,18 @@ fn history_view_width(start_date: NaiveDate, end_date: NaiveDate) -> usize {
     (span_days + 16).max(NDAY + 8)
 }
 
+fn find_final_account<'a>(result: &'a BacktestResult, account_key: &str) -> Option<&'a Account> {
+    result
+        .final_accounts
+        .iter()
+        .find(|account| account.user_id == account_key)
+        .or_else(|| result.final_accounts.first())
+}
+
+fn net_position(position: &Position) -> i64 {
+    position.volume_long - position.volume_short
+}
+
 #[tokio::main]
 async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
@@ -117,6 +133,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let end_date = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)?;
     let replay_start_dt = strategy_start_dt(replay_start_date(start_date, NDAY))?;
     let replay_end_dt = strategy_end_dt(end_date)?;
+    let replay_config = ReplayConfig::new(replay_start_dt, replay_end_dt)?;
     let daily_width = history_view_width(start_date, end_date);
 
     init_logger(&log_level, false);
@@ -128,14 +145,13 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         .build()
         .await?;
 
-    let mut session = client
-        .create_backtest_session(ReplayConfig::new(replay_start_dt, replay_end_dt)?)
-        .await?;
+    let mut session = client.create_backtest_session(replay_config.clone()).await?;
     let quote = session.quote(&symbol).await?;
     let daily_bars = session.kline(&symbol, DAILY_BAR, daily_width).await?;
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
     let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
     let task = account.target_pos(&symbol).build()?;
+    let order_log_task = python_trade_log::spawn_order_logger(&account)?;
 
     println!("策略开始运行");
 
@@ -143,6 +159,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let mut active_levels_day = None;
     let mut last_daily_bar_id = None;
     let mut last_seen_price = None;
+    let mut last_sent_target = None;
     let mut quote_stream_started = false;
 
     while let Some(step) = session.step().await? {
@@ -217,21 +234,51 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         };
 
         let Some(next_target) = next_target else {
-            println!("未穿越上下轨,不调整持仓");
             continue;
         };
+        if last_sent_target == Some(next_target) {
+            continue;
+        }
         if next_target > 0 {
             println!("高于上轨,目标持仓 多头3手");
         } else {
             println!("低于下轨,目标持仓 空头3手");
         }
         task.set_target_volume(next_target)?;
+        last_sent_target = Some(next_target);
     }
 
     task.cancel().await?;
     task.wait_finished().await?;
-    session.finish().await?;
+    order_log_task.abort();
+    let result = session.finish().await?;
+    let final_account = find_final_account(&result, ACCOUNT_KEY);
+    let final_net_position = result
+        .final_positions
+        .iter()
+        .find(|position| {
+            position.user_id == ACCOUNT_KEY && format!("{}.{}", position.exchange_id, position.instrument_id) == symbol
+        })
+        .map(net_position)
+        .unwrap_or(0);
+
+    println!();
     println!("回测结束");
+    println!("  总成交笔数: {}", result.trades.len());
+    println!("  最终净持仓: {}", final_net_position);
+    if let Some(account) = final_account {
+        let pnl = account.balance - replay_config.initial_balance;
+        let pnl_ratio = pnl / replay_config.initial_balance * 100.0;
+        println!("  初始资金: {:.2}", replay_config.initial_balance);
+        println!("  结束资金: {:.2}", account.balance);
+        println!("  收益率: {:.4}%", pnl_ratio);
+        println!("  盈亏: {:.2}", pnl);
+        println!("  平仓盈亏: {:.2}", account.close_profit);
+        println!("  浮动盈亏: {:.2}", account.float_profit);
+        println!("  持仓盈亏: {:.2}", account.position_profit);
+        println!("  手续费: {:.2}", account.commission);
+        println!("  可用资金: {:.2}", account.available);
+    }
     Ok(())
 }
 

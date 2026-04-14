@@ -4,6 +4,8 @@
 //! Python 原始默认合约 `SHFE.au2006` 在当前 ReplaySession 中会被判定为不支持的交易标的，
 //! 因此这里改用仓库内已验证可回放的黄金期货合约，保留策略公式和判定逻辑不变。
 
+#[path = "support/python_trade_log.rs"]
+mod python_trade_log;
 #[path = "support/replay_dates.rs"]
 mod replay_dates;
 
@@ -216,6 +218,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let runtime = session.runtime([ACCOUNT_KEY]).await?;
     let account = runtime.account(ACCOUNT_KEY).expect("configured account should exist");
     let task = account.target_pos(&symbol).build()?;
+    let order_log_task = python_trade_log::spawn_order_logger(&account)?;
 
     let mut levels = None;
     let mut processed_daily_bar_id = None;
@@ -335,6 +338,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
 
     task.cancel().await?;
     task.wait_finished().await?;
+    order_log_task.abort();
     session.finish().await?;
     println!("回测结束");
     Ok(())

@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures::future::join_all;
 use tokio::sync::watch;
-use tokio::task::JoinSet;
 
 use crate::runtime::{AccountHandle, OrderDirection, RuntimeError, RuntimeResult, TargetPosConfig};
 use crate::types::{ORDER_STATUS_ALIVE, Position, Quote, Trade};
@@ -28,6 +28,7 @@ pub struct TargetPosTask {
 struct TargetRequest {
     seq: u64,
     volume: i64,
+    step_gate_seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +92,7 @@ impl TargetPosBuilder {
         task_id: crate::runtime::TaskId,
         offset_priority: Vec<Vec<OffsetAction>>,
     ) -> RuntimeResult<TargetPosTask> {
+        self.account.runtime().registry().register_task_progress(task_id);
         let (command_tx, _) = watch::channel(TaskCommand::Idle);
         let (reached_seq_tx, _) = watch::channel(0_u64);
         let (finished_tx, _) = watch::channel(false);
@@ -136,9 +138,17 @@ impl TargetPosTask {
         }
         self.inner.ensure_started("set_target_volume")?;
         let seq = self.inner.next_request_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let step_gate_seq = self.inner.account.runtime().current_step_gate();
+        self.inner.command_tx.send_replace(TaskCommand::Target(TargetRequest {
+            seq,
+            volume,
+            step_gate_seq,
+        }));
         self.inner
-            .command_tx
-            .send_replace(TaskCommand::Target(TargetRequest { seq, volume }));
+            .account
+            .runtime()
+            .registry()
+            .mark_task_requested(self.inner.task_id, seq);
         Ok(())
     }
 
@@ -231,14 +241,16 @@ impl TargetPosTaskInner {
         if let Some(err) = run_result.err().or_else(|| capture_result.err()) {
             *self.failure.lock().expect("target task failure lock poisoned") = Some(err.to_string());
         }
+        self.account.runtime().registry().mark_task_finished(self.task_id);
         self.account.runtime().registry().unregister_task(self.task_id);
         self.finished_tx.send_replace(true);
     }
 
     async fn run_loop(self: &Arc<Self>) -> RuntimeResult<()> {
         let mut command_rx = self.command_tx.subscribe();
+        let mut step_gate_rx = self.account.runtime().subscribe_step_gate();
 
-        loop {
+        'run: loop {
             let command = command_rx.borrow().clone();
             match command {
                 TaskCommand::Idle => {
@@ -254,6 +266,23 @@ impl TargetPosTaskInner {
                     return Ok(());
                 }
                 TaskCommand::Target(request) => {
+                    if self.account.runtime().step_gate_enabled() {
+                        while self.account.runtime().current_step_gate() <= request.step_gate_seq {
+                            tokio::select! {
+                                step = step_gate_rx.changed() => {
+                                    step.map_err(|_| RuntimeError::AdapterChannelClosed {
+                                        resource: "target task replay step gate",
+                                    })?;
+                                }
+                                command = command_rx.changed() => {
+                                    command.map_err(|_| RuntimeError::AdapterChannelClosed {
+                                        resource: "target task command",
+                                    })?;
+                                    continue 'run;
+                                }
+                            }
+                        }
+                    }
                     self.drive_target(request, &mut command_rx).await?;
                 }
             }
@@ -265,6 +294,10 @@ impl TargetPosTaskInner {
         request: TargetRequest,
         command_rx: &mut watch::Receiver<TaskCommand>,
     ) -> RuntimeResult<()> {
+        self.account
+            .runtime()
+            .registry()
+            .mark_task_observed(self.task_id, request.seq);
         'drive: loop {
             let command = command_rx.borrow().clone();
             match command {
@@ -283,6 +316,17 @@ impl TargetPosTaskInner {
                 .execution()
                 .position(self.account.account_key(), &self.symbol)
                 .await?;
+            tracing::debug!(
+                symbol = %self.symbol,
+                request_seq = request.seq,
+                target_volume = request.volume,
+                quote_datetime = %quote.datetime,
+                position_long_today = position.volume_long_today,
+                position_long_his = position.volume_long_his,
+                position_short_today = position.volume_short_today,
+                position_short_his = position.volume_short_his,
+                "target_pos drive_target evaluating latest quote"
+            );
             let plan = compute_plan(&quote, &position, request.volume, &self.offset_priority)?;
 
             if plan.is_empty() {
@@ -297,7 +341,7 @@ impl TargetPosTaskInner {
             }
 
             for batch in plan {
-                match self.run_batch(request, batch, command_rx).await? {
+                match self.run_batch(request, batch, &quote, command_rx).await? {
                     BatchStatus::Completed => {}
                     BatchStatus::Interrupted => return Ok(()),
                     BatchStatus::NeedsReplan => continue 'drive,
@@ -310,6 +354,7 @@ impl TargetPosTaskInner {
         &self,
         request: TargetRequest,
         batch: PlannedBatch,
+        quote: &Quote,
         command_rx: &watch::Receiver<TaskCommand>,
     ) -> RuntimeResult<BatchStatus> {
         if self.command_changed(command_rx, request.seq) {
@@ -319,6 +364,12 @@ impl TargetPosTaskInner {
         let runtime = self.account.runtime();
         let (control_tx, control_rx) = watch::channel(ChildOrderControl::Run);
         let mut control_commands = command_rx.clone();
+        tracing::debug!(
+            symbol = %self.symbol,
+            request_seq = request.seq,
+            orders = batch.orders.len(),
+            "target_pos run_batch spawning child orders"
+        );
         let forward = tokio::spawn(async move {
             loop {
                 if child_order_should_stop(&control_commands, request.seq) {
@@ -332,41 +383,39 @@ impl TargetPosTaskInner {
             }
         });
 
-        let mut runners = JoinSet::new();
-        for order in batch.orders {
-            let runner = ChildOrderRunner::new(
-                runtime.market(),
-                runtime.execution(),
-                self.account.account_key(),
-                &self.symbol,
-                order.direction,
-                order.offset,
-                order.volume,
-                self.config.split_policy,
-                self.config.price_mode.clone(),
-            )
-            .with_owner(runtime.registry(), self.task_id)
-            .with_control(control_rx.clone());
+        let runners = batch
+            .orders
+            .into_iter()
+            .map(|order| {
+                ChildOrderRunner::new(
+                    runtime.market(),
+                    runtime.execution(),
+                    self.account.account_key(),
+                    &self.symbol,
+                    order.direction,
+                    order.offset,
+                    order.volume,
+                    self.config.split_policy,
+                    self.config.price_mode.clone(),
+                )
+                .with_owner(runtime.registry(), self.task_id)
+                .with_initial_quote(quote.clone())
+                .with_control(control_rx.clone())
+            })
+            .collect::<Vec<_>>();
+        let outcomes = join_all(runners.iter().map(ChildOrderRunner::run)).await;
 
-            runners.spawn(async move { runner.run().await });
-        }
-
+        forward.abort();
         let mut interrupted = false;
         let mut needs_replan = false;
-        while let Some(joined) = runners.join_next().await {
-            let outcome = joined.map_err(|err| RuntimeError::TargetTaskFailed {
-                symbol: self.symbol.clone(),
-                reason: format!("child order runner join failed: {err}"),
-            })??;
-
-            match outcome {
+        for outcome in outcomes {
+            match outcome? {
                 ChildOrderStatus::Completed => {}
                 ChildOrderStatus::Interrupted => interrupted = true,
                 ChildOrderStatus::NeedsReplan => needs_replan = true,
             }
         }
 
-        forward.abort();
         if interrupted {
             Ok(BatchStatus::Interrupted)
         } else if needs_replan {
