@@ -7,11 +7,21 @@ R-Breaker策略(隔夜留仓) (难度：初级)
 参考: https://www.shinnytech.com/blog/r-breaker
 注: 该示例策略仅用于功能示范, 实盘时请根据自己的策略/经验进行修改
 '''
+from datetime import date, datetime
+import os
 
-from tqsdk import TqApi, TqAuth, TargetPosTask
+from tqsdk import BacktestFinished, TargetPosTask, TqApi, TqAuth, TqBacktest
 
-SYMBOL = "SHFE.au2006"  # 合约代码
+# 原始 Python 示例使用 SHFE.au2006, 但当前回放交易默认改用已验证可用的 au2606。
+DEFAULT_SYMBOL = "SHFE.au2606"  # 合约代码
+DEFAULT_START_DATE = date(2026, 4, 1)
+DEFAULT_END_DATE = date(2026, 4, 30)
 STOP_LOSS_PRICE = 10  # 止损点(价格)
+
+
+def parse_env_date(name, default):
+    raw = os.getenv(name)
+    return datetime.strptime(raw, "%Y-%m-%d").date() if raw else default
 
 
 def get_index_line(klines):
@@ -33,59 +43,72 @@ def get_index_line(klines):
     return pivot, b_break, s_setup, s_enter, b_enter, b_setup, s_break
 
 
-api = TqApi(auth=TqAuth("快期账户", "账户密码"))
+SYMBOL = os.getenv("TQ_TEST_SYMBOL", DEFAULT_SYMBOL)
+START_DATE = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)
+END_DATE = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)
+
+auth_user = os.getenv("TQ_AUTH_USER", "")
+auth_pass = os.getenv("TQ_AUTH_PASS", "")
+
+api = TqApi(
+    backtest=TqBacktest(start_dt=START_DATE, end_dt=END_DATE),
+    auth=TqAuth(auth_user, auth_pass),
+)
 quote = api.get_quote(SYMBOL)
 klines = api.get_kline_serial(SYMBOL, 24 * 60 * 60)  # 86400: 使用日线
-position = api.get_position(SYMBOL)
 target_pos = TargetPosTask(api, SYMBOL)
-target_pos_value = position.pos_long - position.pos_short  # 目标净持仓数
-open_position_price = position.open_price_long if target_pos_value > 0 else position.open_price_short  # 开仓价
+target_pos_value = 0  # 目标净持仓数
+open_position_price = 0  # 开仓价
 pivot, b_break, s_setup, s_enter, b_enter, b_setup, s_break = get_index_line(klines)  # 七条标准线
 
-while True:
-    target_pos.set_target_volume(target_pos_value)
-    api.wait_update()
-    if api.is_changing(klines.iloc[-1], "datetime"):  # 产生新k线,则重新计算7条指标线
-        pivot, b_break, s_setup, s_enter, b_enter, b_setup, s_break = get_index_line(klines)
+try:
+    while True:
+        target_pos.set_target_volume(target_pos_value)
+        api.wait_update()
+        if api.is_changing(klines.iloc[-1], "datetime"):  # 产生新k线,则重新计算7条指标线
+            pivot, b_break, s_setup, s_enter, b_enter, b_setup, s_break = get_index_line(klines)
 
-    '''交易规则'''
-    if api.is_changing(quote, "last_price"):
-        print("最新价: ", quote.last_price)
+        '''交易规则'''
+        if api.is_changing(quote, "last_price"):
+            print("最新价: ", quote.last_price)
 
-        # 开仓价与当前行情价之差大于止损点则止损
-        if (target_pos_value > 0 and open_position_price - quote.last_price >= STOP_LOSS_PRICE) or \
-                (target_pos_value < 0 and quote.last_price - open_position_price >= STOP_LOSS_PRICE):
-            target_pos_value = 0  # 平仓
+            # 开仓价与当前行情价之差大于止损点则止损
+            if (target_pos_value > 0 and open_position_price - quote.last_price >= STOP_LOSS_PRICE) or \
+                    (target_pos_value < 0 and quote.last_price - open_position_price >= STOP_LOSS_PRICE):
+                target_pos_value = 0  # 平仓
 
-        # 反转:
-        if target_pos_value > 0:  # 多头持仓
-            if quote.highest > s_setup and quote.last_price < s_enter:
-                # 多头持仓,当日内最高价超过观察卖出价后，
-                # 盘中价格出现回落，且进一步跌破反转卖出价构成的支撑线时，
-                # 采取反转策略，即在该点位反手做空
-                print("多头持仓,当日内最高价超过观察卖出价后跌破反转卖出价: 反手做空")
-                target_pos_value = -3  # 做空
-                open_position_price = quote.last_price
-        elif target_pos_value < 0:  # 空头持仓
-            if quote.lowest < b_setup and quote.last_price > b_enter:
-                # 空头持仓，当日内最低价低于观察买入价后，
-                # 盘中价格出现反弹，且进一步超过反转买入价构成的阻力线时，
-                # 采取反转策略，即在该点位反手做多
-                print("空头持仓,当日最低价低于观察买入价后超过反转买入价: 反手做多")
-                target_pos_value = 3  # 做多
-                open_position_price = quote.last_price
+            # 反转:
+            if target_pos_value > 0:  # 多头持仓
+                if quote.highest > s_setup and quote.last_price < s_enter:
+                    # 多头持仓,当日内最高价超过观察卖出价后，
+                    # 盘中价格出现回落，且进一步跌破反转卖出价构成的支撑线时，
+                    # 采取反转策略，即在该点位反手做空
+                    print("多头持仓,当日内最高价超过观察卖出价后跌破反转卖出价: 反手做空")
+                    target_pos_value = -3  # 做空
+                    open_position_price = quote.last_price
+            elif target_pos_value < 0:  # 空头持仓
+                if quote.lowest < b_setup and quote.last_price > b_enter:
+                    # 空头持仓，当日内最低价低于观察买入价后，
+                    # 盘中价格出现反弹，且进一步超过反转买入价构成的阻力线时，
+                    # 采取反转策略，即在该点位反手做多
+                    print("空头持仓,当日最低价低于观察买入价后超过反转买入价: 反手做多")
+                    target_pos_value = 3  # 做多
+                    open_position_price = quote.last_price
 
-        # 突破:
-        elif target_pos_value == 0:  # 空仓条件
-            if quote.last_price > b_break:
-                # 在空仓的情况下，如果盘中价格超过突破买入价，
-                # 则采取趋势策略，即在该点位开仓做多
-                print("空仓,盘中价格超过突破买入价: 开仓做多")
-                target_pos_value = 3  # 做多
-                open_position_price = quote.last_price
-            elif quote.last_price < s_break:
-                # 在空仓的情况下，如果盘中价格跌破突破卖出价，
-                # 则采取趋势策略，即在该点位开仓做空
-                print("空仓,盘中价格跌破突破卖出价: 开仓做空")
-                target_pos_value = -3  # 做空
-                open_position_price = quote.last_price
+            # 突破:
+            elif target_pos_value == 0:  # 空仓条件
+                if quote.last_price > b_break:
+                    # 在空仓的情况下，如果盘中价格超过突破买入价，
+                    # 则采取趋势策略，即在该点位开仓做多
+                    print("空仓,盘中价格超过突破买入价: 开仓做多")
+                    target_pos_value = 3  # 做多
+                    open_position_price = quote.last_price
+                elif quote.last_price < s_break:
+                    # 在空仓的情况下，如果盘中价格跌破突破卖出价，
+                    # 则采取趋势策略，即在该点位开仓做空
+                    print("空仓,盘中价格跌破突破卖出价: 开仓做空")
+                    target_pos_value = -3  # 做空
+                    open_position_price = quote.last_price
+except BacktestFinished:
+    print("回测结束")
+    api.close()

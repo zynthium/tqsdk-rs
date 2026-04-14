@@ -8,10 +8,26 @@ from tqsdk.tafunc import time_to_str
 import os
 
 # ===== 全局参数设置 =====
-SYMBOL = "SHFE.cu2606"
-POSITION_SIZE = 100
-START_DATE = date(2026, 4, 1)  # 回测开始日期
-END_DATE = date(2026, 4, 9)  # 回测结束日期
+DEFAULT_SYMBOL = "SHFE.cu2606"
+DEFAULT_POSITION_SIZE = 100
+DEFAULT_START_DATE = date(2026, 4, 1)  # 回测开始日期
+DEFAULT_END_DATE = date(2026, 4, 9)  # 回测结束日期
+
+
+def parse_env_date(name, default):
+    raw = os.getenv(name)
+    return date.fromisoformat(raw) if raw else default
+
+
+def parse_env_int(name, default):
+    raw = os.getenv(name)
+    return int(raw) if raw else default
+
+
+SYMBOL = os.getenv('TQ_TEST_SYMBOL', DEFAULT_SYMBOL)
+POSITION_SIZE = parse_env_int('TQ_POSITION_SIZE', DEFAULT_POSITION_SIZE)
+START_DATE = parse_env_date('TQ_START_DT', DEFAULT_START_DATE)
+END_DATE = parse_env_date('TQ_END_DT', DEFAULT_END_DATE)
 
 # 策略参数
 REVERSAL_CONFIRM = 50  # 反转确认点数

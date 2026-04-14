@@ -186,10 +186,6 @@ impl ChildOrderRunner {
                         "child order observed finished state"
                     );
                     if order.volume_left > 0 && !repriced_or_cancelled {
-                        if order.is_error {
-                            return Err(RuntimeError::OrderCompletionInvariant { order_id });
-                        }
-
                         if interrupted {
                             return Ok(ChildOrderStatus::Interrupted);
                         }
@@ -209,6 +205,10 @@ impl ChildOrderRunner {
 
                         if matches!(self.offset, PlannedOffset::CloseToday) {
                             return Ok(ChildOrderStatus::NeedsReplan);
+                        }
+
+                        if order.is_error {
+                            return Err(RuntimeError::OrderCompletionInvariant { order_id });
                         }
 
                         remaining -= filled;

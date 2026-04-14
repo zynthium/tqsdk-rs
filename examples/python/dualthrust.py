@@ -7,15 +7,35 @@ Dual Thrust策略 (难度：中级)
 参考: https://www.shinnytech.com/blog/dual-thrust
 注: 该示例策略仅用于功能示范, 实盘时请根据自己的策略/经验进行修改
 '''
+from datetime import date, datetime
+import os
 
-from tqsdk import TqApi, TqAuth, TargetPosTask
+from tqsdk import BacktestFinished, TargetPosTask, TqApi, TqAuth, TqBacktest
 
-SYMBOL = "DCE.jd2011"  # 合约代码
+DEFAULT_SYMBOL = "DCE.jd2011"  # 合约代码
+DEFAULT_START_DATE = date(2020, 9, 1)
+DEFAULT_END_DATE = date(2020, 10, 30)
 NDAY = 5  # 天数
 K1 = 0.2  # 上轨K值
 K2 = 0.2  # 下轨K值
 
-api = TqApi(auth=TqAuth("快期账户", "账户密码"))
+
+def parse_env_date(name, default):
+    raw = os.getenv(name)
+    return datetime.strptime(raw, "%Y-%m-%d").date() if raw else default
+
+
+SYMBOL = os.getenv("TQ_TEST_SYMBOL", DEFAULT_SYMBOL)
+START_DATE = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)
+END_DATE = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)
+
+auth_user = os.getenv("TQ_AUTH_USER", "")
+auth_pass = os.getenv("TQ_AUTH_PASS", "")
+
+api = TqApi(
+    backtest=TqBacktest(start_dt=START_DATE, end_dt=END_DATE),
+    auth=TqAuth(auth_user, auth_pass),
+)
 print("策略开始运行")
 
 quote = api.get_quote(SYMBOL)
@@ -38,17 +58,21 @@ def dual_thrust(quote, klines):
 
 buy_line, sell_line = dual_thrust(quote, klines)  # 获取上下轨
 
-while True:
-    api.wait_update()
-    if api.is_changing(klines.iloc[-1], ["datetime", "open"]):  # 新产生一根日线或开盘价发生变化: 重新计算上下轨
-        buy_line, sell_line = dual_thrust(quote, klines)
+try:
+    while True:
+        api.wait_update()
+        if api.is_changing(klines.iloc[-1], ["datetime", "open"]):  # 新产生一根日线或开盘价发生变化: 重新计算上下轨
+            buy_line, sell_line = dual_thrust(quote, klines)
 
-    if api.is_changing(quote, "last_price"):
-        if quote.last_price > buy_line:  # 高于上轨
-            print("高于上轨,目标持仓 多头3手")
-            target_pos.set_target_volume(3)  # 交易
-        elif quote.last_price < sell_line:  # 低于下轨
-            print("低于下轨,目标持仓 空头3手")
-            target_pos.set_target_volume(-3)  # 交易
-        else:
-            print('未穿越上下轨,不调整持仓')
+        if api.is_changing(quote, "last_price"):
+            if quote.last_price > buy_line:  # 高于上轨
+                print("高于上轨,目标持仓 多头3手")
+                target_pos.set_target_volume(3)  # 交易
+            elif quote.last_price < sell_line:  # 低于下轨
+                print("低于下轨,目标持仓 空头3手")
+                target_pos.set_target_volume(-3)  # 交易
+            else:
+                print('未穿越上下轨,不调整持仓')
+except BacktestFinished:
+    print("回测结束")
+    api.close()

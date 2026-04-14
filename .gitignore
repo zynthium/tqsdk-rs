@@ -5,20 +5,110 @@ target/
 ### Rust package manager (library crates usually do NOT commit Cargo.lock)
 Cargo.lock
 
-### Editor & OS noise
+### Rust compiler artifacts
+*.pdb
+.rustc_info.json
+rust-toolchain.toml
+
+### Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.venv
+venv/
+ENV/
+env/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+*.pyd
+.eggs/
+*.manifest
+*.spec
+celerybeat-schedule
+*.pot
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+instance/
+.webassets-cache
+.scrapy/
+.webassets-cache
+
 .idea/
 .vscode/
 .DS_Store
 .cargo/
 .worktrees/
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+.emacs.desktop
+.emacs.desktop.lock
+.false*
+\#*\#
+Session.vim
+.netrwhist
+*.orig
+*.rej
+*.bak
+*.old
 
 ### Logs and local run outputs
 logs/
 **/logs/
+*.log
 
 ### Misc
-*.log
 *.tmp
-*.swp
-*.swo
+*.temp
+.env
+.env.local
+.env.*.local
+*.envrc
+coverage/
+lcov.info
 .claude/settings.local.json
+
+### Editor/IDE persisted state
+.vscode/settings.json
+.vscode/launch.json
+.idea/workspace.xml
+.idea/shelf/
+
+### Tags files
+tags
+TAGS
+

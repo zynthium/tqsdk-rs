@@ -263,6 +263,63 @@ async fn child_order_runner_retries_after_external_unfilled_finish() {
 }
 
 #[tokio::test]
+async fn child_order_runner_replans_after_close_today_error_finish() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::default());
+    let runner = ChildOrderRunner::new(
+        market.clone(),
+        execution.clone(),
+        "SIM",
+        "SHFE.rb2601",
+        OrderDirection::Sell,
+        PlannedOffset::CloseToday,
+        3,
+        None,
+        PriceMode::Active,
+    );
+
+    let task = tokio::spawn(async move { runner.run().await });
+
+    execution.wait_for_insert_count(1).await;
+    let order_id = execution
+        .latest_order_id()
+        .await
+        .expect("close today order should exist");
+    execution.finish_order_with_error(&order_id, 3, "平今仓手数不足").await;
+
+    sleep(Duration::from_millis(50)).await;
+    assert!(
+        !task.is_finished(),
+        "close-today rejection should wait for the parent task to replan on a fresh quote"
+    );
+
+    market
+        .update_quote(Quote {
+            instrument_id: "SHFE.rb2601".to_string(),
+            exchange_id: "SHFE".to_string(),
+            ask_price1: 102.0,
+            bid_price1: 101.0,
+            last_price: 101.0,
+            ..Quote::default()
+        })
+        .await;
+
+    let outcome = timeout(Duration::from_secs(1), task)
+        .await
+        .expect("runner should finish once it can replan")
+        .expect("join should succeed")
+        .expect("close-today rejection should not surface as a hard runtime error");
+    assert_eq!(outcome, super::ChildOrderStatus::NeedsReplan);
+}
+
+#[tokio::test]
 async fn target_pos_handle_latest_target_overrides_previous_target() {
     let market = Arc::new(FakeMarketAdapter::new(Quote {
         instrument_id: "SHFE.rb2601".to_string(),
@@ -978,6 +1035,21 @@ impl FakeExecutionAdapter {
             order.is_dead = true;
             order.is_online = false;
             order.is_error = false;
+        }
+        drop(state);
+        let _ = self.updates_tx.send(order_id.to_string());
+    }
+
+    async fn finish_order_with_error(&self, order_id: &str, volume_left: i64, last_msg: &str) {
+        let mut state = self.state.lock().await;
+        if let Some(order) = state.orders.get_mut(order_id) {
+            order.status = ORDER_STATUS_FINISHED.to_string();
+            order.volume_left = volume_left;
+            order.exchange_order_id = order_id.to_string();
+            order.last_msg = last_msg.to_string();
+            order.is_dead = true;
+            order.is_online = false;
+            order.is_error = true;
         }
         drop(state);
         let _ = self.updates_tx.send(order_id.to_string());
