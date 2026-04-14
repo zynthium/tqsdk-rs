@@ -98,7 +98,13 @@ impl QuoteSynthesizer {
         }
     }
 
-    pub fn apply_bar_open(&mut self, symbol: &str, duration_nanos: i64, kline: &Kline) -> QuoteUpdate {
+    pub fn apply_bar_open(
+        &mut self,
+        symbol: &str,
+        duration_nanos: i64,
+        kline: &Kline,
+        event_timestamp_nanos: i64,
+    ) -> QuoteUpdate {
         let selection = QuoteSelection::Kline {
             duration_nanos,
             implicit: false,
@@ -113,7 +119,14 @@ impl QuoteSynthesizer {
         );
         let state = self.symbols.get_mut(symbol).expect("symbol state must exist");
         let selected = state.selected == selection;
-        let opening = quote_from_kline_step(symbol, &state.metadata, kline, kline.open, kline.open_oi);
+        let opening = quote_from_kline_step(
+            symbol,
+            &state.metadata,
+            kline,
+            event_timestamp_nanos,
+            kline.open,
+            kline.open_oi,
+        );
 
         if selected {
             state.visible = opening.clone();
@@ -130,7 +143,13 @@ impl QuoteSynthesizer {
         }
     }
 
-    pub fn apply_bar_close(&mut self, symbol: &str, duration_nanos: i64, kline: &Kline) -> QuoteUpdate {
+    pub fn apply_bar_close(
+        &mut self,
+        symbol: &str,
+        duration_nanos: i64,
+        kline: &Kline,
+        event_timestamp_nanos: i64,
+    ) -> QuoteUpdate {
         let selection = QuoteSelection::Kline {
             duration_nanos,
             implicit: false,
@@ -146,10 +165,38 @@ impl QuoteSynthesizer {
         let state = self.symbols.get_mut(symbol).expect("symbol state must exist");
         let selected = state.selected == selection;
         let path = vec![
-            quote_from_kline_step(symbol, &state.metadata, kline, kline.open, kline.open_oi),
-            quote_from_kline_step(symbol, &state.metadata, kline, kline.high, kline.close_oi),
-            quote_from_kline_step(symbol, &state.metadata, kline, kline.low, kline.close_oi),
-            quote_from_kline_step(symbol, &state.metadata, kline, kline.close, kline.close_oi),
+            quote_from_kline_step(
+                symbol,
+                &state.metadata,
+                kline,
+                event_timestamp_nanos,
+                kline.open,
+                kline.open_oi,
+            ),
+            quote_from_kline_step(
+                symbol,
+                &state.metadata,
+                kline,
+                event_timestamp_nanos,
+                kline.high,
+                kline.close_oi,
+            ),
+            quote_from_kline_step(
+                symbol,
+                &state.metadata,
+                kline,
+                event_timestamp_nanos,
+                kline.low,
+                kline.close_oi,
+            ),
+            quote_from_kline_step(
+                symbol,
+                &state.metadata,
+                kline,
+                event_timestamp_nanos,
+                kline.close,
+                kline.close_oi,
+            ),
         ];
         let visible = path.last().cloned().expect("path must not be empty");
 
@@ -235,13 +282,14 @@ fn quote_from_kline_step(
     symbol: &str,
     metadata: &InstrumentMetadata,
     kline: &Kline,
+    event_timestamp_nanos: i64,
     last_price: f64,
     open_interest: i64,
 ) -> ReplayQuote {
     let price_tick = normalized_price_tick(metadata.price_tick);
     ReplayQuote {
         symbol: symbol.to_string(),
-        datetime_nanos: kline.datetime,
+        datetime_nanos: event_timestamp_nanos,
         last_price,
         ask_price1: last_price + price_tick,
         ask_volume1: 1,

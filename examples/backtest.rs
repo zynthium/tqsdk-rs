@@ -6,7 +6,10 @@
 //! - 使用 `TqRuntime` + `TargetPosTask` 在回测时间轴上驱动调仓
 //! - 回放结束后读取成交、账户和持仓汇总
 
-use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
+#[path = "support/replay_dates.rs"]
+mod replay_dates;
+
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use std::env;
 use std::error::Error;
 use std::result::Result as StdResult;
@@ -44,18 +47,10 @@ fn shanghai_range(
     start_date: NaiveDate,
     end_date: NaiveDate,
 ) -> StdResult<(DateTime<Utc>, DateTime<Utc>), Box<dyn Error>> {
-    let tz = FixedOffset::east_opt(8 * 3600).ok_or("无法创建 Asia/Shanghai 时区")?;
-    let start_dt = tz
-        .from_local_datetime(&start_date.and_hms_opt(0, 0, 0).ok_or("无效开始时间")?)
-        .single()
-        .ok_or("开始时间存在歧义")?
-        .with_timezone(&Utc);
-    let end_dt = tz
-        .from_local_datetime(&end_date.and_hms_opt(23, 59, 59).ok_or("无效结束时间")?)
-        .single()
-        .ok_or("结束时间存在歧义")?
-        .with_timezone(&Utc);
-    Ok((start_dt, end_dt))
+    Ok((
+        replay_dates::trading_day_start_dt(start_date)?,
+        replay_dates::trading_day_end_dt(end_date)?,
+    ))
 }
 
 fn format_shanghai(dt: DateTime<Utc>) -> String {
@@ -82,7 +77,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
     let symbol = env_or_default("TQ_TEST_SYMBOL", "SHFE.au2606");
-    let log_level = env_or_default("TQ_LOG_LEVEL", "info");
+    let log_level = env_or_default("TQ_LOG_LEVEL", "warn");
     let position_size = parse_env_i64("TQ_POSITION_SIZE", DEFAULT_POSITION_SIZE);
     let start_date = parse_env_date("TQ_START_DT", (2026, 4, 6))?;
     let end_date = parse_env_date("TQ_END_DT", (2026, 4, 7))?;

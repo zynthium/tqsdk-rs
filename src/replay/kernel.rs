@@ -199,6 +199,7 @@ impl ReplayKernel {
             FeedEvent::BarOpen {
                 symbol,
                 duration_nanos,
+                event_timestamp_nanos,
                 kline,
             } => {
                 self.series_store.push_kline(
@@ -208,7 +209,9 @@ impl ReplayKernel {
                     BarState::Opening,
                     DEFAULT_SERIES_WIDTH,
                 );
-                let update = self.quote_synthesizer.apply_bar_open(&symbol, duration_nanos, &kline);
+                let update =
+                    self.quote_synthesizer
+                        .apply_bar_open(&symbol, duration_nanos, &kline, event_timestamp_nanos);
                 self.quote_paths.insert(symbol.clone(), update.path.clone());
                 if update.source_selected && !updated_quotes.contains(&symbol) {
                     updated_quotes.push(symbol.clone());
@@ -220,11 +223,14 @@ impl ReplayKernel {
             FeedEvent::BarClose {
                 symbol,
                 duration_nanos,
+                event_timestamp_nanos,
                 kline,
             } => {
                 self.series_store
                     .close_kline(&symbol, duration_nanos, kline.clone(), DEFAULT_SERIES_WIDTH);
-                let update = self.quote_synthesizer.apply_bar_close(&symbol, duration_nanos, &kline);
+                let update =
+                    self.quote_synthesizer
+                        .apply_bar_close(&symbol, duration_nanos, &kline, event_timestamp_nanos);
                 self.quote_paths.insert(symbol.clone(), update.path.clone());
                 if update.source_selected && !updated_quotes.contains(&symbol) {
                     updated_quotes.push(symbol.clone());

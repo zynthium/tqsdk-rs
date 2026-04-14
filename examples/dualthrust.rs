@@ -3,7 +3,10 @@ use std::error::Error;
 use std::result::Result as StdResult;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Timelike, Utc, Weekday};
+#[path = "support/replay_dates.rs"]
+mod replay_dates;
+
+use chrono::{DateTime, NaiveDate, Utc};
 use tqsdk_rs::prelude::*;
 use tqsdk_rs::replay::BarState;
 
@@ -64,31 +67,16 @@ fn parse_env_date(name: &str, default: (i32, u32, u32)) -> StdResult<NaiveDate, 
     }
 }
 
-fn shanghai_midnight(date: NaiveDate) -> StdResult<DateTime<Utc>, Box<dyn Error>> {
-    let tz = FixedOffset::east_opt(8 * 3600).ok_or("unable to build Asia/Shanghai offset")?;
-    Ok(tz
-        .from_local_datetime(&date.and_hms_opt(0, 0, 0).ok_or("invalid midnight")?)
-        .single()
-        .ok_or("ambiguous midnight")?
-        .with_timezone(&Utc))
+fn strategy_start_dt(date: NaiveDate) -> StdResult<DateTime<Utc>, Box<dyn Error>> {
+    replay_dates::trading_day_start_dt(date)
 }
 
 fn strategy_end_dt(end_date: NaiveDate) -> StdResult<DateTime<Utc>, Box<dyn Error>> {
-    let tz = FixedOffset::east_opt(8 * 3600).ok_or("unable to build Asia/Shanghai offset")?;
-    Ok(tz
-        .from_local_datetime(&end_date.and_hms_opt(17, 59, 59).ok_or("invalid strategy end time")?)
-        .single()
-        .ok_or("ambiguous strategy end time")?
-        .with_timezone(&Utc))
+    replay_dates::trading_day_end_dt(end_date)
 }
 
-fn previous_trading_day(mut date: NaiveDate) -> NaiveDate {
-    loop {
-        date = date.pred_opt().expect("date underflow");
-        if !matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
-            return date;
-        }
-    }
+fn previous_trading_day(date: NaiveDate) -> NaiveDate {
+    replay_dates::previous_trading_day(date)
 }
 
 fn replay_start_date(mut start_date: NaiveDate, warmup_trading_days: usize) -> NaiveDate {
@@ -99,16 +87,7 @@ fn replay_start_date(mut start_date: NaiveDate, warmup_trading_days: usize) -> N
 }
 
 fn trading_day_of(dt: DateTime<Utc>) -> NaiveDate {
-    let tz = FixedOffset::east_opt(8 * 3600).expect("Asia/Shanghai offset should exist");
-    let cst = dt.with_timezone(&tz);
-    let mut day = cst.date_naive();
-    if cst.time().hour() >= 18 {
-        day = day.succ_opt().expect("date overflow");
-    }
-    while matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
-        day = day.succ_opt().expect("date overflow");
-    }
-    day
+    replay_dates::trading_day_of(dt)
 }
 
 fn should_refresh_levels(state: BarState, last_daily_bar_id: Option<i64>, current_bar_id: i64) -> bool {
@@ -117,6 +96,10 @@ fn should_refresh_levels(state: BarState, last_daily_bar_id: Option<i64>, curren
 
 fn should_process_quote_update(last_seen_price: Option<f64>, next_price: f64) -> bool {
     last_seen_price != Some(next_price)
+}
+
+fn should_prime_initial_quote(quote_stream_started: bool) -> bool {
+    !quote_stream_started
 }
 
 fn history_view_width(start_date: NaiveDate, end_date: NaiveDate) -> usize {
@@ -129,10 +112,10 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
     let symbol = env_or_default("TQ_TEST_SYMBOL", DEFAULT_SYMBOL);
-    let log_level = env_or_default("TQ_LOG_LEVEL", "info");
+    let log_level = env_or_default("TQ_LOG_LEVEL", "warn");
     let start_date = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)?;
     let end_date = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)?;
-    let replay_start_dt = shanghai_midnight(replay_start_date(start_date, NDAY))?;
+    let replay_start_dt = strategy_start_dt(replay_start_date(start_date, NDAY))?;
     let replay_end_dt = strategy_end_dt(end_date)?;
     let daily_width = history_view_width(start_date, end_date);
 
@@ -160,6 +143,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let mut active_levels_day = None;
     let mut last_daily_bar_id = None;
     let mut last_seen_price = None;
+    let mut quote_stream_started = false;
 
     while let Some(step) = session.step().await? {
         let trading_day = trading_day_of(step.current_dt);
@@ -214,6 +198,11 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
         let Some(snapshot) = quote.snapshot().await else {
             continue;
         };
+        if should_prime_initial_quote(quote_stream_started) {
+            quote_stream_started = true;
+            last_seen_price = Some(snapshot.last_price);
+            continue;
+        }
         if !should_process_quote_update(last_seen_price, snapshot.last_price) {
             continue;
         }
@@ -330,5 +319,11 @@ mod tests {
         assert!(should_process_quote_update(None, 3518.0));
         assert!(!should_process_quote_update(Some(3518.0), 3518.0));
         assert!(should_process_quote_update(Some(3518.0), 3519.0));
+    }
+
+    #[test]
+    fn primes_only_the_first_quote_event() {
+        assert!(should_prime_initial_quote(false));
+        assert!(!should_prime_initial_quote(true));
     }
 }

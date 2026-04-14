@@ -8,7 +8,10 @@
 //! - 枢轴点使用上一交易日的 high/low/close 计算
 //! - 调仓通过 `TqRuntime` + `TargetPosTask` 完成
 
-use chrono::{DateTime, FixedOffset, NaiveDate, TimeZone, Utc};
+#[path = "support/replay_dates.rs"]
+mod replay_dates;
+
+use chrono::{DateTime, FixedOffset, NaiveDate, Utc};
 use std::env;
 use std::error::Error;
 use std::result::Result as StdResult;
@@ -94,18 +97,10 @@ fn shanghai_range(
     start_date: NaiveDate,
     end_date: NaiveDate,
 ) -> StdResult<(DateTime<Utc>, DateTime<Utc>), Box<dyn Error>> {
-    let tz = FixedOffset::east_opt(8 * 3600).ok_or("无法创建 Asia/Shanghai 时区")?;
-    let start_dt = tz
-        .from_local_datetime(&start_date.and_hms_opt(0, 0, 0).ok_or("无效开始时间")?)
-        .single()
-        .ok_or("开始时间存在歧义")?
-        .with_timezone(&Utc);
-    let end_dt = tz
-        .from_local_datetime(&end_date.and_hms_opt(23, 59, 59).ok_or("无效结束时间")?)
-        .single()
-        .ok_or("结束时间存在歧义")?
-        .with_timezone(&Utc);
-    Ok((start_dt, end_dt))
+    Ok((
+        replay_dates::trading_day_start_dt(start_date)?,
+        replay_dates::trading_day_end_dt(end_date)?,
+    ))
 }
 
 fn history_view_width(start_date: NaiveDate, end_date: NaiveDate) -> usize {
@@ -133,7 +128,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
     let symbol = env_or_default("TQ_TEST_SYMBOL", DEFAULT_SYMBOL);
-    let log_level = env_or_default("TQ_LOG_LEVEL", "info");
+    let log_level = env_or_default("TQ_LOG_LEVEL", "warn");
     let position_size = parse_env_i64("TQ_POSITION_SIZE", DEFAULT_POSITION_SIZE);
     let start_date = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)?;
     let end_date = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)?;
@@ -200,6 +195,7 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
             "前一日数据 - 最高价: {:.2}, 最低价: {:.2}, 收盘价: {:.2}",
             previous.kline.high, previous.kline.low, previous.kline.close
         );
+        println!();
         println!("日期: {}", format_shanghai_nanos(current.kline.datetime));
         println!("当前价格: {:.2}", current_price);
         println!("枢轴点: {:.2}", levels.pivot);

@@ -3,7 +3,10 @@ use std::error::Error;
 use std::result::Result as StdResult;
 use std::time::Duration;
 
-use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Timelike, Utc, Weekday};
+#[path = "support/replay_dates.rs"]
+mod replay_dates;
+
+use chrono::{DateTime, NaiveDate, Utc};
 use tqsdk_rs::prelude::*;
 
 const ACCOUNT_KEY: &str = "TQSIM";
@@ -57,31 +60,16 @@ fn parse_env_date(name: &str, default: (i32, u32, u32)) -> StdResult<NaiveDate, 
     }
 }
 
-fn shanghai_midnight(date: NaiveDate) -> StdResult<DateTime<Utc>, Box<dyn Error>> {
-    let tz = FixedOffset::east_opt(8 * 3600).ok_or("unable to build Asia/Shanghai offset")?;
-    Ok(tz
-        .from_local_datetime(&date.and_hms_opt(0, 0, 0).ok_or("invalid midnight")?)
-        .single()
-        .ok_or("ambiguous midnight")?
-        .with_timezone(&Utc))
+fn strategy_start_dt(date: NaiveDate) -> StdResult<DateTime<Utc>, Box<dyn Error>> {
+    replay_dates::trading_day_start_dt(date)
 }
 
 fn strategy_end_dt(end_date: NaiveDate) -> StdResult<DateTime<Utc>, Box<dyn Error>> {
-    let tz = FixedOffset::east_opt(8 * 3600).ok_or("unable to build Asia/Shanghai offset")?;
-    Ok(tz
-        .from_local_datetime(&end_date.and_hms_opt(17, 59, 59).ok_or("invalid strategy end time")?)
-        .single()
-        .ok_or("ambiguous strategy end time")?
-        .with_timezone(&Utc))
+    replay_dates::trading_day_end_dt(end_date)
 }
 
-fn previous_trading_day(mut date: NaiveDate) -> NaiveDate {
-    loop {
-        date = date.pred_opt().expect("date underflow");
-        if !matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
-            return date;
-        }
-    }
+fn previous_trading_day(date: NaiveDate) -> NaiveDate {
+    replay_dates::previous_trading_day(date)
 }
 
 fn replay_start_date(mut start_date: NaiveDate, warmup_trading_days: usize) -> NaiveDate {
@@ -92,16 +80,7 @@ fn replay_start_date(mut start_date: NaiveDate, warmup_trading_days: usize) -> N
 }
 
 fn trading_day_of(dt: DateTime<Utc>) -> NaiveDate {
-    let tz = FixedOffset::east_opt(8 * 3600).expect("Asia/Shanghai offset should exist");
-    let cst = dt.with_timezone(&tz);
-    let mut day = cst.date_naive();
-    if cst.time().hour() >= 18 {
-        day = day.succ_opt().expect("date overflow");
-    }
-    while matches!(day.weekday(), Weekday::Sat | Weekday::Sun) {
-        day = day.succ_opt().expect("date overflow");
-    }
-    day
+    replay_dates::trading_day_of(dt)
 }
 
 #[tokio::main]
@@ -109,10 +88,10 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
     let username = env::var("TQ_AUTH_USER")?;
     let password = env::var("TQ_AUTH_PASS")?;
     let symbol = env_or_default("TQ_TEST_SYMBOL", DEFAULT_SYMBOL);
-    let log_level = env_or_default("TQ_LOG_LEVEL", "info");
+    let log_level = env_or_default("TQ_LOG_LEVEL", "warn");
     let start_date = parse_env_date("TQ_START_DT", DEFAULT_START_DATE)?;
     let end_date = parse_env_date("TQ_END_DT", DEFAULT_END_DATE)?;
-    let replay_start_dt = shanghai_midnight(replay_start_date(start_date, WARMUP_TRADING_DAYS))?;
+    let replay_start_dt = strategy_start_dt(replay_start_date(start_date, WARMUP_TRADING_DAYS))?;
     let replay_end_dt = strategy_end_dt(end_date)?;
 
     init_logger(&log_level, false);
@@ -177,9 +156,9 @@ async fn main() -> StdResult<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{FixedOffset, TimeZone};
+    use chrono::{FixedOffset, TimeZone, Timelike};
 
-    use super::{cross_signal, replay_start_date, strategy_end_dt, trading_day_of};
+    use super::{cross_signal, replay_start_date, strategy_end_dt, strategy_start_dt, trading_day_of};
 
     #[test]
     fn bullish_cross_sets_long_target() {
@@ -227,12 +206,26 @@ mod tests {
     }
 
     #[test]
+    fn replay_window_start_matches_python_trading_day_semantics() {
+        let cst = FixedOffset::east_opt(8 * 3600).unwrap();
+        let replay_start = strategy_start_dt(chrono::NaiveDate::from_ymd_opt(2020, 8, 31).unwrap()).unwrap();
+        let expected = cst
+            .with_ymd_and_hms(2020, 8, 28, 18, 0, 0)
+            .single()
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(replay_start, expected);
+    }
+
+    #[test]
     fn strategy_end_stops_before_end_date_night_session() {
         let cst = FixedOffset::east_opt(8 * 3600).unwrap();
         let end = strategy_end_dt(chrono::NaiveDate::from_ymd_opt(2020, 11, 30).unwrap()).unwrap();
         let expected = cst
             .with_ymd_and_hms(2020, 11, 30, 17, 59, 59)
             .single()
+            .unwrap()
+            .with_nanosecond(999_999_999)
             .unwrap()
             .with_timezone(&chrono::Utc);
         assert_eq!(end, expected);

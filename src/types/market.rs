@@ -339,40 +339,59 @@ pub struct Tick {
     #[serde(default)]
     pub id: i64,
     pub datetime: i64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub last_price: f64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub average: f64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub highest: f64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub lowest: f64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price1: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub ask_volume1: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price2: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub ask_volume2: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price3: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub ask_volume3: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price4: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub ask_volume4: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub ask_price5: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub ask_volume5: i64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price1: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub bid_volume1: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price2: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub bid_volume2: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price3: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub bid_volume3: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price4: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub bid_volume4: i64,
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub bid_price5: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub bid_volume5: i64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub volume: i64,
+    #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
     pub amount: f64,
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub open_interest: i64,
 
     #[serde(skip_serializing_if = "Option::is_none")]

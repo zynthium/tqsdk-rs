@@ -125,7 +125,7 @@ impl ReplayBootstrapper {
             && let Some(first) = rows.first()
         {
             self.market
-                .update_quote(preview_bar_open_quote(symbol, metadata, first))
+                .update_quote(preview_bar_open_quote(symbol, metadata, first, duration_nanos))
                 .await;
         }
 
@@ -366,7 +366,12 @@ impl ReplaySession {
     }
 }
 
-fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &crate::types::Kline) -> ReplayQuote {
+fn preview_bar_open_quote(
+    symbol: &str,
+    metadata: &InstrumentMetadata,
+    bar: &crate::types::Kline,
+    duration_nanos: i64,
+) -> ReplayQuote {
     let price_tick = if metadata.price_tick.is_finite() && metadata.price_tick > 0.0 {
         metadata.price_tick
     } else {
@@ -375,7 +380,11 @@ fn preview_bar_open_quote(symbol: &str, metadata: &InstrumentMetadata, bar: &cra
 
     ReplayQuote {
         symbol: symbol.to_string(),
-        datetime_nanos: bar.datetime,
+        datetime_nanos: if duration_nanos < DAY_NANOS {
+            bar.datetime
+        } else {
+            trading_day_start_time_nanos(bar.datetime)
+        },
         last_price: bar.open,
         ask_price1: bar.open + price_tick,
         ask_volume1: 1,
@@ -416,6 +425,7 @@ fn duration_nanos(duration: Duration) -> Result<i64> {
 const CST_OFFSET_SECONDS: i32 = 8 * 3600;
 const DAY_NANOS: i64 = 86_400_000_000_000;
 const EIGHTEEN_HOURS_NANOS: i64 = 64_800_000_000_000;
+const SIX_HOURS_NANOS: i64 = 21_600_000_000_000;
 const TRADING_DAY_END_NANOS: i64 = 64_799_999_999_999;
 const BEGIN_MARK_NANOS: i64 = 631_123_200_000_000_000;
 
@@ -433,6 +443,15 @@ fn trading_day_from_timestamp_nanos(timestamp_nanos: i64) -> i64 {
 
 fn trading_day_end_time_nanos(trading_day_nanos: i64) -> i64 {
     trading_day_nanos + TRADING_DAY_END_NANOS
+}
+
+fn trading_day_start_time_nanos(timestamp_nanos: i64) -> i64 {
+    let mut start_time = timestamp_nanos - SIX_HOURS_NANOS;
+    let week_day = (start_time - BEGIN_MARK_NANOS) / DAY_NANOS % 7;
+    if week_day >= 5 {
+        start_time -= DAY_NANOS * (week_day - 4);
+    }
+    start_time
 }
 
 fn trading_day_date(trading_day_nanos: i64) -> NaiveDate {

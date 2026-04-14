@@ -1,4 +1,4 @@
-use super::{InsertOrderRequest, Quote};
+use super::{InsertOrderRequest, Quote, Tick};
 
 #[test]
 fn test_quote_deserialize_with_nulls() {
@@ -60,6 +60,39 @@ fn quote_parses_open_min_order_volume_fields() {
     assert_eq!(quote.open_min_limit_order_volume, 5);
     assert_eq!(quote.open_max_market_order_volume, 9);
     assert_eq!(quote.open_max_limit_order_volume, 11);
+}
+
+#[test]
+fn tick_deserialize_with_sparse_depth_fields() {
+    let json_data = r#"{
+        "datetime": 1774702800000000000,
+        "last_price": 3000.0,
+        "average": 2995.0,
+        "highest": 3001.0,
+        "lowest": 2986.0,
+        "ask_price1": 3000.2,
+        "ask_volume1": 1,
+        "ask_price2": null,
+        "ask_volume2": null,
+        "bid_price1": 2999.8,
+        "bid_volume1": 2,
+        "bid_price2": null,
+        "bid_volume2": null,
+        "volume": 688,
+        "amount": 20609740.0,
+        "open_interest": 5278
+    }"#;
+
+    let tick = serde_json::from_str::<Tick>(json_data).expect("Tick 解析失败");
+
+    assert_eq!(tick.last_price, 3000.0);
+    assert_eq!(tick.ask_volume1, 1);
+    assert!(tick.ask_price2.is_nan(), "null 应该被转换为 NaN");
+    assert_eq!(tick.ask_volume2, 0, "null 应该被转换为 0");
+    assert!(tick.ask_price3.is_nan(), "缺失字段应该被转换为 NaN");
+    assert_eq!(tick.ask_volume3, 0, "缺失字段应该被转换为 0");
+    assert!(tick.bid_price2.is_nan(), "null 应该被转换为 NaN");
+    assert_eq!(tick.bid_volume2, 0, "null 应该被转换为 0");
 }
 
 #[test]

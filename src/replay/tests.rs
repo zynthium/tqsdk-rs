@@ -955,6 +955,33 @@ fn feed_cursor_emits_open_then_close_for_one_kline() {
 }
 
 #[test]
+fn daily_feed_cursor_uses_python_trading_day_boundaries() {
+    let bars = vec![Kline {
+        id: 1,
+        datetime: shanghai_nanos(2026, 4, 8, 0, 0, 0),
+        open: 10.0,
+        high: 12.0,
+        low: 9.0,
+        close: 11.0,
+        open_oi: 100,
+        close_oi: 105,
+        volume: 6,
+        epoch: None,
+    }];
+
+    let mut cursor = FeedCursor::from_kline_rows("SHFE.rb2605", 86_400_000_000_000, bars);
+
+    assert_eq!(cursor.peek_timestamp(), Some(shanghai_nanos(2026, 4, 7, 18, 0, 0)));
+    assert!(matches!(cursor.next_event().unwrap(), FeedEvent::BarOpen { .. }));
+    assert_eq!(
+        cursor.peek_timestamp(),
+        Some(shanghai_nanos(2026, 4, 8, 18, 0, 0) - 1_000)
+    );
+    assert!(matches!(cursor.next_event().unwrap(), FeedEvent::BarClose { .. }));
+    assert!(cursor.next_event().is_none());
+}
+
+#[test]
 fn continuous_provider_only_reveals_requested_day() {
     let provider = ContinuousContractProvider::from_rows(vec![
         ContinuousMapping {
@@ -1070,6 +1097,7 @@ fn quote_synthesizer_builds_ohlc_price_path_for_smallest_kline() {
             id: 1,
             epoch: None,
         },
+        60_000_000_999,
     );
 
     let prices: Vec<f64> = update.path.iter().map(|step| step.last_price).collect();
@@ -1204,6 +1232,7 @@ fn quote_synthesizer_promotes_smaller_kline_when_bar_event_arrives() {
             id: 1,
             epoch: None,
         },
+        60_000_000_999,
     );
 
     assert!(update.source_selected);
@@ -1249,6 +1278,7 @@ fn quote_synthesizer_keeps_non_selected_bar_close_distinguishable_from_driver_pa
             id: 1,
             epoch: None,
         },
+        60_000_000_999,
     );
 
     let update = synth.apply_bar_close(
@@ -1266,6 +1296,7 @@ fn quote_synthesizer_keeps_non_selected_bar_close_distinguishable_from_driver_pa
             id: 2,
             epoch: None,
         },
+        300_000_000_999,
     );
 
     assert!(!update.source_selected);
