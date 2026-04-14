@@ -6,7 +6,6 @@ use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
 use crate::types::Notification;
 use crate::websocket::{TqTradeWebsocket, WebSocketConfig};
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tracing::info;
@@ -70,7 +69,7 @@ fn detect_client_mac_address() -> Option<String> {
     target_os = "netbsd"
 ))]
 fn detect_client_mac_address() -> Option<String> {
-    let output = Command::new("ifconfig").arg("-a").output().ok()?;
+    let output = std::process::Command::new("ifconfig").arg("-a").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -87,7 +86,7 @@ fn detect_client_mac_address() -> Option<String> {
 
 #[cfg(target_os = "windows")]
 fn detect_client_mac_address() -> Option<String> {
-    let output = Command::new("getmac").output().ok()?;
+    let output = std::process::Command::new("getmac").output().ok()?;
     if !output.status.success() {
         return None;
     }
