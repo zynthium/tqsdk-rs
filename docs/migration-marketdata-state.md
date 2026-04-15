@@ -10,9 +10,9 @@
 3. **Live/Backtest 语义割裂**：回测时的事件流难以与实时流完美对齐，导致策略在实盘和回测中表现不一。
 
 **新版状态驱动 API 的优势**：
-- **类似 Python TqSdk 的极简体验**：提供 `client.wait_update().await` 和 `q.is_changing()`。
+- **类似 Python TqSdk 的极简体验**：提供 `client.wait_update().await` 和 `q.is_changing().await`。
 - **轻量快照读取**：最新 Quote/Kline/Tick 通过共享快照暴露，策略端读取最新状态不需要自己维护一套镜像缓存。
-- **O(changed) 批量唤醒**：内置增量更新集合（UpdateSet），策略只需处理本轮跳动的合约，支持高吞吐全品种扫描。
+- **O(changed) 批量唤醒**：内置增量更新集合（`MarketDataUpdates`），策略只需处理本轮跳动的合约，支持高吞吐全品种扫描。
 
 ---
 
@@ -23,7 +23,7 @@
 | **获取入口** | `Client` | `Client` 直接暴露状态引用与等待接口 |
 | **发起订阅** | `client.subscribe_quote(...)`<br>`client.get_kline_serial(...)` / `client.get_tick_serial(...)` | Python 对齐的 bounded serial 入口，仍作为驱动网络下发的入口 |
 | **数据读取** | `channel.recv().await`<br>或 callback 消费 | `client.quote("SHFE.cu2605")` 获取 `QuoteRef`<br>通过 `quote_ref.load().await` 读取快照 |
-| **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing()` 检测本地是否过期 |
+| **状态追踪** | 需用户手工维护 `HashMap` 缓存 | `quote_ref.is_changing().await` 检测本地是否过期 |
 | **等待更新** | `select! { msg = rx1.recv() => {}, msg = rx2.recv() => {} }` | `client.wait_update().await`（全局批量等待）<br>或 `quote_ref.wait_update().await`（单点精准等待） |
 | **批量获取** | 无法直接获取本次变更全集 | `client.wait_update_and_drain().await` 直接返回本轮发生变化的 key 集合 |
 
@@ -78,7 +78,7 @@ let cu = client.quote("SHFE.cu2605");
 loop {
     client.wait_update().await?; // 阻塞，直到世界发生变化
     
-    if cu.is_changing() {     // 判断 cu 是否是本次更新的主角
+    if cu.is_changing().await {     // 判断 cu 是否是本次更新的主角
         let q = cu.load().await; // 无锁读取 O(1)
         println!("最新价: {}", q.last_price);
     }
@@ -87,7 +87,7 @@ loop {
 
 ### 3. 全品种策略的高性能写法
 
-如果你订阅了 500 个合约，挨个判断 `is_changing()` 虽然很快，但还有更优雅的高性能写法：**直接消费本轮的更新集合（UpdateSet）**。
+如果你订阅了 500 个合约，挨个判断 `is_changing().await` 虽然很快，但还有更优雅的高性能写法：**直接消费本轮的更新集合（`MarketDataUpdates`）**。
 
 **新代码：**
 ```rust
@@ -151,7 +151,7 @@ loop {
     client.wait_update().await?;
     
     // 如果铜价动了
-    if cu_ref.is_changing() {
+    if cu_ref.is_changing().await {
         let cu_price = cu_ref.load().await.last_price;
         // 直接读取铝价（不会阻塞，O(1) 开销）
         let al_price = al_ref.load().await.last_price; 
@@ -167,6 +167,6 @@ loop {
 ## 注意事项与常见问题
 
 1. **`wait_update` 不返回任何网络包**：它纯粹是一个调度屏障（Barrier）。底层网络线程已经在它返回前，把所有收到的 JSON 数据合并成了强类型的内存结构体（`Quote`/`Kline`）。
-2. **`is_changing()` 会消耗状态**：每次调用 `is_changing()` 如果返回 `true`，内部会推进本地的 `seen_epoch`。在同一个策略循环里，同一个 `QuoteRef` 第二次调用会返回 `false`。
+2. **`is_changing().await` 会消耗状态**：每次调用 `is_changing().await` 如果返回 `true`，内部会推进本地的 `seen_epoch`。在同一个策略循环里，同一个 `QuoteRef` 第二次调用会返回 `false`。
 3. **回测模式 (Backtest)**：回测主路径已经收敛到 `ReplaySession`。应显式调用 `session.step().await?` 推进历史时间；如果需要目标持仓任务，请通过 `session.runtime(...).await?` 获取回放 runtime，而不是假设 live `wait_update()` 会自动驱动历史流。
 4. **当前边界**：Quote callback/channel 与 Series callback/stream 都已删除；新代码应统一使用状态驱动读取模型。

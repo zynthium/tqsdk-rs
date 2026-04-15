@@ -36,7 +36,7 @@
 ```text
 Client::builder -> build -> init_market
   -> subscribe_quote / quote
-  -> kline / tick / kline_ref / tick_ref
+  -> kline_ref / tick_ref / get_kline_serial / get_tick_serial
   -> query_* / get_trading_calendar / get_trading_status
 ```
 

@@ -34,8 +34,8 @@ breaking cleanup 完成后的公开模型收敛为四条主路径：
 | `runtime::BacktestExecutionAdapter` | 无 public replacement | 回测执行 adapter 收回为内部实现；回放请使用 `ReplaySession::runtime()` |
 | `runtime::{ExecutionAdapter, MarketAdapter, LiveExecutionAdapter, LiveMarketAdapter, TaskRegistry, TaskId, ChildOrderRunner, ...}` | `ClientBuilder::build_runtime()` / `Client::into_runtime()` / `ReplaySession::runtime()` | runtime 装配层收口为内部实现，公开 API 聚焦 ready-to-use `TqRuntime` 与 Builder task |
 | `TargetPosBuilder` / `TargetPosSchedulerBuilder` / `TargetPosSchedulerConfig` / `TargetPosExecutionReport` / `RuntimeMode` / `RuntimeError` / `PriceResolver` root/prelude export | `tqsdk_rs::runtime::{...}` | runtime 细节类型与显式 builder 名称保留在 `runtime` 命名空间，不再污染 crate root / prelude |
-| `prelude::*` 中的 `DataManager` / `InsAPI` / `SeriesAPI` / `TqApi` / 事件流 wrapper / `SeriesData` 等高级类型 | 显式 `use tqsdk_rs::{...}` 或对应模块路径 | prelude 聚焦常用 `Client` / `ReplaySession` / `TqRuntime` / `TradeSession` 主路径，高级接口改为显式导入 |
-| `TradeEventStream` / `OrderEventStream` / `TradeOnlyEventStream` / `TradeEventRecvError` / `TradeSessionEvent` root export | `tqsdk_rs::trade_session::{...}` | 交易可靠事件的显式 stream/event 类型保留在 `trade_session` 命名空间；crate root 只保留常用 `TradeSession` 与 `TradeSessionEventKind` |
+| `prelude::*` 中的 `DataManager` / `InsAPI` / `SeriesAPI` / `TqApi` / `SeriesData` 等高级类型 | 显式 `use tqsdk_rs::{...}` 或对应模块路径 | prelude 聚焦常用 `Client` / `ReplaySession` / `TqRuntime` / `TradeSession` 主路径；交易事件流类型当前仍保留在 prelude 里便于使用，其余高级接口改为显式导入 |
+| `TradeEventStream` / `OrderEventStream` / `TradeOnlyEventStream` / `TradeEventRecvError` / `TradeSessionEvent` root export | 优先 `tqsdk_rs::trade_session::{...}` | 交易可靠事件的显式 stream/event 类型推荐从 `trade_session` 命名空间导入；当前代码仍暂时保留 crate root / prelude re-export 以兼容现有调用方 |
 | `InsAPI` / `SeriesAPI` / `SeriesCachePolicy` / `KlineKey` / `MarketDataState` / `MarketDataUpdates` / `SymbolId` root export | `tqsdk_rs::{ins, series, marketdata}::{...}` | query/series/marketdata 的高级类型继续保留模块级 public，crate root 聚焦高频 facade 和直接消费句柄 |
 | `Authenticator` / `ClientOption` / `BacktestResult` root/prelude export | `tqsdk_rs::{auth, client, replay}::{...}` | trait/type alias/result detail 继续保留模块级 public，但不再占用 crate root / prelude |
 | `websocket::*` 和 raw constructor（`QuoteSubscription::new`、`SeriesAPI::new`、`InsAPI::new`、`TradeSession::new`） | `Client` / `ClientBuilder` / `TradeSession` factory methods | transport wiring 收回 crate 内部；公开连接入口统一走高层 facade |
@@ -153,8 +153,8 @@ let scheduler = account
 - 已收口：`websocket` transport 模块与 raw constructor 不再作为公开装配入口，连接生命周期统一走 `Client` / `TradeSession` / `ReplaySession`。
 - 已收口：`ReplayQuoteHandle`、`ReplayStep`、`ReplayQuote`、`ReplayHandleId`、`BarState`、`DailySettlementLog` 与 `MergeSemanticsConfig` 不再从 crate root / prelude 直接导出；需要显式类型名时请从对应模块导入。
 - 已收口：`TargetPosBuilder`、`TargetPosSchedulerBuilder`、`TargetPosSchedulerConfig`、`TargetPosExecutionReport`、`RuntimeMode`、`RuntimeError` 与 `PriceResolver` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::runtime::{...}`。
-- 已收口：`prelude::*` 不再囊括 `DataManager`、`InsAPI`、`SeriesAPI`、事件流 wrapper、`SeriesData` 等高级类型；prelude 只保留主路径常用类型，高级接口请显式导入。
-- 已收口：`TradeEventStream`、`OrderEventStream`、`TradeOnlyEventStream`、`TradeEventRecvError` 与 `TradeSessionEvent` 不再从 crate root 直接导出；显式类型引用请走 `tqsdk_rs::trade_session::{...}`。
+- 已收口：`prelude::*` 不再囊括 `DataManager`、`InsAPI`、`SeriesAPI`、`SeriesData` 等高级类型；交易事件流类型当前仍保留在 prelude 中，其余高级接口请显式导入。
+- 当前状态：`TradeEventStream`、`OrderEventStream`、`TradeOnlyEventStream` 与 `TradeEventRecvError` 仍暂时保留 crate root / prelude re-export；新文档与显式类型引用仍建议走 `tqsdk_rs::trade_session::{...}`。
 - 已收口：`InsAPI`、`SeriesAPI`、`SeriesCachePolicy`、`KlineKey`、`MarketDataState`、`MarketDataUpdates` 与 `SymbolId` 不再从 crate root 直接导出；显式类型引用请走对应模块命名空间。
 - 已收口：`Authenticator`、`ClientOption` 与 `BacktestResult` 不再从 crate root / prelude 直接导出；显式类型引用请走 `tqsdk_rs::{auth, client, replay}::{...}`。
 - 已收口：`Client::market_state()` 与 `Client::tqapi()` 已删除；从 `Client` 读取行情状态请统一通过 `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}`。
