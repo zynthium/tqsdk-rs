@@ -40,6 +40,10 @@ pub trait ExecutionAdapter: Send + Sync {
         Err(RuntimeError::Unsupported("trades_by_order"))
     }
 
+    async fn trades_for_symbol(&self, _account_key: &str, _symbol: &str) -> RuntimeResult<Vec<Trade>> {
+        Err(RuntimeError::Unsupported("trades_for_symbol"))
+    }
+
     async fn position(&self, _account_key: &str, _symbol: &str) -> RuntimeResult<Position> {
         Err(RuntimeError::Unsupported("position"))
     }
@@ -124,6 +128,19 @@ impl ExecutionAdapter for LiveExecutionAdapter {
         Ok(trades
             .into_values()
             .filter(|trade| trade.order_id == order_id)
+            .collect())
+    }
+
+    async fn trades_for_symbol(&self, account_key: &str, symbol: &str) -> RuntimeResult<Vec<Trade>> {
+        let session = self.session(account_key).await?;
+        let trades = session.get_trades().await?;
+        let (exchange_id, instrument_id) = symbol
+            .split_once('.')
+            .ok_or(RuntimeError::Unsupported("invalid runtime symbol"))?;
+
+        Ok(trades
+            .into_values()
+            .filter(|trade| trade.exchange_id == exchange_id && trade.instrument_id == instrument_id)
             .collect())
     }
 

@@ -19,7 +19,8 @@ pub use modes::RuntimeMode;
 pub(crate) use registry::{TaskId, TaskRegistry};
 #[cfg(test)]
 pub(crate) use tasks::{
-    ChildOrderRunner, OffsetAction, PlannedOffset, compute_plan, parse_offset_priority, validate_quote_constraints,
+    ChildOrderRunner, OffsetAction, OpenLimitBudget, PlannedOffset, compute_plan, parse_offset_priority,
+    validate_quote_constraints,
 };
 pub use tasks::{
     TargetPosBuilder, TargetPosExecutionReport, TargetPosScheduleStep, TargetPosScheduler, TargetPosSchedulerBuilder,

@@ -34,6 +34,16 @@ pub enum RuntimeError {
     #[error("target position task for {symbol} failed: {reason}")]
     TargetTaskFailed { symbol: String, reason: String },
     #[error(
+        "交易所规定 {symbol} 当日 open_limit 为 {open_limit}，已使用 {used_volume}，剩余 {remaining_limit}，本次规划需要 {requested_plan_volume}，TargetPosTask 不会静默截断"
+    )]
+    OpenLimitExceeded {
+        symbol: String,
+        open_limit: i64,
+        used_volume: i64,
+        remaining_limit: i64,
+        requested_plan_volume: i64,
+    },
+    #[error(
         "交易所规定 {symbol} 最小市价开仓手数 ({open_min_market_order_volume}) 或最小限价开仓手数 ({open_min_limit_order_volume}) 大于 1，当前 TargetPosTask 规划器暂不支持该规则"
     )]
     UnsupportedOpenOrderVolume {

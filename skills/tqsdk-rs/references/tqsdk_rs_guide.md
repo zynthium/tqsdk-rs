@@ -59,6 +59,11 @@ Client::builder
   -> target_pos / target_pos_scheduler
 ```
 
+补充规则：
+
+- `Quote.open_limit > 0` 时，`TargetPosTask` 会按账户 + 合约 + 交易日统计当日已成交手数
+- 如果剩余额度不足，会显式报错，不会自动缩单或静默截断目标仓位
+
 或：
 
 ```text

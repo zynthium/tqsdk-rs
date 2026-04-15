@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use chrono::{FixedOffset, NaiveDateTime, TimeZone};
 use futures::future::join_all;
 use tokio::sync::watch;
 
@@ -22,6 +23,13 @@ pub struct TargetPosBuilder {
 #[derive(Clone)]
 pub struct TargetPosTask {
     inner: Arc<TargetPosTaskInner>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct OpenLimitBudget {
+    pub open_limit: i64,
+    pub used_volume: i64,
+    pub remaining_limit: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,10 +320,24 @@ impl TargetPosTaskInner {
 
             let runtime = self.account.runtime();
             let quote = runtime.market().latest_quote(&self.symbol).await?;
+            let trades = runtime
+                .execution()
+                .trades_for_symbol(self.account.account_key(), &self.symbol)
+                .await?;
             let position = runtime
                 .execution()
                 .position(self.account.account_key(), &self.symbol)
                 .await?;
+            let open_limit_budget = if quote.open_limit > 0 {
+                let used_volume = used_volume_for_trading_day(&quote, &trades)?;
+                Some(OpenLimitBudget {
+                    open_limit: quote.open_limit,
+                    used_volume,
+                    remaining_limit: (quote.open_limit - used_volume).max(0),
+                })
+            } else {
+                None
+            };
             tracing::debug!(
                 symbol = %self.symbol,
                 request_seq = request.seq,
@@ -325,9 +347,16 @@ impl TargetPosTaskInner {
                 position_long_his = position.volume_long_his,
                 position_short_today = position.volume_short_today,
                 position_short_his = position.volume_short_his,
+                open_limit = quote.open_limit,
                 "target_pos drive_target evaluating latest quote"
             );
-            let plan = compute_plan(&quote, &position, request.volume, &self.offset_priority)?;
+            let plan = compute_plan(
+                &quote,
+                &position,
+                request.volume,
+                &self.offset_priority,
+                open_limit_budget,
+            )?;
 
             if plan.is_empty() {
                 self.reached_seq_tx.send_replace(request.seq);
@@ -569,11 +598,29 @@ pub(crate) fn validate_quote_constraints(quote: &Quote) -> RuntimeResult<()> {
     Ok(())
 }
 
+fn used_volume_for_trading_day(quote: &Quote, trades: &[Trade]) -> RuntimeResult<i64> {
+    let trading_day = quote_trading_day(quote)?;
+    Ok(trades
+        .iter()
+        .filter(|trade| trading_day_from_timestamp(trade.trade_date_time) == trading_day)
+        .map(|trade| trade.volume)
+        .sum())
+}
+
+fn total_planned_volume(batches: &[PlannedBatch]) -> i64 {
+    batches
+        .iter()
+        .flat_map(|batch| batch.orders.iter())
+        .map(|order| order.volume)
+        .sum()
+}
+
 pub(crate) fn compute_plan(
     quote: &Quote,
     position: &Position,
     target_volume: i64,
     offset_priority: &[Vec<OffsetAction>],
+    open_limit_budget: Option<OpenLimitBudget>,
 ) -> RuntimeResult<Vec<PlannedBatch>> {
     validate_quote_constraints(quote)?;
 
@@ -612,6 +659,19 @@ pub(crate) fn compute_plan(
 
         if !orders.is_empty() {
             batches.push(PlannedBatch { orders });
+        }
+    }
+
+    if let Some(budget) = open_limit_budget {
+        let requested_plan_volume = total_planned_volume(&batches);
+        if requested_plan_volume > budget.remaining_limit {
+            return Err(RuntimeError::OpenLimitExceeded {
+                symbol: quote_symbol(quote),
+                open_limit: budget.open_limit,
+                used_volume: budget.used_volume,
+                remaining_limit: budget.remaining_limit,
+                requested_plan_volume,
+            });
         }
     }
 
@@ -709,6 +769,48 @@ fn exchange_id(quote: &Quote) -> String {
         .split_once('.')
         .map(|(exchange, _)| exchange.to_string())
         .unwrap_or_default()
+}
+
+fn quote_symbol(quote: &Quote) -> String {
+    if quote.instrument_id.contains('.') {
+        return quote.instrument_id.clone();
+    }
+    let exchange = exchange_id(quote);
+    if exchange.is_empty() {
+        quote.instrument_id.clone()
+    } else {
+        format!("{exchange}.{}", quote.instrument_id)
+    }
+}
+
+fn quote_trading_day(quote: &Quote) -> RuntimeResult<i64> {
+    let naive = NaiveDateTime::parse_from_str(&quote.datetime, "%Y-%m-%d %H:%M:%S%.f")
+        .map_err(|_| RuntimeError::Unsupported("invalid target_pos quote datetime"))?;
+    let cst = FixedOffset::east_opt(8 * 3600).ok_or(RuntimeError::Unsupported("invalid CST offset"))?;
+    let datetime = cst
+        .from_local_datetime(&naive)
+        .single()
+        .ok_or(RuntimeError::Unsupported("invalid target_pos quote datetime"))?;
+    datetime
+        .timestamp_nanos_opt()
+        .map(trading_day_from_timestamp)
+        .ok_or(RuntimeError::Unsupported("target_pos quote datetime out of range"))
+}
+
+fn trading_day_from_timestamp(timestamp: i64) -> i64 {
+    const DAY_NS: i64 = 86_400_000_000_000;
+    const EIGHTEEN_HOURS_NS: i64 = 64_800_000_000_000;
+    const BEGIN_MARK: i64 = 631_123_200_000_000_000;
+
+    let mut days = (timestamp - BEGIN_MARK) / DAY_NS;
+    if (timestamp - BEGIN_MARK) % DAY_NS >= EIGHTEEN_HOURS_NS {
+        days += 1;
+    }
+    let week_day = days % 7;
+    if week_day >= 5 {
+        days += 7 - week_day;
+    }
+    BEGIN_MARK + days * DAY_NS
 }
 
 fn net_position(position: &Position) -> i64 {

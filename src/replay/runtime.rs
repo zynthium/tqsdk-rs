@@ -474,6 +474,18 @@ impl ExecutionAdapter for ReplayExecutionAdapter {
             .trades_by_order(account_key, order_id)?)
     }
 
+    async fn trades_for_symbol(&self, account_key: &str, symbol: &str) -> RuntimeResult<Vec<Trade>> {
+        Ok(self
+            .state
+            .broker
+            .lock()
+            .expect("replay broker lock poisoned")
+            .trades_for_symbol(symbol)
+            .into_iter()
+            .filter(|trade| trade.user_id == account_key)
+            .collect())
+    }
+
     async fn position(&self, account_key: &str, symbol: &str) -> RuntimeResult<Position> {
         Ok(self
             .state

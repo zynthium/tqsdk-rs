@@ -242,6 +242,9 @@ async fn demo(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
 }
 ```
 
+`TargetPosTask` 在 `Quote.open_limit > 0` 时会校验交易所当日 `开仓 + 平仓` 手数限额。
+它会按账户、合约、交易日统计已成交手数；如果剩余额度不足，本次规划会显式报错，而不会静默截断目标仓位。
+
 ### 时间分片调仓（Builder，推荐）
 
 ```rust

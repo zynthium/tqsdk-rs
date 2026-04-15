@@ -3,14 +3,15 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use async_trait::async_trait;
+use chrono::TimeZone;
 use serde_json::json;
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::time::{Duration, sleep, timeout};
 
 use crate::runtime::{
-    ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OrderDirection, PlannedOffset, PriceMode,
-    RuntimeError, RuntimeMode, RuntimeResult, TargetPosScheduleStep, TqRuntime, compute_plan, parse_offset_priority,
-    validate_quote_constraints,
+    ChildOrderRunner, ExecutionAdapter, MarketAdapter, OffsetAction, OpenLimitBudget, OrderDirection, PlannedOffset,
+    PriceMode, RuntimeError, RuntimeMode, RuntimeResult, TargetPosScheduleStep, TqRuntime, compute_plan,
+    parse_offset_priority, validate_quote_constraints,
 };
 use crate::types::{
     DIRECTION_BUY, InsertOrderRequest, OFFSET_OPEN, ORDER_STATUS_ALIVE, ORDER_STATUS_FINISHED, Order, Position, Quote,
@@ -71,7 +72,7 @@ fn planning_respects_shfe_close_today_vs_close_yesterday() {
         exchange_id: "SHFE".to_string(),
         ..Quote::default()
     };
-    let shfe_plan = compute_plan(&shfe_quote, &position, -1, &priorities).expect("shfe plan should succeed");
+    let shfe_plan = compute_plan(&shfe_quote, &position, -1, &priorities, None).expect("shfe plan should succeed");
     assert_eq!(shfe_plan.len(), 1);
     assert_eq!(shfe_plan[0].orders.len(), 3);
     assert_eq!(shfe_plan[0].orders[0].offset, PlannedOffset::CloseToday);
@@ -86,7 +87,7 @@ fn planning_respects_shfe_close_today_vs_close_yesterday() {
         exchange_id: "CFFEX".to_string(),
         ..Quote::default()
     };
-    let cffex_plan = compute_plan(&cffex_quote, &position, -1, &priorities).expect("cffex plan should succeed");
+    let cffex_plan = compute_plan(&cffex_quote, &position, -1, &priorities, None).expect("cffex plan should succeed");
     assert_eq!(cffex_plan.len(), 1);
     assert_eq!(cffex_plan[0].orders.len(), 3);
     assert_eq!(cffex_plan[0].orders[0].offset, PlannedOffset::Close);
@@ -95,6 +96,61 @@ fn planning_respects_shfe_close_today_vs_close_yesterday() {
     assert_eq!(cffex_plan[0].orders[1].volume, 3);
     assert_eq!(cffex_plan[0].orders[2].offset, PlannedOffset::Open);
     assert_eq!(cffex_plan[0].orders[2].volume, 1);
+}
+
+#[test]
+fn planning_ignores_open_limit_when_quote_does_not_provide_it() {
+    let priorities = parse_offset_priority("开").expect("priority should parse");
+    let quote = Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        open_limit: 0,
+        ..Quote::default()
+    };
+    let position = make_position("SHFE", "rb2601");
+
+    let plan =
+        compute_plan(&quote, &position, 2, &priorities, None).expect("missing open_limit should not block planning");
+
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].orders[0].offset, PlannedOffset::Open);
+    assert_eq!(plan[0].orders[0].volume, 2);
+}
+
+#[test]
+fn planning_rejects_when_requested_volume_exceeds_remaining_open_limit() {
+    let priorities = parse_offset_priority("开").expect("priority should parse");
+    let quote = Quote {
+        instrument_id: "SHFE.rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        open_limit: 10,
+        ..Quote::default()
+    };
+    let position = make_position("SHFE", "rb2601");
+
+    let err = compute_plan(
+        &quote,
+        &position,
+        4,
+        &priorities,
+        Some(OpenLimitBudget {
+            open_limit: 10,
+            used_volume: 8,
+            remaining_limit: 2,
+        }),
+    )
+    .expect_err("plan should be rejected once it exceeds remaining daily limit");
+
+    assert!(matches!(
+        err,
+        RuntimeError::OpenLimitExceeded {
+            open_limit: 10,
+            used_volume: 8,
+            remaining_limit: 2,
+            requested_plan_volume: 4,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -358,6 +414,88 @@ async fn target_pos_handle_latest_target_overrides_previous_target() {
         .expect("position should be readable");
     assert_eq!(net_position(&position), 1);
     assert_eq!(execution.inserted_prices().await, vec![101.0]);
+}
+
+#[tokio::test]
+async fn target_pos_uses_only_current_trading_day_trades_for_open_limit() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        datetime: "2026-04-15 09:00:00.000000".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        open_limit: 5,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        true,
+    ));
+    execution
+        .set_symbol_trades(vec![make_trade_at(
+            "old-order",
+            "old-trade",
+            4,
+            100.0,
+            shanghai_nanos(2026, 4, 14, 9, 1, 0),
+        )])
+        .await;
+    let runtime = Arc::new(TqRuntime::with_id(
+        "runtime-1",
+        RuntimeMode::Live,
+        market,
+        execution.clone(),
+    ));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account.target_pos("SHFE.rb2601").build().expect("task should build");
+
+    task.set_target_volume(1).expect("target should be accepted");
+    task.wait_target_reached()
+        .await
+        .expect("prior-day trades must not consume today's budget");
+
+    assert_eq!(execution.inserted_prices().await, vec![101.0]);
+}
+
+#[tokio::test]
+async fn target_pos_fails_when_same_day_trades_exhaust_open_limit() {
+    let market = Arc::new(FakeMarketAdapter::new(Quote {
+        instrument_id: "rb2601".to_string(),
+        exchange_id: "SHFE".to_string(),
+        datetime: "2026-04-15 09:00:00.000000".to_string(),
+        ask_price1: 101.0,
+        bid_price1: 100.0,
+        last_price: 100.0,
+        open_limit: 5,
+        ..Quote::default()
+    }));
+    let execution = Arc::new(FakeExecutionAdapter::with_position(
+        make_position("SHFE", "rb2601"),
+        false,
+    ));
+    execution
+        .set_symbol_trades(vec![make_trade_at(
+            "same-day-order",
+            "same-day-trade",
+            5,
+            100.0,
+            shanghai_nanos(2026, 4, 15, 9, 1, 0),
+        )])
+        .await;
+    let runtime = Arc::new(TqRuntime::with_id("runtime-1", RuntimeMode::Live, market, execution));
+    let account = runtime.account("SIM").expect("account should exist");
+    let task = account.target_pos("SHFE.rb2601").build().expect("task should build");
+
+    task.set_target_volume(1).expect("target should be accepted");
+
+    let err = task
+        .wait_target_reached()
+        .await
+        .expect_err("same-day trades should exhaust the daily open_limit budget");
+
+    assert!(matches!(err, RuntimeError::TargetTaskFailed { .. }));
+    assert!(err.to_string().contains("open_limit"));
 }
 
 #[tokio::test]
@@ -942,6 +1080,7 @@ struct FakeExecutionState {
     next_order_seq: usize,
     orders: HashMap<String, Order>,
     trades_by_order: HashMap<String, Vec<Trade>>,
+    symbol_trades: Vec<Trade>,
     inserted_prices: Vec<f64>,
     cancelled_order_ids: Vec<String>,
     position: Position,
@@ -962,6 +1101,7 @@ impl FakeExecutionAdapter {
                 next_order_seq: 0,
                 orders: HashMap::new(),
                 trades_by_order: HashMap::new(),
+                symbol_trades: Vec::new(),
                 inserted_prices: Vec::new(),
                 cancelled_order_ids: Vec::new(),
                 position,
@@ -1009,6 +1149,10 @@ impl FakeExecutionAdapter {
             .collect()
     }
 
+    async fn set_symbol_trades(&self, trades: Vec<Trade>) {
+        self.state.lock().await.symbol_trades = trades;
+    }
+
     async fn finish_order(&self, order_id: &str, volume_left: i64, trades: Vec<Trade>) {
         let mut state = self.state.lock().await;
         if let Some(order) = state.orders.get_mut(order_id) {
@@ -1020,6 +1164,7 @@ impl FakeExecutionAdapter {
                 apply_position_fill(&mut state.position, &order_snapshot, filled_delta);
             }
         }
+        state.symbol_trades.extend(trades.iter().cloned());
         state.trades_by_order.insert(order_id.to_string(), trades);
         drop(state);
         let _ = self.updates_tx.send(order_id.to_string());
@@ -1057,6 +1202,7 @@ impl FakeExecutionAdapter {
 
     async fn append_trade(&self, order_id: &str, trade: Trade) {
         let mut state = self.state.lock().await;
+        state.symbol_trades.push(trade.clone());
         state
             .trades_by_order
             .entry(order_id.to_string())
@@ -1101,6 +1247,7 @@ impl ExecutionAdapter for FakeExecutionAdapter {
             let order_snapshot = order.clone();
             let trade = make_trade(&order_id, &trade_id, req.volume, req.limit_price);
             apply_position_fill(&mut state.position, &order_snapshot, req.volume);
+            state.symbol_trades.push(trade.clone());
             state.trades_by_order.insert(order_id.clone(), vec![trade]);
         }
         drop(state);
@@ -1141,6 +1288,22 @@ impl ExecutionAdapter for FakeExecutionAdapter {
             .get(order_id)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn trades_for_symbol(&self, _account_key: &str, symbol: &str) -> RuntimeResult<Vec<Trade>> {
+        let Some((exchange_id, instrument_id)) = symbol.split_once('.') else {
+            return Ok(Vec::new());
+        };
+
+        Ok(self
+            .state
+            .lock()
+            .await
+            .symbol_trades
+            .iter()
+            .filter(|trade| trade.exchange_id == exchange_id && trade.instrument_id == instrument_id)
+            .cloned()
+            .collect())
     }
 
     async fn position(&self, _account_key: &str, _symbol: &str) -> RuntimeResult<Position> {
@@ -1304,6 +1467,35 @@ fn make_trade(order_id: &str, trade_id: &str, volume: i64, price: f64) -> Trade 
         volume,
         price,
         trade_date_time: 0,
+        commission: 0.0,
+        epoch: None,
+    }
+}
+
+fn shanghai_nanos(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> i64 {
+    chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(year, month, day, hour, minute, second)
+        .single()
+        .unwrap()
+        .timestamp_nanos_opt()
+        .unwrap()
+}
+
+fn make_trade_at(order_id: &str, trade_id: &str, volume: i64, price: f64, trade_date_time: i64) -> Trade {
+    Trade {
+        seqno: 0,
+        user_id: "SIM".to_string(),
+        trade_id: trade_id.to_string(),
+        exchange_id: "SHFE".to_string(),
+        instrument_id: "rb2601".to_string(),
+        order_id: order_id.to_string(),
+        exchange_trade_id: String::new(),
+        direction: DIRECTION_BUY.to_string(),
+        offset: OFFSET_OPEN.to_string(),
+        volume,
+        price,
+        trade_date_time,
         commission: 0.0,
         epoch: None,
     }
