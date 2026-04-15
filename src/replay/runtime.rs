@@ -567,6 +567,7 @@ fn replay_quote_from_api_quote(symbol: &str, quote: &Quote) -> RuntimeResult<Rep
         volume: quote.volume,
         amount: quote.amount,
         open_interest: quote.open_interest,
+        open_limit: quote.open_limit,
     })
 }
 
@@ -587,6 +588,7 @@ fn build_quote(metadata: &InstrumentMetadata, replay_quote: &ReplayQuote) -> Quo
         volume: replay_quote.volume,
         amount: replay_quote.amount,
         open_interest: replay_quote.open_interest,
+        open_limit: replay_quote.open_limit,
         margin: metadata.margin,
         commission: metadata.commission,
         class: metadata.class.clone(),
@@ -606,4 +608,43 @@ fn format_quote_datetime(datetime_nanos: i64) -> String {
         .with_timezone(&FixedOffset::east_opt(8 * 3600).expect("CST offset must be valid"))
         .format("%Y-%m-%d %H:%M:%S%.6f")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_quote, replay_quote_from_api_quote};
+    use crate::replay::InstrumentMetadata;
+    use crate::types::Quote;
+
+    #[test]
+    fn replay_quote_roundtrip_preserves_open_limit() {
+        let api_quote = serde_json::from_str::<Quote>(
+            r#"{
+                "instrument_id":"rb2605",
+                "datetime":"2026-04-15 09:30:00.000000",
+                "last_price":3210.0,
+                "ask_price1":3211.0,
+                "ask_volume1":4,
+                "bid_price1":3209.0,
+                "bid_volume1":3,
+                "open_limit":18
+            }"#,
+        )
+        .expect("Quote 解析失败");
+
+        let replay_quote = replay_quote_from_api_quote("SHFE.rb2605", &api_quote).expect("ReplayQuote 构造失败");
+        let rebuilt = build_quote(
+            &InstrumentMetadata {
+                symbol: "SHFE.rb2605".to_string(),
+                exchange_id: "SHFE".to_string(),
+                instrument_id: "rb2605".to_string(),
+                class: "FUTURE".to_string(),
+                ..InstrumentMetadata::default()
+            },
+            &replay_quote,
+        );
+        let encoded = serde_json::to_value(&rebuilt).expect("Quote 序列化失败");
+
+        assert_eq!(encoded.get("open_limit").and_then(|value| value.as_i64()), Some(18));
+    }
 }

@@ -2020,6 +2020,7 @@ fn option_quote(symbol: &str, datetime_nanos: i64, last_price: f64, ask_price1: 
         volume: 10,
         amount: last_price * 1000.0,
         open_interest: 100,
+        open_limit: 0,
     }
 }
 

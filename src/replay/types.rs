@@ -75,6 +75,7 @@ pub struct ReplayQuote {
     pub volume: i64,
     pub amount: f64,
     pub open_interest: i64,
+    pub open_limit: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

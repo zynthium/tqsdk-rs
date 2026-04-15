@@ -99,6 +99,9 @@ pub struct Quote {
     /// 持仓量
     #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
     pub open_interest: i64,
+    /// 当日开平仓手数限额，仅期货合约提供
+    #[serde(default, deserialize_with = "deserialize_i64_or_zero")]
+    pub open_limit: i64,
 
     /// 跌停价
     #[serde(default = "default_nan", deserialize_with = "deserialize_f64_or_nan")]
@@ -248,6 +251,7 @@ impl Default for Quote {
             volume: 0,
             amount: f64::NAN,
             open_interest: 0,
+            open_limit: 0,
             lower_limit: f64::NAN,
             upper_limit: f64::NAN,
             settlement: f64::NAN,

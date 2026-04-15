@@ -464,6 +464,7 @@ fn preview_bar_open_quote(
         volume: bar.volume,
         amount: 0.0,
         open_interest: bar.open_oi,
+        open_limit: 0,
     }
 }
 
@@ -482,6 +483,7 @@ fn replay_quote_from_tick(symbol: &str, tick: &Tick) -> ReplayQuote {
         volume: tick.volume,
         amount: tick.amount,
         open_interest: tick.open_interest,
+        open_limit: 0,
     }
 }
 

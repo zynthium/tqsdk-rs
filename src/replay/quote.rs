@@ -275,6 +275,7 @@ fn quote_from_tick(symbol: &str, tick: &Tick) -> ReplayQuote {
         volume: tick.volume,
         amount: tick.amount,
         open_interest: tick.open_interest,
+        open_limit: 0,
     }
 }
 
@@ -301,6 +302,7 @@ fn quote_from_kline_step(
         volume: kline.volume,
         amount: 0.0,
         open_interest,
+        open_limit: 0,
     }
 }
 

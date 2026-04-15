@@ -479,6 +479,8 @@ loop {
 
 `QuoteRef` 是 `MarketDataState` 上的快照句柄，不拥有订阅本身；关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态不再继续推进。
 
+`Quote` 当前已对齐支持 TqSdk 3.9.3 新增的 `open_limit` 字段；该字段目前仅期货合约提供，缺失时按 `0` 处理。
+
 ### 2. 交易功能
 
 #### 创建交易会话

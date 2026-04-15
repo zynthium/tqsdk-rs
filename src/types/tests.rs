@@ -63,6 +63,33 @@ fn quote_parses_open_min_order_volume_fields() {
 }
 
 #[test]
+fn quote_parses_open_limit_field() {
+    let json_data = r#"{
+        "instrument_id":"SHFE.au2602",
+        "datetime":"2025-11-24 09:00:00.000000",
+        "open_limit":123
+    }"#;
+
+    let quote = serde_json::from_str::<Quote>(json_data).expect("Quote 解析失败");
+    let encoded = serde_json::to_value(&quote).expect("Quote 序列化失败");
+
+    assert_eq!(encoded.get("open_limit").and_then(|value| value.as_i64()), Some(123));
+}
+
+#[test]
+fn quote_open_limit_defaults_to_zero_when_missing() {
+    let json_data = r#"{
+        "instrument_id":"SHFE.au2602",
+        "datetime":"2025-11-24 09:00:00.000000"
+    }"#;
+
+    let quote = serde_json::from_str::<Quote>(json_data).expect("Quote 解析失败");
+    let encoded = serde_json::to_value(&quote).expect("Quote 序列化失败");
+
+    assert_eq!(encoded.get("open_limit").and_then(|value| value.as_i64()), Some(0));
+}
+
+#[test]
 fn tick_deserialize_with_sparse_depth_fields() {
     let json_data = r#"{
         "datetime": 1774702800000000000,
