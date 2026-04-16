@@ -1,6 +1,6 @@
 use super::{
-    CloseCallback, ErrorCallback, MessageCallback, OpenCallback, build_connection_notify, derive_message_backlog_max,
-    is_ops_maintenance_window_cst, next_shared_reconnect_delay, sanitize_log_pack_value,
+    CloseCallback, ErrorCallback, MessageCallback, OpenCallback, ReconnectTimer, build_connection_notify,
+    derive_message_backlog_max, is_ops_maintenance_window_cst, next_reconnect_delay, sanitize_log_pack_value,
 };
 use crate::errors::{Result, TqError};
 use futures::{SinkExt, StreamExt};
@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{Mutex, Notify, oneshot};
 use tokio::time::sleep;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{Level, debug, error, info, trace, warn};
 use yawc::TcpWebSocket;
 use yawc::frame::{Frame, OpCode};
 
@@ -219,6 +219,7 @@ pub struct TqWebsocket {
     last_peek_sent: Arc<std::sync::Mutex<std::time::Instant>>,
     connection_id: Arc<RwLock<u64>>,
     last_disconnect_reason: Arc<RwLock<Option<String>>>,
+    reconnect_timer: std::sync::Mutex<ReconnectTimer>,
     io: Arc<std::sync::Mutex<Option<WsIoHandle>>>,
     on_message: MessageCallback,
     on_open: OpenCallback,
@@ -227,6 +228,14 @@ pub struct TqWebsocket {
 }
 
 impl TqWebsocket {
+    fn debug_log_pack(value: &Value) -> Option<String> {
+        tracing::enabled!(Level::DEBUG).then(|| sanitize_log_pack_value(value))
+    }
+
+    fn debug_payload_text(payload: &[u8]) -> Option<String> {
+        tracing::enabled!(Level::DEBUG).then(|| String::from_utf8_lossy(payload).into_owned())
+    }
+
     fn emit_connection_notify(&self, code: i64, level: &str, content: String) {
         let callback = self.on_message.read().unwrap().clone();
         if let Some(callback) = callback {
@@ -295,6 +304,7 @@ impl TqWebsocket {
             last_peek_sent: Arc::new(std::sync::Mutex::new(std::time::Instant::now())),
             connection_id: Arc::new(RwLock::new(0)),
             last_disconnect_reason: Arc::new(RwLock::new(None)),
+            reconnect_timer: std::sync::Mutex::new(ReconnectTimer::new()),
             io: Arc::new(std::sync::Mutex::new(None)),
             on_message: Arc::new(RwLock::new(None)),
             on_open: Arc::new(RwLock::new(None)),
@@ -436,11 +446,15 @@ impl TqWebsocket {
         })?;
         self.emit_send_guard_warnings(&value);
         let json_str = value.to_string();
-        let log_pack = sanitize_log_pack_value(&value);
-        debug!(pack = %log_pack, "websocket send data");
+        let log_pack = Self::debug_log_pack(&value);
+        if let Some(log_pack) = log_pack.as_deref() {
+            debug!(pack = %log_pack, "websocket send data");
+        }
 
         if self.is_ready() {
-            debug!("WebSocket 发送消息: {}", log_pack);
+            if let Some(log_pack) = log_pack.as_deref() {
+                debug!("WebSocket 发送消息: {}", log_pack);
+            }
             let io = self.io.lock().unwrap().clone();
             if let Some(io) = io {
                 match io.send_text(json_str).await {
@@ -468,7 +482,11 @@ impl TqWebsocket {
                 Ok(())
             }
         } else {
-            debug!("WebSocket 未就绪，消息加入队列: {}", log_pack);
+            if let Some(log_pack) = log_pack.as_deref() {
+                debug!("WebSocket 未就绪，消息加入队列: {}", log_pack);
+            } else {
+                debug!("WebSocket 未就绪，消息加入队列");
+            }
             self.enqueue_pending_message(json_str).await;
             Ok(())
         }
@@ -567,8 +585,9 @@ impl TqWebsocket {
         })?;
         self.emit_send_guard_warnings(&value);
         let json_str = value.to_string();
-        let log_pack = sanitize_log_pack_value(&value);
-        debug!(pack = %log_pack, "websocket critical send data");
+        if let Some(log_pack) = Self::debug_log_pack(&value) {
+            debug!(pack = %log_pack, "websocket critical send data");
+        }
 
         if !self.is_ready() {
             return Err(TqError::WebSocketError(
@@ -683,7 +702,8 @@ impl TqWebsocket {
         if should_reconnect {
             info!("第 {} 次尝试重连（最多 {} 次）", times, self.config.reconnect_max_times);
 
-            let wait_duration = next_shared_reconnect_delay(times as u32, self.config.reconnect_interval);
+            let wait_duration =
+                next_reconnect_delay(&self.reconnect_timer, times as u32, self.config.reconnect_interval);
             if wait_duration > Duration::ZERO {
                 sleep(wait_duration).await;
             }
@@ -878,20 +898,22 @@ async fn ws_io_actor_loop(
                             OpCode::Text | OpCode::Binary => {
                                 match serde_json::from_slice::<Value>(frame.payload()) {
                                     Ok(json_value) => {
-                                        let text = String::from_utf8_lossy(frame.payload());
-                                        debug!("WebSocket Recv Text: {}", text);
-                                        debug!(pack = %text, "websocket received data");
+                                        if let Some(text) = TqWebsocket::debug_payload_text(frame.payload()) {
+                                            debug!("WebSocket Recv Text: {}", text);
+                                            debug!(pack = %text, "websocket received data");
+                                        }
                                         let callback = ctx.on_message.read().unwrap().clone();
                                         if let Some(callback) = callback {
                                             callback(json_value);
                                         }
                                     }
                                     Err(error) => {
-                                        warn!(
-                                            "解析 JSON 失败: {}, payload={}",
-                                            error,
-                                            String::from_utf8_lossy(frame.payload())
-                                        );
+                                        if tracing::enabled!(Level::WARN) {
+                                            let payload = String::from_utf8_lossy(frame.payload());
+                                            warn!("解析 JSON 失败: {}, payload={}", error, payload);
+                                        } else {
+                                            warn!("解析 JSON 失败: {}", error);
+                                        }
                                     }
                                 }
 

@@ -1,7 +1,7 @@
 use super::{DataManager, MergeOptions, MergeSemanticsConfig, PrototypeBranch};
 use chrono::Utc;
 use serde_json::{Map, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use tracing::debug;
 
@@ -53,6 +53,61 @@ impl MergeTarget for Map<String, Value> {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MergeChangedPaths {
+    pub(crate) quote_symbols: HashSet<String>,
+    pub(crate) tick_symbols: HashSet<String>,
+    pub(crate) kline_keys: HashSet<(String, i64)>,
+    pub(crate) trade_position_users: HashSet<String>,
+    pub(crate) trade_order_users: HashSet<String>,
+    pub(crate) trade_fill_users: HashSet<String>,
+}
+
+impl MergeChangedPaths {
+    fn record(&mut self, path: &[String]) {
+        match (
+            path.first().map(String::as_str),
+            path.get(1).map(String::as_str),
+            path.get(2).map(String::as_str),
+            path.get(3).map(String::as_str),
+        ) {
+            (Some("quotes"), Some(symbol), _, _) => {
+                self.quote_symbols.insert(symbol.to_string());
+            }
+            (Some("ticks"), Some(symbol), _, _) => {
+                self.tick_symbols.insert(symbol.to_string());
+            }
+            (Some("klines"), Some(symbol), Some(duration), _) => {
+                if let Ok(duration) = duration.parse::<i64>() {
+                    self.kline_keys.insert((symbol.to_string(), duration));
+                }
+            }
+            (Some("trade"), Some(user), Some("positions"), _) => {
+                self.trade_position_users.insert(user.to_string());
+            }
+            (Some("trade"), Some(user), Some("orders"), _) => {
+                self.trade_order_users.insert(user.to_string());
+            }
+            (Some("trade"), Some(user), Some("trades"), _) => {
+                self.trade_fill_users.insert(user.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    fn touched_trade_users(&self) -> HashSet<String> {
+        let mut users = self.trade_position_users.clone();
+        users.extend(self.trade_order_users.iter().cloned());
+        users.extend(self.trade_fill_users.iter().cloned());
+        users
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MergeReport {
+    pub(crate) changed_paths: MergeChangedPaths,
+}
+
 impl DataManager {
     /// 合并数据（DIFF 协议核心）
     ///
@@ -62,7 +117,11 @@ impl DataManager {
     /// * `epoch_increase` - 是否增加版本号
     /// * `delete_null` - 是否删除 null 对象
     pub fn merge_data(&self, source: Value, epoch_increase: bool, delete_null: bool) {
-        self.merge_data_with_semantics(source, epoch_increase, delete_null, self.config.merge_semantics.clone());
+        let _ = self.merge_data_report(source, epoch_increase, delete_null);
+    }
+
+    pub(crate) fn merge_data_report(&self, source: Value, epoch_increase: bool, delete_null: bool) -> MergeReport {
+        self.merge_data_with_semantics(source, epoch_increase, delete_null, self.config.merge_semantics.clone())
     }
 
     pub(crate) fn merge_data_with_semantics(
@@ -71,8 +130,9 @@ impl DataManager {
         epoch_increase: bool,
         delete_null: bool,
         semantics: MergeSemanticsConfig,
-    ) {
+    ) -> MergeReport {
         let options = MergeOptions::new(delete_null, semantics);
+        let mut changed_paths = MergeChangedPaths::default();
         let should_notify_watchers = if epoch_increase {
             let current_epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
             let source_arr = match source {
@@ -80,7 +140,7 @@ impl DataManager {
                 Value::Object(_) => vec![source],
                 _ => {
                     debug!("merge_data: 无效的源数据类型");
-                    return;
+                    return MergeReport::default();
                 }
             };
 
@@ -89,6 +149,7 @@ impl DataManager {
                 if let Value::Object(obj) = item
                     && !obj.is_empty()
                 {
+                    let mut path = Vec::new();
                     self.merge_into(
                         &mut *data,
                         obj,
@@ -97,10 +158,12 @@ impl DataManager {
                         Some(&options.prototype),
                         &options,
                         options.persist,
+                        &mut path,
+                        &mut changed_paths,
                     );
                 }
             }
-            self.apply_python_data_semantics(&mut data, current_epoch);
+            self.apply_python_data_semantics(&mut data, current_epoch, &changed_paths);
             drop(data);
 
             // Publish the latest completed epoch after merge so watch receivers always
@@ -114,7 +177,7 @@ impl DataManager {
             let source_arr = match source {
                 Value::Array(arr) => arr,
                 Value::Object(_) => vec![source],
-                _ => return,
+                _ => return MergeReport::default(),
             };
 
             let mut data = self.data.write().unwrap();
@@ -122,6 +185,7 @@ impl DataManager {
                 if let Value::Object(obj) = item
                     && !obj.is_empty()
                 {
+                    let mut path = Vec::new();
                     self.merge_into(
                         &mut *data,
                         obj,
@@ -130,10 +194,12 @@ impl DataManager {
                         Some(&options.prototype),
                         &options,
                         options.persist,
+                        &mut path,
+                        &mut changed_paths,
                     );
                 }
             }
-            self.apply_python_data_semantics(&mut data, current_epoch);
+            self.apply_python_data_semantics(&mut data, current_epoch, &changed_paths);
 
             false
         };
@@ -141,6 +207,8 @@ impl DataManager {
         if should_notify_watchers {
             self.notify_watchers();
         }
+
+        MergeReport { changed_paths }
     }
 
     /// 统一的递归合并实现，适用于 HashMap 和 Map
@@ -157,81 +225,95 @@ impl DataManager {
         prototype: Option<&Value>,
         options: &MergeOptions,
         persist_ctx: bool,
+        path: &mut Vec<String>,
+        changed_paths: &mut MergeChangedPaths,
     ) -> bool {
         let mut changed = false;
         for (property, value) in source {
             let (property_prototype, proto_branch) = resolve_child_prototype(prototype, property);
             let transformed_value = transform_value_by_prototype(value, property_prototype, proto_branch);
             let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
-
-            if value.is_null() {
+            path.push(property.clone());
+            let property_changed = if value.is_null() {
                 if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
-                    continue;
+                    false
+                } else if delete_null && target.mt_remove(property).is_some() {
+                    changed_paths.record(path);
+                    true
+                } else {
+                    false
                 }
-                if delete_null && target.mt_remove(property).is_some() {
-                    changed = true;
-                }
-                continue;
-            }
-
-            match transformed_value {
-                Value::String(ref s) if s == "NaN" || s == "-" => {
-                    if options.reduce_diff && target.mt_get(property).is_some_and(|v| v.is_null()) {
-                        continue;
+            } else {
+                match transformed_value {
+                    Value::String(ref s) if s == "NaN" || s == "-" => {
+                        if options.reduce_diff && target.mt_get(property).is_some_and(|v| v.is_null()) {
+                            false
+                        } else {
+                            target.mt_insert(property.clone(), Value::Null);
+                            changed_paths.record(path);
+                            true
+                        }
                     }
-                    target.mt_insert(property.clone(), Value::Null);
-                    changed = true;
-                }
-                Value::Object(ref obj) => {
-                    if property == "quotes" {
-                        if self.merge_quotes_into(
-                            target,
-                            obj,
-                            epoch,
-                            delete_null,
-                            property_prototype,
-                            options,
-                            child_persist,
-                        ) {
-                            changed = true;
-                        }
-                    } else {
-                        let existed = target.mt_contains_key(property);
-                        if !existed {
-                            target.mt_insert(
-                                property.clone(),
-                                default_object_by_branch(property_prototype, proto_branch),
-                            );
-                        }
-                        let target_obj = target.mt_entry_or_insert(property.clone(), Value::Object(Map::new()));
-                        if !target_obj.is_object() {
-                            *target_obj = Value::Object(Map::new());
-                        }
-                        if let Value::Object(target_map) = target_obj {
-                            let child_changed = self.merge_into(
-                                target_map,
+                    Value::Object(ref obj) => {
+                        if property == "quotes" {
+                            self.merge_quotes_into(
+                                target,
                                 obj,
                                 epoch,
                                 delete_null,
                                 property_prototype,
                                 options,
                                 child_persist,
-                            );
-                            if child_changed {
-                                changed = true;
-                            } else if !existed && options.reduce_diff {
-                                target.mt_remove(property);
+                                path,
+                                changed_paths,
+                            )
+                        } else {
+                            let existed = target.mt_contains_key(property);
+                            if !existed {
+                                target.mt_insert(
+                                    property.clone(),
+                                    default_object_by_branch(property_prototype, proto_branch),
+                                );
+                            }
+                            let target_obj = target.mt_entry_or_insert(property.clone(), Value::Object(Map::new()));
+                            if !target_obj.is_object() {
+                                *target_obj = Value::Object(Map::new());
+                            }
+                            if let Value::Object(target_map) = target_obj {
+                                let child_changed = self.merge_into(
+                                    target_map,
+                                    obj,
+                                    epoch,
+                                    delete_null,
+                                    property_prototype,
+                                    options,
+                                    child_persist,
+                                    path,
+                                    changed_paths,
+                                );
+                                if !child_changed && !existed && options.reduce_diff {
+                                    target.mt_remove(property);
+                                }
+                                child_changed
+                            } else {
+                                false
                             }
                         }
                     }
-                }
-                _ => {
-                    if options.reduce_diff && target.mt_get(property) == Some(&transformed_value) {
-                        continue;
+                    _ => {
+                        if options.reduce_diff && target.mt_get(property) == Some(&transformed_value) {
+                            false
+                        } else {
+                            target.mt_insert(property.clone(), transformed_value);
+                            changed_paths.record(path);
+                            true
+                        }
                     }
-                    target.mt_insert(property.clone(), transformed_value);
-                    changed = true;
                 }
+            };
+            path.pop();
+            if property_changed {
+                changed = true;
             }
         }
 
@@ -252,6 +334,8 @@ impl DataManager {
         prototype: Option<&Value>,
         options: &MergeOptions,
         persist_ctx: bool,
+        path: &mut Vec<String>,
+        changed_paths: &mut MergeChangedPaths,
     ) -> bool {
         let mut changed = false;
         let quotes_obj = target.mt_entry_or_insert("quotes".to_string(), Value::Object(Map::new()));
@@ -260,17 +344,17 @@ impl DataManager {
             for (symbol, quote_data) in quotes {
                 let (symbol_prototype, proto_branch) = resolve_child_prototype(prototype, symbol);
                 let child_persist = persist_ctx || matches!(proto_branch, PrototypeBranch::Hash);
-                if quote_data.is_null() {
+                path.push(symbol.clone());
+                let symbol_changed = if quote_data.is_null() {
                     if options.reduce_diff && (persist_ctx || has_hash_prototype(prototype)) {
-                        continue;
+                        false
+                    } else if delete_null && quotes_map.remove(symbol).is_some() {
+                        changed_paths.record(path);
+                        true
+                    } else {
+                        false
                     }
-                    if delete_null && quotes_map.remove(symbol).is_some() {
-                        changed = true;
-                    }
-                    continue;
-                }
-
-                if let Value::Object(quote_obj) = quote_data {
+                } else if let Value::Object(quote_obj) = quote_data {
                     let existed = quotes_map.contains_key(symbol);
                     if !existed {
                         quotes_map.insert(symbol.clone(), default_object_by_branch(symbol_prototype, proto_branch));
@@ -291,30 +375,50 @@ impl DataManager {
                             symbol_prototype,
                             options,
                             child_persist,
+                            path,
+                            changed_paths,
                         );
-                        if child_changed {
-                            changed = true;
-                        } else if !existed && options.reduce_diff {
+                        if !child_changed && !existed && options.reduce_diff {
                             quotes_map.remove(symbol);
                         }
+                        child_changed
+                    } else {
+                        false
                     }
+                } else {
+                    false
+                };
+                path.pop();
+                if symbol_changed {
+                    changed = true;
                 }
             }
         }
         changed
     }
 
-    fn apply_python_data_semantics(&self, root: &mut HashMap<String, Value>, epoch: i64) {
-        self.apply_quote_expire_rest_days(root, epoch);
-        self.apply_trade_derived_fields(root, epoch);
+    fn apply_python_data_semantics(&self, root: &mut HashMap<String, Value>, epoch: i64, changes: &MergeChangedPaths) {
+        self.apply_quote_expire_rest_days(root, epoch, &changes.quote_symbols);
+        self.apply_trade_derived_fields(root, epoch, changes);
     }
 
-    fn apply_quote_expire_rest_days(&self, root: &mut HashMap<String, Value>, epoch: i64) {
+    fn apply_quote_expire_rest_days(
+        &self,
+        root: &mut HashMap<String, Value>,
+        epoch: i64,
+        changed_quotes: &HashSet<String>,
+    ) {
+        if changed_quotes.is_empty() {
+            return;
+        }
         let now_ts = Utc::now().timestamp();
         let Some(Value::Object(quotes)) = root.get_mut("quotes") else {
             return;
         };
-        for quote_val in quotes.values_mut() {
+        for symbol in changed_quotes {
+            let Some(quote_val) = quotes.get_mut(symbol) else {
+                continue;
+            };
             let Some(quote) = quote_val.as_object_mut() else {
                 continue;
             };
@@ -328,18 +432,33 @@ impl DataManager {
         }
     }
 
-    fn apply_trade_derived_fields(&self, root: &mut HashMap<String, Value>, epoch: i64) {
+    fn apply_trade_derived_fields(&self, root: &mut HashMap<String, Value>, epoch: i64, changes: &MergeChangedPaths) {
         let Some(Value::Object(trade_map)) = root.get_mut("trade") else {
             return;
         };
-        for user_val in trade_map.values_mut() {
+        for user in changes.touched_trade_users() {
+            let Some(user_val) = trade_map.get_mut(&user) else {
+                continue;
+            };
             let Some(user_map) = user_val.as_object_mut() else {
                 continue;
             };
-            self.apply_positions_derived(user_map, epoch);
-            self.apply_orders_derived(user_map, epoch);
-            self.apply_orders_trade_price(user_map, epoch);
-            user_map.insert("_epoch".to_string(), Value::Number(epoch.into()));
+            let positions_changed = changes.trade_position_users.contains(&user);
+            let orders_changed = changes.trade_order_users.contains(&user);
+            let trades_changed = changes.trade_fill_users.contains(&user);
+
+            if positions_changed {
+                self.apply_positions_derived(user_map, epoch);
+            }
+            if orders_changed {
+                self.apply_orders_derived(user_map, epoch);
+            }
+            if orders_changed || trades_changed {
+                self.apply_orders_trade_price(user_map, epoch);
+            }
+            if positions_changed || orders_changed || trades_changed {
+                user_map.insert("_epoch".to_string(), Value::Number(epoch.into()));
+            }
         }
     }
 

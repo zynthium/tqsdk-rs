@@ -343,6 +343,88 @@ async fn kline_data_series_by_datetime_cache_miss_should_trigger_fetch_path() {
 }
 
 #[tokio::test]
+async fn kline_data_series_cache_hit_is_not_blocked_by_concurrent_cache_miss_on_same_symbol() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
+
+    let symbol = "SHFE.au2602";
+    let duration = 1_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("data_series_cache_lock_split");
+    let data_series_cache = Arc::new(DataSeriesCache::new(Some(test_cache_dir.clone())));
+    data_series_cache
+        .write_kline_segment(
+            symbol,
+            duration,
+            &[
+                sample_kline(1000, 10.0),
+                sample_kline(1001, 11.0),
+                sample_kline(1002, 12.0),
+                sample_kline(1003, 13.0),
+            ],
+        )
+        .expect("prepare cache should succeed");
+    api.data_series_cache = Arc::clone(&data_series_cache);
+    let api = Arc::new(api);
+
+    let slow_api = Arc::clone(&api);
+    let slow = async move {
+        slow_api
+            .kline_data_series(
+                symbol,
+                StdDuration::from_secs(1),
+                DateTime::<Utc>::from_timestamp_nanos(1000 * 1_000_000_000),
+                DateTime::<Utc>::from_timestamp_nanos(1006 * 1_000_000_000),
+            )
+            .await
+    };
+
+    let fast_api = Arc::clone(&api);
+    let fast = async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        timeout(
+            Duration::from_millis(100),
+            fast_api.kline_data_series(
+                symbol,
+                StdDuration::from_secs(1),
+                DateTime::<Utc>::from_timestamp_nanos(1000 * 1_000_000_000),
+                DateTime::<Utc>::from_timestamp_nanos(1003 * 1_000_000_000),
+            ),
+        )
+        .await
+    };
+
+    let (slow_res, fast_res) = tokio::join!(slow, fast);
+
+    let rows = fast_res
+        .expect("cache hit should not wait behind unrelated download")
+        .unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![1000, 1001, 1002]
+    );
+
+    let slow_err = slow_res.expect_err("cache miss should still reach fetch path and time out in test");
+    assert!(matches!(slow_err, TqError::Timeout));
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
 async fn tick_data_series_returns_cached_data_without_network() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(

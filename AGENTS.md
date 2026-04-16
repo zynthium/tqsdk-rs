@@ -43,6 +43,8 @@ src/
 ## Canonical API 与架构约束
 
 - live 主路径从 `Client` / `ClientBuilder` 进入。
+- `Client` 应视为一次 live session owner，对齐 Python `TqApi` 的会话模型；不要新增 public `LiveClient` / `LiveSession` 双对象。
+- `ClientBuilder` / `ClientConfig` / `TqAuth` 是构造侧概念；不要把 `Client` 降级为可反复切换 active live context 的配置根。
 - `ReplaySession` 是唯一推荐的公开回放/回测入口。
 - `DataManager` 是 DIFF 协议状态中心；merge 通知继续以 `subscribe_epoch()` 为主。
 - WebSocket 层继续保持 I/O actor 模式，避免跨 `await` 持锁。
@@ -132,6 +134,8 @@ src/
 - `skills/tqsdk-rs/` 是当前 public shape 的知识包，不是历史归档；当架构、公开 API、README canonical 路径、示例、迁移建议或 agent 规则变化时，要同步更新。
 - 如果本次改动删除或替换了 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
 - live API 继续收口到 `Client`，不要把新能力重新挂回 `TqApi` / `SeriesAPI` / `InsAPI`。
+- runtime live adapter 必须复用 `Client` 的同一私有 live context，不要再自建第二套行情 websocket / `MarketDataState`。
+- 切换账号应关闭旧 `Client` 并创建新 `Client`；不要把 `set_auth()+init_market()` 写成运行时切账号 canonical 路径。
 - 修改 `DataManager` merge/query/watch 语义时，要显式考虑向后兼容性。
 - 修改 `DataManager` 通知路径时，继续优先 `subscribe_epoch()` + `get_path_epoch()`，不要为新逻辑重新引入 callback plumbing。
 - 修改重连、背压或消息队列时，要说明是否改变了丢弃策略、顺序语义或完整性保证。

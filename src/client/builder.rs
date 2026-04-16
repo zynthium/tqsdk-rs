@@ -1,13 +1,11 @@
 use super::{Client, ClientBuilder, ClientConfig, EndpointConfig, PendingTradeSessionConfig};
 use crate::auth::{Authenticator, TqAuth};
-use crate::datamanager::{DataManager, DataManagerConfig};
+use crate::datamanager::DataManagerConfig;
 use crate::errors::Result;
-use crate::marketdata::MarketDataState;
 use crate::runtime::TqRuntime;
 use crate::trade_session::TradeLoginOptions;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use tokio::sync::RwLock as AsyncRwLock;
 
 impl ClientBuilder {
@@ -249,22 +247,14 @@ impl ClientBuilder {
             enable_auto_cleanup: true,
             ..DataManagerConfig::default()
         };
-        let dm = Arc::new(DataManager::new(HashMap::new(), dm_config));
-        let market_state = Arc::new(MarketDataState::default());
-        let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
+        let live = super::live::LiveContext::new(dm_config);
 
         let client = Client {
             username: self.username,
             config: self.config,
             endpoints: self.endpoints,
             auth,
-            dm,
-            market_state,
-            live_api,
-            quotes_ws: None,
-            series_api: None,
-            ins_api: None,
-            market_active: AtomicBool::new(false),
+            live,
             trade_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
         };
 

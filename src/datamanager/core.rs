@@ -14,6 +14,7 @@ impl DataManager {
             config,
             watchers: Arc::new(RwLock::new(HashMap::new())),
             next_watcher_id: std::sync::atomic::AtomicI64::new(1),
+            numeric_value_index_cache: RwLock::new(HashMap::new()),
         }
     }
 

@@ -1,19 +1,24 @@
-use super::{DataManager, PathWatcher};
+use super::{DataManager, PathWatcher, WatchRegistration};
 use crate::errors::{Result, TqError};
 use async_channel::{Receiver, TrySendError, bounded};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use tracing::warn;
+
+// Public path watchers are best-effort; after repeated full-buffer sends, stop
+// spending merge-time work on a consumer that is no longer draining updates.
+const MAX_CONSECUTIVE_FULL_WATCHER_SENDS: usize = 16;
 
 impl DataManager {
     /// 监听指定路径的数据变化
     ///
     /// 返回一个 receiver，数据变化时会推送到这个 channel
     pub fn watch(&self, path: Vec<String>) -> Receiver<Value> {
-        self.watch_register(path).1
+        self.watch_register(path).into_receiver()
     }
 
-    pub(crate) fn watch_register(&self, path: Vec<String>) -> (i64, Receiver<Value>) {
+    pub(crate) fn watch_register(&self, path: Vec<String>) -> WatchRegistration {
         let path_key = path.join(".");
         let (tx, rx) = bounded(self.config.watch_channel_capacity.max(1));
         let watcher_id = self.next_watcher_id.fetch_add(1, Ordering::SeqCst);
@@ -22,12 +27,18 @@ impl DataManager {
             id: watcher_id,
             path: path.clone(),
             tx,
+            consecutive_fulls: 0,
         };
 
         let mut watchers = self.watchers.write().unwrap();
         watchers.entry(path_key).or_default().push(watcher);
 
-        (watcher_id, rx)
+        WatchRegistration {
+            path,
+            watcher_id,
+            rx,
+            watchers: Some(std::sync::Arc::downgrade(&self.watchers)),
+        }
     }
 
     /// 取消路径监听
@@ -42,30 +53,13 @@ impl DataManager {
         Ok(())
     }
 
-    pub(crate) fn unwatch_by_id(&self, path: &[String], watcher_id: i64) -> bool {
-        let path_key = path.join(".");
-        let mut watchers = self.watchers.write().unwrap();
-        let Some(entries) = watchers.get_mut(&path_key) else {
-            return false;
-        };
-
-        let before = entries.len();
-        entries.retain(|watcher| watcher.id != watcher_id);
-        let removed = entries.len() < before;
-        if entries.is_empty() {
-            watchers.remove(&path_key);
-        }
-
-        removed
-    }
-
     /// 通知所有 watchers
     pub(crate) fn notify_watchers(&self) {
         let current_epoch = self.epoch.load(Ordering::SeqCst);
         let data = self.data.read().unwrap();
         let mut watchers = self.watchers.write().unwrap();
         watchers.retain(|_, entries| {
-            entries.retain(|watcher| {
+            entries.retain_mut(|watcher| {
                 if !is_path_epoch_changed(&data, &watcher.path, current_epoch) {
                     return true;
                 }
@@ -73,14 +67,78 @@ impl DataManager {
                     return true;
                 };
                 match watcher.tx.try_send(payload) {
-                    Ok(()) => true,
+                    Ok(()) => {
+                        watcher.consecutive_fulls = 0;
+                        true
+                    }
                     Err(TrySendError::Closed(_)) => false,
-                    Err(TrySendError::Full(_)) => true,
+                    Err(TrySendError::Full(_)) => {
+                        watcher.consecutive_fulls += 1;
+                        if watcher.consecutive_fulls >= MAX_CONSECUTIVE_FULL_WATCHER_SENDS {
+                            warn!(
+                                watcher_id = watcher.id,
+                                path = %watcher.path.join("."),
+                                full_attempts = watcher.consecutive_fulls,
+                                "dropping persistently full datamanager watcher"
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    }
                 }
             });
             !entries.is_empty()
         });
     }
+}
+
+impl WatchRegistration {
+    pub(crate) fn receiver(&self) -> &Receiver<Value> {
+        &self.rx
+    }
+
+    pub(crate) fn cancel(&mut self) -> bool {
+        let Some(watchers) = self.watchers.take() else {
+            return false;
+        };
+        let Some(watchers) = watchers.upgrade() else {
+            return false;
+        };
+        remove_watcher(&watchers, &self.path, self.watcher_id)
+    }
+
+    fn into_receiver(mut self) -> Receiver<Value> {
+        self.watchers = None;
+        self.rx.clone()
+    }
+}
+
+impl Drop for WatchRegistration {
+    fn drop(&mut self) {
+        let _ = self.cancel();
+    }
+}
+
+fn remove_watcher(
+    watchers: &std::sync::RwLock<HashMap<String, Vec<PathWatcher>>>,
+    path: &[String],
+    watcher_id: i64,
+) -> bool {
+    let path_key = path.join(".");
+    let mut watchers = watchers.write().unwrap();
+    let Some(entries) = watchers.get_mut(&path_key) else {
+        return false;
+    };
+
+    let before = entries.len();
+    entries.retain(|watcher| watcher.id != watcher_id);
+    let removed = entries.len() < before;
+    if entries.is_empty() {
+        watchers.remove(&path_key);
+    }
+
+    removed
 }
 
 fn get_by_path_ref_strings<'a>(data: &'a HashMap<String, Value>, path: &[String]) -> Option<&'a Value> {

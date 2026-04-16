@@ -1,13 +1,15 @@
 use super::*;
 use crate::auth::Authenticator;
+use crate::datamanager::DataManager;
 use crate::errors::{Result, TqError};
-use crate::marketdata::MarketDataState;
+use crate::ins::InsAPI;
+use crate::series::SeriesAPI;
+use crate::websocket::TqQuoteWebsocket;
 use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -15,6 +17,10 @@ struct TestAuth;
 
 #[derive(Default)]
 struct SmTestAuth;
+
+struct NamedTestAuth {
+    auth_id: &'static str,
+}
 
 #[async_trait]
 impl Authenticator for TestAuth {
@@ -102,46 +108,78 @@ impl Authenticator for SmTestAuth {
     }
 }
 
+#[async_trait]
+impl Authenticator for NamedTestAuth {
+    fn base_header(&self) -> HeaderMap {
+        HeaderMap::new()
+    }
+
+    async fn login(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    async fn get_td_url(&self, _broker_id: &str, _account_id: &str) -> Result<crate::auth::BrokerInfo> {
+        Err(TqError::NotLoggedIn)
+    }
+
+    async fn get_md_url(&self, _stock: bool, _backtest: bool) -> Result<String> {
+        Ok("wss://example.com".to_string())
+    }
+
+    fn has_feature(&self, _feature: &str) -> bool {
+        false
+    }
+
+    fn has_md_grants(&self, _symbols: &[&str]) -> Result<()> {
+        Ok(())
+    }
+
+    fn has_td_grants(&self, _symbol: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_auth_id(&self) -> &str {
+        self.auth_id
+    }
+
+    fn get_access_token(&self) -> &str {
+        ""
+    }
+}
+
 fn build_client_with_market() -> Client {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        crate::datamanager::DataManagerConfig::default(),
-    ));
-    let market_state = Arc::new(MarketDataState::default());
+    let mut live = super::live::LiveContext::new(crate::datamanager::DataManagerConfig::default());
     let auth: Arc<tokio::sync::RwLock<dyn Authenticator>> = Arc::new(tokio::sync::RwLock::new(TestAuth));
-    let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
     let quotes_ws = Arc::new(TqQuoteWebsocket::new(
         "wss://example.com".to_string(),
-        Arc::clone(&dm),
-        Arc::clone(&market_state),
+        Arc::clone(&live.dm),
+        Arc::clone(&live.market_state),
         WebSocketConfig::default(),
     ));
     let series_api = Arc::new(SeriesAPI::new(
-        Arc::clone(&dm),
+        Arc::clone(&live.dm),
         Arc::clone(&quotes_ws),
         Arc::clone(&auth),
     ));
     let ins_api = Arc::new(InsAPI::new(
-        Arc::clone(&dm),
+        Arc::clone(&live.dm),
         Arc::clone(&quotes_ws),
         None,
         Arc::clone(&auth),
         true,
         "https://files.shinnytech.com/shinny_chinese_holiday.json".to_string(),
     ));
+    live.quotes_ws = Some(quotes_ws);
+    live.series_api = Some(series_api);
+    live.ins_api = Some(ins_api);
+    live.set_active(true);
 
     Client {
         username: "tester".to_string(),
         config: ClientConfig::default(),
         endpoints: EndpointConfig::default(),
         auth,
-        dm,
-        market_state,
-        live_api,
-        quotes_ws: Some(quotes_ws),
-        series_api: Some(series_api),
-        ins_api: Some(ins_api),
-        market_active: AtomicBool::new(true),
+        live,
         trade_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
     }
 }
@@ -151,26 +189,14 @@ fn build_inactive_client() -> Client {
 }
 
 fn build_inactive_client_with_auth<A: Authenticator + 'static>(auth_impl: A) -> Client {
-    let dm = Arc::new(DataManager::new(
-        HashMap::new(),
-        crate::datamanager::DataManagerConfig::default(),
-    ));
-    let market_state = Arc::new(MarketDataState::default());
     let auth: Arc<tokio::sync::RwLock<dyn Authenticator>> = Arc::new(tokio::sync::RwLock::new(auth_impl));
-    let live_api = crate::marketdata::TqApi::new(Arc::clone(&market_state));
 
     Client {
         username: "tester".to_string(),
         config: ClientConfig::default(),
         endpoints: EndpointConfig::default(),
         auth,
-        dm,
-        market_state,
-        live_api,
-        quotes_ws: None,
-        series_api: None,
-        ins_api: None,
-        market_active: AtomicBool::new(false),
+        live: super::live::LiveContext::new(crate::datamanager::DataManagerConfig::default()),
         trade_sessions: Arc::new(std::sync::RwLock::new(HashMap::new())),
     }
 }
@@ -220,12 +246,13 @@ async fn client_exposes_market_state_refs_directly() {
         ..Default::default()
     };
 
-    client.market_state.update_quote(symbol.into(), quote).await;
+    client.live.market_state.update_quote(symbol.into(), quote).await;
     client
+        .live
         .market_state
         .update_kline(crate::marketdata::KlineKey::new(symbol, Duration::from_secs(60)), kline)
         .await;
-    client.market_state.update_tick(symbol.into(), tick).await;
+    client.live.market_state.update_tick(symbol.into(), tick).await;
 
     let updates = client.wait_update_and_drain().await.unwrap();
     assert_eq!(updates.quotes.len(), 1);
@@ -260,7 +287,7 @@ async fn client_exposes_serial_subscriptions_directly() {
 #[tokio::test]
 async fn subscribe_quote_is_active_immediately() {
     let client = build_client_with_market();
-    let ws = client.quotes_ws.as_ref().unwrap();
+    let ws = client.live.quotes_ws.as_ref().unwrap();
 
     assert!(ws.aggregated_quote_subscriptions_for_test().is_empty());
 
@@ -276,7 +303,7 @@ async fn subscribe_quote_is_active_immediately() {
 #[tokio::test]
 async fn subscribe_quote_creation_failure_rolls_back_server_state() {
     let client = build_client_with_market();
-    let ws = client.quotes_ws.as_ref().unwrap();
+    let ws = client.live.quotes_ws.as_ref().unwrap();
     ws.force_send_failure_for_test();
 
     let sub = client.subscribe_quote(&["SHFE.au2602"]).await;
@@ -299,6 +326,95 @@ async fn close_invalidates_market_interfaces() {
             .is_err()
     );
     assert!(client.get_tick_serial("SHFE.au2602", 64).await.is_err());
+}
+
+#[tokio::test]
+async fn close_invalidates_market_wait_paths() {
+    let client = build_client_with_market();
+    let symbol = "SHFE.au2602";
+    let quote_ref = client.quote(symbol);
+    let kline_ref = client.kline_ref(symbol, Duration::from_secs(60));
+    let tick_ref = client.tick_ref(symbol);
+
+    client.close().await.unwrap();
+
+    let client_wait = tokio::time::timeout(Duration::from_millis(100), client.wait_update()).await;
+    assert!(
+        matches!(client_wait, Ok(Err(_))),
+        "Client::wait_update should return a close error, got {client_wait:?}"
+    );
+
+    let client_drain = tokio::time::timeout(Duration::from_millis(100), client.wait_update_and_drain()).await;
+    assert!(
+        matches!(client_drain, Ok(Err(_))),
+        "Client::wait_update_and_drain should return a close error, got {client_drain:?}"
+    );
+
+    let quote_wait = tokio::time::timeout(Duration::from_millis(100), quote_ref.wait_update()).await;
+    assert!(
+        matches!(quote_wait, Ok(Err(_))),
+        "QuoteRef::wait_update should return a close error, got {quote_wait:?}"
+    );
+
+    let kline_wait = tokio::time::timeout(Duration::from_millis(100), kline_ref.wait_update()).await;
+    assert!(
+        matches!(kline_wait, Ok(Err(_))),
+        "KlineRef::wait_update should return a close error, got {kline_wait:?}"
+    );
+
+    let tick_wait = tokio::time::timeout(Duration::from_millis(100), tick_ref.wait_update()).await;
+    assert!(
+        matches!(tick_wait, Ok(Err(_))),
+        "TickRef::wait_update should return a close error, got {tick_wait:?}"
+    );
+}
+
+#[tokio::test]
+async fn set_auth_rejects_active_client_session() {
+    let mut client = build_client_with_market();
+
+    let result = client.set_auth(NamedTestAuth { auth_id: "new-auth" }).await;
+
+    assert!(result.is_err());
+    assert_eq!(client.get_auth_id().await, "");
+}
+
+#[tokio::test]
+async fn set_auth_allows_inactive_client_before_market_init() {
+    let mut client = build_inactive_client();
+
+    client.set_auth(NamedTestAuth { auth_id: "new-auth" }).await.unwrap();
+
+    assert_eq!(client.get_auth_id().await, "new-auth");
+}
+
+#[tokio::test]
+async fn replace_live_context_discards_closed_session_state() {
+    let mut client = build_client_with_market();
+    let old_market_state = Arc::clone(&client.live.market_state);
+    let old_dm = Arc::clone(&client.live.dm);
+
+    client.close_market().await.unwrap();
+    client.replace_live_context();
+
+    assert!(old_market_state.is_closed());
+    assert!(!client.live.market_state.is_closed());
+    assert!(!Arc::ptr_eq(&old_market_state, &client.live.market_state));
+    assert!(!Arc::ptr_eq(&old_dm, &client.live.dm));
+    assert!(client.live.quotes_ws.is_none());
+    assert!(client.live.series_api.is_none());
+    assert!(client.live.ins_api.is_none());
+    assert!(!client.live.is_active());
+}
+
+#[tokio::test]
+async fn init_market_rejects_closed_client_session() {
+    let mut client = build_client_with_market();
+    client.close().await.unwrap();
+
+    let result = client.init_market().await;
+
+    assert!(result.is_err());
 }
 
 #[tokio::test]
@@ -428,6 +544,40 @@ async fn runtime_picks_up_trade_sessions_registered_after_creation() {
         .account("simnow:user")
         .expect("runtime should see newly registered live trade sessions");
     assert_eq!(account.account_key(), "simnow:user");
+}
+
+#[tokio::test]
+async fn runtime_reuses_client_live_context() {
+    let client = build_client_with_market();
+    let client_market_state = Arc::clone(&client.live.market_state);
+
+    let runtime = client.into_runtime();
+    let runtime_market_state = runtime
+        .market()
+        .market_state_for_test()
+        .expect("live runtime market adapter should expose its state in tests");
+
+    assert!(Arc::ptr_eq(&client_market_state, &runtime_market_state));
+}
+
+#[tokio::test]
+async fn runtime_market_adapter_closes_with_live_context() {
+    let client = build_client_with_market();
+    let client_market_state = Arc::clone(&client.live.market_state);
+    let runtime = client.into_runtime();
+
+    client_market_state.close();
+
+    let update = tokio::time::timeout(
+        Duration::from_millis(100),
+        runtime.market().wait_quote_update("SHFE.au2602"),
+    )
+    .await;
+
+    assert!(
+        matches!(update, Ok(Err(_))),
+        "runtime market adapter should return a close error, got {update:?}"
+    );
 }
 
 #[tokio::test]
@@ -567,7 +717,7 @@ async fn create_backtest_session_does_not_activate_client_market_state() {
         .await
         .expect("creating replay session should not initialize live market state");
 
-    assert!(!client.market_active.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!client.live.is_active());
     assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
     assert!(
         client

@@ -68,15 +68,9 @@ impl EventJournal {
 
     fn subscribe_tail(self: &Arc<Self>) -> TradeEventStream {
         let subscriber_id = self.next_subscriber_id.fetch_add(1, Ordering::SeqCst);
-        let last_seen_seq = self
-            .state
-            .lock()
-            .unwrap()
-            .events
-            .back()
-            .map(|event| event.seq)
-            .unwrap_or(0);
-        self.state.lock().unwrap().subscribers.insert(
+        let mut state = self.state.lock().unwrap();
+        let last_seen_seq = state.events.back().map(|event| event.seq).unwrap_or(0);
+        state.subscribers.insert(
             subscriber_id,
             SubscriberState {
                 last_seen_seq,
@@ -255,6 +249,12 @@ impl TradeEventHub {
 
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        // Closing a hub makes its dedup caches unreachable for future publishes,
+        // so release them immediately instead of retaining per-session growth.
+        let mut publish_state = self.publish_state.lock().unwrap();
+        publish_state.last_emitted_orders.clear();
+        publish_state.seen_trade_ids.clear();
+        drop(publish_state);
         self.all_events.close();
         self.order_events.close();
         self.trade_events.close();
@@ -438,6 +438,22 @@ mod tests {
 
         let result = timeout(Duration::from_millis(100), waiter).await.unwrap().unwrap();
         assert!(matches!(result, Err(TradeEventRecvError::Closed)));
+    }
+
+    #[test]
+    fn trade_event_hub_close_clears_dedup_state() {
+        let hub = TradeEventHub::new(8);
+        assert!(
+            hub.publish_trade("t1".to_string(), trade("o1", "t1")).is_some(),
+            "first trade should be published"
+        );
+
+        hub.close();
+
+        assert!(
+            hub.publish_state.lock().unwrap().seen_trade_ids.is_empty(),
+            "close should release dedup state for the closed session"
+        );
     }
 
     #[tokio::test]

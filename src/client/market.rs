@@ -12,7 +12,6 @@ use chrono::{DateTime, Utc};
 use reqwest::header::HeaderMap;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 struct MarketBootstrap {
@@ -177,8 +176,8 @@ impl Client {
             self.config.stock,
             &self.endpoints.ins_url,
             headers,
-            &self.dm,
-            Some(&self.market_state),
+            &self.live.dm,
+            Some(&self.live.market_state),
         )
         .await
     }
@@ -230,7 +229,7 @@ impl Client {
 
         let ts_ws = Arc::new(TqTradingStatusWebsocket::new(
             "wss://trading-status.shinnytech.com/status".to_string(),
-            Arc::clone(&self.dm),
+            Arc::clone(&self.live.dm),
             status_config,
         ));
         ts_ws.init(false).await?;
@@ -244,15 +243,15 @@ impl Client {
         let ws_config = self.build_market_ws_config(bootstrap.headers, backtest);
         let quotes_ws = Arc::new(TqQuoteWebsocket::new(
             bootstrap.md_url,
-            Arc::clone(&self.dm),
-            Arc::clone(&self.market_state),
+            Arc::clone(&self.live.dm),
+            Arc::clone(&self.live.market_state),
             ws_config.clone(),
         ));
         quotes_ws.init(false).await?;
 
-        self.quotes_ws = Some(Arc::clone(&quotes_ws));
-        self.series_api = Some(Arc::new(SeriesAPI::new_with_cache_policy(
-            Arc::clone(&self.dm),
+        self.live.quotes_ws = Some(Arc::clone(&quotes_ws));
+        self.live.series_api = Some(Arc::new(SeriesAPI::new_with_cache_policy(
+            Arc::clone(&self.live.dm),
             Arc::clone(&quotes_ws),
             Arc::clone(&self.auth),
             SeriesCachePolicy {
@@ -266,15 +265,15 @@ impl Client {
             .build_trading_status_ws(bootstrap.enable_trading_status, &ws_config, backtest)
             .await?;
 
-        self.ins_api = Some(Arc::new(InsAPI::new(
-            Arc::clone(&self.dm),
+        self.live.ins_api = Some(Arc::new(InsAPI::new(
+            Arc::clone(&self.live.dm),
             Arc::clone(&quotes_ws),
             trading_status_ws,
             Arc::clone(&self.auth),
             self.config.stock,
             self.endpoints.holiday_url.clone(),
         )));
-        self.market_active.store(true, Ordering::SeqCst);
+        self.live.set_active(true);
 
         Ok(quotes_ws)
     }
@@ -289,13 +288,19 @@ impl Client {
 
     /// 初始化行情功能
     pub async fn init_market(&mut self) -> Result<()> {
+        if self.live.market_state.is_closed() {
+            return Err(TqError::InternalError(
+                "cannot initialize market on a closed Client session; create a new Client instead".to_string(),
+            ));
+        }
         let _ = self.initialize_market_runtime(false).await?;
         Ok(())
     }
 
     pub async fn switch_to_live(&mut self) -> Result<()> {
         self.close_market().await?;
-        self.dm.merge_data(
+        self.replace_live_context();
+        self.live.dm.merge_data(
             json!({
                 "action": { "mode": "real" },
                 "_tqsdk_backtest": null
@@ -307,11 +312,12 @@ impl Client {
     }
 
     pub(super) async fn close_market(&self) -> Result<()> {
-        self.market_active.store(false, Ordering::SeqCst);
-        if let Some(ws) = &self.quotes_ws {
+        self.live.set_active(false);
+        self.live.market_state.close();
+        if let Some(ws) = &self.live.quotes_ws {
             ws.close().await?;
         }
-        if let Some(ins) = &self.ins_api {
+        if let Some(ins) = &self.live.ins_api {
             ins.close().await?;
         }
         Ok(())

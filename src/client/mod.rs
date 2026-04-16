@@ -5,22 +5,19 @@
 mod builder;
 mod endpoints;
 mod facade;
+mod live;
 mod market;
 
 #[cfg(test)]
 mod tests;
 
 use crate::auth::Authenticator;
-use crate::datamanager::DataManager;
 use crate::errors::Result;
-use crate::ins::InsAPI;
-use crate::marketdata::{KlineRef, MarketDataState, MarketDataUpdates, QuoteRef, TickRef, TqApi};
-use crate::series::SeriesAPI;
+use crate::marketdata::{KlineRef, MarketDataUpdates, QuoteRef, TickRef};
 use crate::trade_session::{TradeLoginOptions, TradeSession};
-use crate::websocket::TqQuoteWebsocket;
+use live::LiveContext;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::sync::RwLock as AsyncRwLock;
 
@@ -90,34 +87,28 @@ pub struct Client {
     config: ClientConfig,
     endpoints: EndpointConfig,
     auth: Arc<AsyncRwLock<dyn Authenticator>>,
-    dm: Arc<DataManager>,
-    market_state: Arc<MarketDataState>,
-    live_api: TqApi,
-    quotes_ws: Option<Arc<TqQuoteWebsocket>>,
-    series_api: Option<Arc<SeriesAPI>>,
-    ins_api: Option<Arc<InsAPI>>,
-    market_active: AtomicBool,
+    live: LiveContext,
     trade_sessions: Arc<std::sync::RwLock<HashMap<String, Arc<TradeSession>>>>,
 }
 
 impl Client {
     pub fn quote(&self, symbol: impl Into<crate::marketdata::SymbolId>) -> QuoteRef {
-        self.live_api.quote(symbol)
+        self.live.live_api.quote(symbol)
     }
 
     pub fn kline_ref(&self, symbol: impl Into<crate::marketdata::SymbolId>, duration: Duration) -> KlineRef {
-        self.live_api.kline(symbol, duration)
+        self.live.live_api.kline(symbol, duration)
     }
 
     pub fn tick_ref(&self, symbol: impl Into<crate::marketdata::SymbolId>) -> TickRef {
-        self.live_api.tick(symbol)
+        self.live.live_api.tick(symbol)
     }
 
     pub async fn wait_update(&self) -> Result<()> {
-        self.live_api.wait_update().await
+        self.live.live_api.wait_update().await
     }
 
     pub async fn wait_update_and_drain(&self) -> Result<MarketDataUpdates> {
-        self.live_api.wait_update_and_drain().await
+        self.live.live_api.wait_update_and_drain().await
     }
 }

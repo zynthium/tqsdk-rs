@@ -2,7 +2,7 @@ use super::{KlineSymbols, SeriesAPI, SeriesCachePolicy, SeriesSubscription};
 use crate::cache::{DataSeriesCache, PAGE_VIEW_WIDTH, trim_last_datetime_range};
 use crate::download::{DataDownloadPageObserver, DataDownloadSymbolInfo, DividendAdjustment};
 use crate::errors::{Result, TqError};
-use crate::types::{Kline, Range, SeriesOptions, Tick, rangeset_difference};
+use crate::types::{Kline, Range, SeriesOptions, Tick, rangeset_difference, rangeset_intersection};
 use chrono::{DateTime, Datelike, FixedOffset, NaiveDate, TimeZone, Utc};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -359,27 +359,36 @@ impl SeriesAPI {
             return self.download_tick_range(symbol, start_nano, end_nano, observer).await;
         }
 
-        let result = {
+        let requested_range = Range::new(start_nano, end_nano);
+        while let Some(next_missing) = {
             let _lock = self.data_series_cache.lock_series(symbol, 0)?;
-            let requested_range = Range::new(start_nano, end_nano);
-            let cached_id_ranges = self.data_series_cache.get_rangeset_id(symbol, 0)?;
-            let mut cached_dt_ranges = self.data_series_cache.get_rangeset_dt(symbol, 0, &cached_id_ranges)?;
-            trim_last_datetime_range(&mut cached_dt_ranges, 100);
-
-            let missing_dt_ranges = rangeset_difference(&vec![requested_range], &cached_dt_ranges);
-            for missing in missing_dt_ranges {
-                if missing.is_empty() {
-                    continue;
-                }
-                let rows = self
-                    .download_tick_range(symbol, missing.start, missing.end, observer.clone())
-                    .await?;
-                if rows.is_empty() {
-                    continue;
-                }
-                self.data_series_cache.write_tick_segment(symbol, &rows)?;
+            next_missing_tick_ranges(&self.data_series_cache, symbol, &requested_range)?
+                .into_iter()
+                .find(|range| !range.is_empty())
+        } {
+            let rows = self
+                .download_tick_range(symbol, next_missing.start, next_missing.end, observer.clone())
+                .await?;
+            if rows.is_empty() {
+                break;
             }
 
+            let _lock = self.data_series_cache.lock_series(symbol, 0)?;
+            let rows_to_write = filter_ticks_by_ranges(
+                rows,
+                &rangeset_intersection(
+                    &vec![next_missing.clone()],
+                    &next_missing_tick_ranges(&self.data_series_cache, symbol, &requested_range)?,
+                ),
+            );
+            if rows_to_write.is_empty() {
+                continue;
+            }
+            self.data_series_cache.write_tick_segment(symbol, &rows_to_write)?;
+        }
+
+        let result = {
+            let _lock = self.data_series_cache.lock_series(symbol, 0)?;
             self.data_series_cache.merge_adjacent_files(symbol, 0)?;
             self.data_series_cache.read_tick_window(symbol, start_nano, end_nano)?
         };
@@ -621,30 +630,37 @@ impl SeriesAPI {
                 .await;
         }
 
-        let result = {
+        let requested_range = Range::new(start_nano, end_nano);
+        while let Some(next_missing) = {
             let _lock = self.data_series_cache.lock_series(symbol, duration_nano)?;
-            let requested_range = Range::new(start_nano, end_nano);
-            let cached_id_ranges = self.data_series_cache.get_rangeset_id(symbol, duration_nano)?;
-            let mut cached_dt_ranges =
-                self.data_series_cache
-                    .get_rangeset_dt(symbol, duration_nano, &cached_id_ranges)?;
-            trim_last_datetime_range(&mut cached_dt_ranges, duration_nano);
-
-            let missing_dt_ranges = rangeset_difference(&vec![requested_range], &cached_dt_ranges);
-            for missing in missing_dt_ranges {
-                if missing.is_empty() {
-                    continue;
-                }
-                let rows = self
-                    .download_kline_range(symbol, duration, missing.start, missing.end, observer.clone())
-                    .await?;
-                if rows.is_empty() {
-                    continue;
-                }
-                self.data_series_cache
-                    .write_kline_segment(symbol, duration_nano, &rows)?;
+            next_missing_kline_ranges(&self.data_series_cache, symbol, duration_nano, &requested_range)?
+                .into_iter()
+                .find(|range| !range.is_empty())
+        } {
+            let rows = self
+                .download_kline_range(symbol, duration, next_missing.start, next_missing.end, observer.clone())
+                .await?;
+            if rows.is_empty() {
+                break;
             }
 
+            let _lock = self.data_series_cache.lock_series(symbol, duration_nano)?;
+            let rows_to_write = filter_klines_by_ranges(
+                rows,
+                &rangeset_intersection(
+                    &vec![next_missing.clone()],
+                    &next_missing_kline_ranges(&self.data_series_cache, symbol, duration_nano, &requested_range)?,
+                ),
+            );
+            if rows_to_write.is_empty() {
+                continue;
+            }
+            self.data_series_cache
+                .write_kline_segment(symbol, duration_nano, &rows_to_write)?;
+        }
+
+        let result = {
+            let _lock = self.data_series_cache.lock_series(symbol, duration_nano)?;
             self.data_series_cache.merge_adjacent_files(symbol, duration_nano)?;
             self.data_series_cache
                 .read_kline_window(symbol, duration_nano, start_nano, end_nano)?
@@ -931,6 +947,51 @@ fn report_download_page_progress<T>(
         return;
     };
     observer.on_page(latest.min(end_nano));
+}
+
+fn next_missing_kline_ranges(
+    cache: &DataSeriesCache,
+    symbol: &str,
+    duration_nano: i64,
+    requested_range: &Range,
+) -> Result<Vec<Range>> {
+    let cached_id_ranges = cache.get_rangeset_id(symbol, duration_nano)?;
+    let mut cached_dt_ranges = cache.get_rangeset_dt(symbol, duration_nano, &cached_id_ranges)?;
+    trim_last_datetime_range(&mut cached_dt_ranges, duration_nano);
+    Ok(rangeset_difference(&vec![requested_range.clone()], &cached_dt_ranges))
+}
+
+fn next_missing_tick_ranges(cache: &DataSeriesCache, symbol: &str, requested_range: &Range) -> Result<Vec<Range>> {
+    let cached_id_ranges = cache.get_rangeset_id(symbol, 0)?;
+    let mut cached_dt_ranges = cache.get_rangeset_dt(symbol, 0, &cached_id_ranges)?;
+    trim_last_datetime_range(&mut cached_dt_ranges, 100);
+    Ok(rangeset_difference(&vec![requested_range.clone()], &cached_dt_ranges))
+}
+
+fn filter_klines_by_ranges(rows: Vec<Kline>, ranges: &[Range]) -> Vec<Kline> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    rows.into_iter()
+        .filter(|row| {
+            ranges
+                .iter()
+                .any(|range| row.datetime >= range.start && row.datetime < range.end)
+        })
+        .collect()
+}
+
+fn filter_ticks_by_ranges(rows: Vec<Tick>, ranges: &[Range]) -> Vec<Tick> {
+    if ranges.is_empty() {
+        return Vec::new();
+    }
+    rows.into_iter()
+        .filter(|row| {
+            ranges
+                .iter()
+                .any(|range| row.datetime >= range.start && row.datetime < range.end)
+        })
+        .collect()
 }
 
 fn extend_klines_in_window(target: &mut Vec<Kline>, page: Vec<Kline>, start_nano: i64, end_nano: i64) -> Option<i64> {

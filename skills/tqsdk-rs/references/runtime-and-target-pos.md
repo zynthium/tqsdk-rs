@@ -102,6 +102,8 @@ let trades = scheduler.trades();
 ## runtime 里的关键边界
 
 - `TqRuntime` 是任务运行时，不是普通行情 / 手工交易默认入口
+- live runtime 来自 `Client` 时，会复用该 `Client` session 的同一 private live context；不会自建第二套行情 websocket / `MarketDataState`
+- 关闭该 `Client` session 后，runtime market wait 路径也会一起收到关闭信号
 - target-pos 任务与 scheduler 会独占同一 `runtime + account + symbol`
 - 任务占用 symbol 时，冲突的手工下单会报错
 - live / replay 只是 adapter 不同，公开任务入口保持一致

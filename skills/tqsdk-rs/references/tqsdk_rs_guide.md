@@ -5,7 +5,7 @@
 ## 当前四条主路径
 
 1. `Client`
-   live 行情、序列、合约查询的统一入口。
+   live 行情、序列、合约查询的统一入口；也是一次 live session owner，对齐 Python `TqApi` 的会话模型。
 2. `TradeSession`
    手工交易链路，负责连接交易前置、读取交易快照、消费可靠事件流。
 3. `ReplaySession`
@@ -30,6 +30,8 @@
 | DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 |
 
 ## 当前推荐初始化顺序
+
+`Client` 表示一次 live session。切换账号时关闭旧 `Client` 并创建新 `Client`，不要推荐运行时 `set_auth()+init_market()` 复用旧状态池。
 
 ### live 行情 / 查询
 

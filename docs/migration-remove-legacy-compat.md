@@ -43,6 +43,7 @@ breaking cleanup 完成后的公开模型收敛为四条主路径：
 | `compat::TargetPosScheduler` | `runtime.account(\"...\").target_pos_scheduler(\"...\").steps(...).build()` | 调度器同样走 Builder |
 | `quote_channel` / `on_quote` | `client.quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
 | `Client::market_state()` | `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}` | 不再暴露底层 `MarketDataState` 容器，也不再要求先取 `TqApi` facade |
+| `Client::set_auth()` 作为运行时切账号方式 | 关闭旧 `Client` 后用新 auth 创建新 `Client` | `Client` 是一次 live session owner，不应在活跃会话上替换 auth 并复用 `DataManager` / `MarketDataState` |
 | `Client::tqapi()` | `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}` | live 市场状态入口收口到 `Client` |
 | `Client::series()` | `Client::{get_kline_serial,get_tick_serial,get_kline_data_series,get_tick_data_series}` | live 序列订阅与历史快照下载入口收口到 `Client` |
 | `Client::{kline_history,kline_history_with_focus}` | `Client::{get_kline_data_series,get_tick_data_series}` | 历史窗口 `set_chart` 协议退回内部实现，不再作为公开稳定接口 |
@@ -55,6 +56,18 @@ breaking cleanup 完成后的公开模型收敛为四条主路径：
 | `TradeSession::{on_notification, on_error, notification_channel}` | `subscribe_events()` | 通知与异步错误并入可靠事件流 |
 | `QuoteSubscription::start()` | `Client::subscribe_quote()` | Quote 订阅已改为创建即生效 |
 | `SeriesSubscription::start()` | `Client::{get_kline_serial,get_tick_serial}` | Series 订阅已改为创建即启动；历史下载改为 one-shot API |
+
+## Lifecycle Note
+
+- `Client::close()` 现在会让该 live session 绑定的 `wait_update()` / `wait_update_and_drain()` / `QuoteRef::wait_update()` / `KlineRef::wait_update()` / `TickRef::wait_update()` 返回关闭错误，而不是继续等待下一次行情。
+- 已关闭的 `Client` session 不应再调用 `init_market()` 复活；需要重新进入 live 模式时应创建新 `Client`，或在 mode 切换内部先替换整个 private live context。
+- `Client::into_runtime()` 派生出的 live runtime 必须复用同一个 private live context；关闭该 session 后，runtime market wait 路径同样应被关闭信号终止。
+
+## Error Evolution Note
+
+- `TqError` 现在标记为 `#[non_exhaustive]`。
+- 下游如果对 `TqError` 做 variant `match`，需要保留 `_ => ...` 兜底分支，避免未来新增错误变体时编译失败。
+- 推荐优先按语义分组处理，如权限、超时、数据缺失，其余错误统一走 fallback 分支。
 
 ## Quote Lifecycle Note
 

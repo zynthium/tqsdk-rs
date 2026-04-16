@@ -2,14 +2,19 @@ use crate::datamanager::DataManager;
 use rand::Rng;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-struct SharedReconnectTimer {
+pub(crate) struct ReconnectTimer {
     next_reconnect_at: Instant,
 }
 
-static RECONNECT_TIMER: OnceLock<std::sync::Mutex<SharedReconnectTimer>> = OnceLock::new();
+impl ReconnectTimer {
+    pub(crate) fn new() -> Self {
+        Self {
+            next_reconnect_at: Instant::now() + Duration::from_secs(rand::rng().random_range(10..21)),
+        }
+    }
+}
 
 pub(crate) fn is_ops_maintenance_window_cst() -> bool {
     use chrono::Timelike;
@@ -18,13 +23,11 @@ pub(crate) fn is_ops_maintenance_window_cst() -> bool {
     cst_now.hour() == 19 && cst_now.minute() <= 30
 }
 
-pub(crate) fn next_shared_reconnect_delay(reconnect_count: u32, fallback: Duration) -> Duration {
-    let timer = RECONNECT_TIMER.get_or_init(|| {
-        let initial = Duration::from_secs(rand::rng().random_range(10..21));
-        std::sync::Mutex::new(SharedReconnectTimer {
-            next_reconnect_at: Instant::now() + initial,
-        })
-    });
+pub(crate) fn next_reconnect_delay(
+    timer: &std::sync::Mutex<ReconnectTimer>,
+    reconnect_count: u32,
+    fallback: Duration,
+) -> Duration {
     let now = Instant::now();
     let mut guard = timer.lock().unwrap();
     let wait = if guard.next_reconnect_at > now {
@@ -63,39 +66,45 @@ pub(crate) fn is_md_reconnect_complete(
         .collect();
 
     for (chart_id, request) in set_chart_packs.iter() {
-        let state = match dm.get_by_path(&["charts", chart_id.as_str(), "state"]) {
-            Some(Value::Object(state)) => state,
-            _ => return false,
-        };
-        for key in [
-            "ins_list",
-            "duration",
-            "view_width",
-            "left_kline_id",
-            "focus_datetime",
-            "focus_position",
-        ] {
-            if let Some(req_val) = request.get(key)
-                && state.get(key) != Some(req_val)
-            {
+        let state_matches = dm.with_path_ref(&["charts", chart_id.as_str(), "state"], |state| {
+            let Some(Value::Object(state)) = state else {
                 return false;
+            };
+            for key in [
+                "ins_list",
+                "duration",
+                "view_width",
+                "left_kline_id",
+                "focus_datetime",
+                "focus_position",
+            ] {
+                if let Some(req_val) = request.get(key)
+                    && state.get(key) != Some(req_val)
+                {
+                    return false;
+                }
             }
+            true
+        });
+        if !state_matches {
+            return false;
         }
 
-        let chart = match dm.get_by_path(&["charts", chart_id.as_str()]) {
-            Some(Value::Object(chart)) => chart,
-            _ => return false,
-        };
-        let left_id = get_i64(chart.get("left_id"), -1);
-        let right_id = get_i64(chart.get("right_id"), -1);
-        let more_data = get_bool(chart.get("more_data"), true);
-        if left_id == -1 && right_id == -1 {
+        let chart_ready = dm.with_path_ref(&["charts", chart_id.as_str()], |chart| {
+            let Some(Value::Object(chart)) = chart else {
+                return false;
+            };
+            let left_id = get_i64(chart.get("left_id"), -1);
+            let right_id = get_i64(chart.get("right_id"), -1);
+            let more_data = get_bool(chart.get("more_data"), true);
+            !(more_data || (left_id == -1 && right_id == -1))
+        });
+        if !chart_ready {
             return false;
         }
-        if more_data {
-            return false;
-        }
-        if get_bool(dm.get_by_path(&["mdhis_more_data"]).as_ref(), true) {
+
+        let mdhis_ready = dm.with_path_ref(&["mdhis_more_data"], |value| !get_bool(value, true));
+        if !mdhis_ready {
             return false;
         }
 
@@ -105,15 +114,17 @@ pub(crate) fn is_md_reconnect_complete(
             .unwrap_or("");
         let duration = get_i64(request.get("duration"), -1);
         for symbol in ins_list.split(',').filter(|symbol| !symbol.is_empty()) {
-            let last_id = if duration == 0 {
-                dm.get_by_path(&["ticks", symbol])
-                    .and_then(|value| value.get("last_id").cloned())
+            let ready = if duration == 0 {
+                dm.with_path_ref(&["ticks", symbol], |value| {
+                    get_i64(value.and_then(|value| value.get("last_id")), -1)
+                })
             } else {
                 let duration_str = duration.to_string();
-                dm.get_by_path(&["klines", symbol, &duration_str])
-                    .and_then(|value| value.get("last_id").cloned())
+                dm.with_path_ref(&["klines", symbol, &duration_str], |value| {
+                    get_i64(value.and_then(|value| value.get("last_id")), -1)
+                })
             };
-            if get_i64(last_id.as_ref(), -1) == -1 {
+            if ready == -1 {
                 return false;
             }
         }
@@ -122,13 +133,12 @@ pub(crate) fn is_md_reconnect_complete(
     if let Some(subscribe) = subscribe_quote.as_ref()
         && let Some(sub_ins_list) = subscribe.get("ins_list").and_then(|ins_list| ins_list.as_str())
     {
-        match dm.get_by_path(&["ins_list"]) {
-            Some(Value::String(data_ins_list)) => {
-                if data_ins_list != sub_ins_list {
-                    return false;
-                }
-            }
-            _ => return false,
+        let ins_list_matches = dm.with_path_ref(&["ins_list"], |value| match value {
+            Some(Value::String(data_ins_list)) => data_ins_list == sub_ins_list,
+            _ => false,
+        });
+        if !ins_list_matches {
+            return false;
         }
     }
 
@@ -136,20 +146,22 @@ pub(crate) fn is_md_reconnect_complete(
 }
 
 pub(crate) fn extract_trade_positions(dm: &DataManager) -> HashMap<String, HashSet<String>> {
-    let mut result = HashMap::new();
-    let trade = match dm.get_by_path(&["trade"]) {
-        Some(Value::Object(trade)) => trade,
-        _ => return result,
-    };
-    for (user, value) in trade.iter() {
-        if let Value::Object(user_obj) = value
-            && let Some(Value::Object(positions)) = user_obj.get("positions")
-        {
-            let symbols = positions.keys().cloned().collect::<HashSet<_>>();
-            result.insert(user.to_string(), symbols);
+    dm.with_path_ref(&["trade"], |trade| {
+        let Some(Value::Object(trade)) = trade else {
+            return HashMap::new();
+        };
+
+        let mut result = HashMap::new();
+        for (user, value) in trade {
+            if let Value::Object(user_obj) = value
+                && let Some(Value::Object(positions)) = user_obj.get("positions")
+            {
+                let symbols = positions.keys().cloned().collect::<HashSet<_>>();
+                result.insert(user.to_string(), symbols);
+            }
         }
-    }
-    result
+        result
+    })
 }
 
 pub(crate) fn is_trade_reconnect_complete(
@@ -165,7 +177,7 @@ pub(crate) fn is_trade_reconnect_complete(
         return Some(Vec::new());
     }
     for user in users.iter() {
-        let more_data = get_bool(dm.get_by_path(&["trade", user, "trade_more_data"]).as_ref(), true);
+        let more_data = dm.with_path_ref(&["trade", user, "trade_more_data"], |value| get_bool(value, true));
         if more_data {
             return None;
         }
@@ -206,11 +218,10 @@ fn get_bool(value: Option<&Value>, default: bool) -> bool {
 }
 
 fn trade_users_from_dm(dm: &DataManager) -> Vec<String> {
-    let trade = match dm.get_by_path(&["trade"]) {
-        Some(Value::Object(trade)) => trade,
-        _ => return Vec::new(),
-    };
-    trade.keys().cloned().collect()
+    dm.with_path_ref(&["trade"], |trade| match trade {
+        Some(Value::Object(trade)) => trade.keys().cloned().collect(),
+        _ => Vec::new(),
+    })
 }
 
 fn pseudo_duration_between(lower: Duration, upper: Duration) -> Duration {
@@ -224,4 +235,32 @@ fn pseudo_duration_between(lower: Duration, upper: Duration) -> Duration {
     }
     let offset = rand::rng().random_range(0..nanos);
     lower + Duration::from_nanos(offset)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_timer_is_per_connection() {
+        let now = Instant::now();
+        let first = std::sync::Mutex::new(ReconnectTimer {
+            next_reconnect_at: now + Duration::from_secs(18),
+        });
+        let second = std::sync::Mutex::new(ReconnectTimer {
+            next_reconnect_at: now - Duration::from_secs(1),
+        });
+
+        let first_delay = next_reconnect_delay(&first, 0, Duration::ZERO);
+        let second_delay = next_reconnect_delay(&second, 0, Duration::ZERO);
+
+        assert!(
+            first_delay >= Duration::from_secs(1),
+            "the first timer should preserve its own scheduled reconnect delay: {first_delay:?}"
+        );
+        assert!(
+            second_delay < Duration::from_secs(1),
+            "a second connection should not inherit another connection's reconnect delay: {second_delay:?}"
+        );
+    }
 }

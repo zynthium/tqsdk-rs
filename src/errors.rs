@@ -9,6 +9,7 @@ pub type Result<T> = std::result::Result<T, TqError>;
 
 /// TQSDK 错误类型
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TqError {
     /// 权限不足错误
     #[error("权限不足: {0}")]

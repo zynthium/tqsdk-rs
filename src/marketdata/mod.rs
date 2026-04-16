@@ -86,6 +86,7 @@ struct Entry<T> {
 pub struct MarketDataState {
     global_epoch: AtomicU64,
     global_tx: watch::Sender<u64>,
+    close_tx: watch::Sender<bool>,
     updates_tx: broadcast::Sender<UpdateEvent>,
     quotes: RwLock<HashMap<SymbolId, Entry<Quote>>>,
     klines: RwLock<HashMap<KlineKey, Entry<Kline>>>,
@@ -95,10 +96,12 @@ pub struct MarketDataState {
 impl Default for MarketDataState {
     fn default() -> Self {
         let (global_tx, _) = watch::channel(0u64);
+        let (close_tx, _) = watch::channel(false);
         let (updates_tx, _) = broadcast::channel(65536);
         Self {
             global_epoch: AtomicU64::new(0),
             global_tx,
+            close_tx,
             updates_tx,
             quotes: RwLock::new(HashMap::new()),
             klines: RwLock::new(HashMap::new()),
@@ -110,6 +113,18 @@ impl Default for MarketDataState {
 impl MarketDataState {
     pub fn subscribe_global_epoch(&self) -> watch::Receiver<u64> {
         self.global_tx.subscribe()
+    }
+
+    pub fn subscribe_close(&self) -> watch::Receiver<bool> {
+        self.close_tx.subscribe()
+    }
+
+    pub fn close(&self) {
+        self.close_tx.send_replace(true);
+    }
+
+    pub fn is_closed(&self) -> bool {
+        *self.close_tx.borrow()
     }
 
     pub fn subscribe_updates(&self) -> broadcast::Receiver<UpdateEvent> {
@@ -330,16 +345,25 @@ impl TqApi {
 
     pub async fn wait_update(&self) -> Result<()> {
         let mut rx = self.state.subscribe_global_epoch();
+        let mut close_rx = self.state.subscribe_close();
         loop {
+            if *close_rx.borrow() {
+                return Err(TqError::InternalError("market data session closed".to_string()));
+            }
             let current = *rx.borrow();
             let seen = self.inner.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
                 self.inner.seen_epoch.store(current, Ordering::SeqCst);
                 return Ok(());
             }
-            rx.changed()
-                .await
-                .map_err(|_| TqError::InternalError("market data channel closed".to_string()))?;
+            tokio::select! {
+                changed = rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("market data channel closed".to_string()))?;
+                }
+                changed = close_rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                }
+            }
         }
     }
 
@@ -449,16 +473,25 @@ impl QuoteRef {
 
     pub async fn wait_update(&self) -> Result<()> {
         let mut rx = self.state.subscribe_quote_epoch(&self.symbol).await;
+        let mut close_rx = self.state.subscribe_close();
         loop {
+            if *close_rx.borrow() {
+                return Err(TqError::InternalError("market data session closed".to_string()));
+            }
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
                 self.seen_epoch.store(current, Ordering::SeqCst);
                 return Ok(());
             }
-            rx.changed()
-                .await
-                .map_err(|_| TqError::InternalError("quote channel closed".to_string()))?;
+            tokio::select! {
+                changed = rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("quote channel closed".to_string()))?;
+                }
+                changed = close_rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                }
+            }
         }
     }
 }
@@ -505,16 +538,25 @@ impl KlineRef {
 
     pub async fn wait_update(&self) -> Result<()> {
         let mut rx = self.state.subscribe_kline_epoch(&self.key).await;
+        let mut close_rx = self.state.subscribe_close();
         loop {
+            if *close_rx.borrow() {
+                return Err(TqError::InternalError("market data session closed".to_string()));
+            }
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
                 self.seen_epoch.store(current, Ordering::SeqCst);
                 return Ok(());
             }
-            rx.changed()
-                .await
-                .map_err(|_| TqError::InternalError("kline channel closed".to_string()))?;
+            tokio::select! {
+                changed = rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("kline channel closed".to_string()))?;
+                }
+                changed = close_rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                }
+            }
         }
     }
 }
@@ -557,16 +599,25 @@ impl TickRef {
 
     pub async fn wait_update(&self) -> Result<()> {
         let mut rx = self.state.subscribe_tick_epoch(&self.symbol).await;
+        let mut close_rx = self.state.subscribe_close();
         loop {
+            if *close_rx.borrow() {
+                return Err(TqError::InternalError("market data session closed".to_string()));
+            }
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
                 self.seen_epoch.store(current, Ordering::SeqCst);
                 return Ok(());
             }
-            rx.changed()
-                .await
-                .map_err(|_| TqError::InternalError("tick channel closed".to_string()))?;
+            tokio::select! {
+                changed = rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("tick channel closed".to_string()))?;
+                }
+                changed = close_rx.changed() => {
+                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                }
+            }
         }
     }
 }

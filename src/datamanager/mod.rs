@@ -14,12 +14,19 @@ mod watch;
 #[cfg(test)]
 mod tests;
 
-use async_channel::Sender;
+pub(crate) use merge::MergeChangedPaths;
+
+use async_channel::{Receiver, Sender};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicI64;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use tokio::sync::watch::Sender as WatchSender;
+
+type WatcherMap = HashMap<String, Vec<PathWatcher>>;
+type WatcherRegistry = Arc<RwLock<WatcherMap>>;
+type WeakWatcherRegistry = Weak<RwLock<WatcherMap>>;
+type NumericValueIndexCache = RwLock<HashMap<String, CachedNumericValueIndex>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct MergeSemanticsConfig {
@@ -56,6 +63,19 @@ struct PathWatcher {
     id: i64,
     path: Vec<String>,
     tx: Sender<Value>,
+    consecutive_fulls: usize,
+}
+
+pub(crate) struct WatchRegistration {
+    path: Vec<String>,
+    watcher_id: i64,
+    rx: Receiver<Value>,
+    watchers: Option<WeakWatcherRegistry>,
+}
+
+struct CachedNumericValueIndex {
+    epoch: i64,
+    index: Arc<HashMap<i64, Value>>,
 }
 
 /// 数据管理器
@@ -74,9 +94,11 @@ pub struct DataManager {
     /// 配置
     config: DataManagerConfig,
     /// 路径监听器
-    watchers: Arc<RwLock<HashMap<String, Vec<PathWatcher>>>>,
+    watchers: WatcherRegistry,
     /// watcher ID 生成器
     next_watcher_id: AtomicI64,
+    /// 多合约 K 线查询的数值索引缓存，按 path epoch 失效
+    numeric_value_index_cache: NumericValueIndexCache,
 }
 
 #[derive(Clone)]

@@ -84,7 +84,7 @@ impl InsAPI {
         let subscribe_symbol_for_cleanup = subscribe_symbol.clone();
         let symbol_string = symbol.to_string();
         let watch_path = vec!["trading_status".to_string(), symbol_string.clone()];
-        let (watch_id, watch) = dm.watch_register(watch_path.clone());
+        let mut watch = dm.watch_register(watch_path);
         tokio::spawn(async move {
             if let Some(val) = dm.get_by_path(&["trading_status", &symbol_string])
                 && let Ok(status) = dm.convert_to_struct::<TradingStatus>(&val)
@@ -95,7 +95,6 @@ impl InsAPI {
                         warn!("交易状态通道已满，丢弃一次更新");
                     }
                     Err(TrySendError::Closed(_)) => {
-                        let _ = dm.unwatch_by_id(&watch_path, watch_id);
                         return;
                     }
                 }
@@ -105,7 +104,7 @@ impl InsAPI {
                     break;
                 }
                 tokio::select! {
-                    recv = watch.recv() => {
+                    recv = watch.receiver().recv() => {
                         if recv.is_err() {
                             break;
                         }
@@ -124,7 +123,7 @@ impl InsAPI {
                     _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                 }
             }
-            let _ = dm.unwatch_by_id(&watch_path, watch_id);
+            let _ = watch.cancel();
 
             let unsubscribe_req = {
                 let mut guard = trading_status_symbols.write().await;

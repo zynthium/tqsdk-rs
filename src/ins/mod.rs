@@ -105,21 +105,19 @@ impl InsAPI {
         let start = Instant::now();
         let timeout = Duration::from_secs(timeout_secs);
         let watch_path = vec!["symbols".to_string(), id.clone()];
-        let (watch_id, rx) = self.dm.watch_register(watch_path.clone());
+        let watch = self.dm.watch_register(watch_path);
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
             if let Some(val) = self.dm.get_by_path(&["symbols", &id]) {
-                let _ = self.dm.unwatch_by_id(&watch_path, watch_id);
                 return Ok(val);
             }
             if start.elapsed() >= timeout {
-                let _ = self.dm.unwatch_by_id(&watch_path, watch_id);
                 return Err(TqError::Timeout);
             }
             tokio::select! {
-                _ = rx.recv() => {}
+                _ = watch.receiver().recv() => {}
                 _ = interval.tick() => {
                     let _ = self.ws.send(&json!({"aid": "peek_message"})).await;
                 }

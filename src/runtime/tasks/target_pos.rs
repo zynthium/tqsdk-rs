@@ -230,8 +230,23 @@ impl TargetPosTask {
 impl TargetPosTaskInner {
     fn ensure_started(self: &Arc<Self>, operation: &'static str) -> RuntimeResult<()> {
         let mut started = self.started.lock().expect("target task start lock poisoned");
-        if started.is_some() {
-            return Ok(());
+        if let Some(handle) = started.as_ref() {
+            if !handle.is_finished() {
+                return Ok(());
+            }
+
+            self.failure_result()?;
+            if *self.finished_tx.borrow() {
+                return Ok(());
+            }
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(RuntimeError::TargetTaskFinished {
+                    symbol: self.symbol.clone(),
+                });
+            }
+
+            started.take();
+            self.finished_tx.send_replace(false);
         }
 
         let handle =

@@ -4,10 +4,9 @@
 
 如果你是要在仓库里执行修改，请优先阅读根目录的 [AGENTS.md](../AGENTS.md)；它包含更适合 agent 执行的验证、边界与提交流程要求。
 
-> Breaking cleanup target:
-> 下一轮 public API 将继续收口为 `Client`、`TradeSession`、`ReplaySession`、`TqRuntime`
-> 四条主路径。当前文档中的模块描述既包含已落地现状，也包含已经冻结的目标方向；
-> 若与 `docs/migration-remove-legacy-compat.md` 冲突，以迁移文档中的目标 public shape 为准。
+> Canonical public contract:
+> 当前公开主路径收口为 `Client`、`TradeSession`、`ReplaySession`、`TqRuntime`
+> 四条入口。迁移背景与已删除 surface 见 `docs/migration-remove-legacy-compat.md`。
 
 ## 总体分层
 
@@ -86,10 +85,11 @@ Client (facade + builder + market)
 | `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
 | `prelude` | — | 便捷 re-export |
 
-## Breaking Target
+## Canonical Contract
 
-- live 主路径已收口到 `Client`：行情状态读取、序列订阅和 query facade 都直接挂在 `Client`；`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。
-- Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；当前已改为创建即生效。
+- live 主路径已收口到 `Client`：`Client` 是一次 live session owner，对齐 Python `TqApi` 的会话模型；行情状态读取、序列订阅和 query facade 都直接挂在 `Client`，`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。
+- `ClientBuilder` / `ClientConfig` / `TqAuth` 是构造侧概念；不再引入 public `LiveClient` / `LiveSession` 双对象。当前内部 live 资源统一收敛在私有 `LiveContext`。
+- Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；当前已经是创建即生效。
 - `TradeSession` 继续按“状态 vs 事件”分层：
   账户/持仓是 snapshot getter + `wait_update()`。
   订单/成交/通知/异步错误是可靠事件流。
@@ -99,7 +99,7 @@ Client (facade + builder + market)
 
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
-- 当前现状：`QuoteSubscription`、`SeriesSubscription` 已改为 auto-start，只保留 `close()` 作为提前释放资源接口。
+- `QuoteSubscription`、`SeriesSubscription` 已改为 auto-start，只保留 `close()` 作为提前释放资源接口。
 - 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
 - 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐窗口状态。
 - serial 收口：`Client::{get_kline_serial,get_tick_serial}` 走更新中的 bounded sequence 路径，`data_length` 会归一化到 `1..=10000`。
@@ -107,6 +107,8 @@ Client (facade + builder + market)
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - transport 收口：`TqWebsocket`、`TqQuoteWebsocket`、`TqTradeWebsocket` 等原始连接拼装件保持 crate 内部，外部统一从 `Client` / `TradeSession` / `ReplaySession` 进入。
+- live owner：当前由 `Client` 私有 `LiveContext` 统一拥有 `DataManager`、`MarketDataState`、quote websocket、`SeriesAPI`、`InsAPI` 和 close signal；runtime live adapter 复用同一 context，不能自建第二套行情 websocket / state。
+- mode transition：`switch_to_live()` 仅负责 market mode 切换；它会替换整个 private live context，不承担 re-auth 或切账号职责。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
 - 公开入口收口：运行时的公开表面聚焦在 `TqRuntime`、`AccountHandle` 和 Builder 任务类型；adapter、registry、child-order planning 等拼装件保持 crate 内部。

@@ -2,7 +2,7 @@ use super::{
     BackpressureState, TqWebsocket, WebSocketConfig, derive_message_backlog_max, has_reconnect_notify,
     is_md_reconnect_complete,
 };
-use crate::datamanager::{DataManager, DataManagerConfig};
+use crate::datamanager::{DataManager, DataManagerConfig, MergeChangedPaths};
 use crate::errors::{Result, TqError};
 use crate::marketdata::{KlineKey, MarketDataState, SymbolId};
 use serde::Serialize;
@@ -263,12 +263,12 @@ fn spawn_message_handler(
 ) {
     tokio::spawn(async move {
         while let Some(data) = msg_rx.recv().await {
-            let Some(aid) = data.get("aid").and_then(|aid| aid.as_str()) else {
+            let Some(aid) = data.get("aid").and_then(|aid| aid.as_str()).map(str::to_owned) else {
                 continue;
             };
-            match aid {
+            match aid.as_str() {
                 "rtn_data" => {
-                    handle_rtn_data(&base, &runtime, &data);
+                    handle_rtn_data(&base, &runtime, data).await;
                 }
                 "rsp_login" => {
                     runtime.login_ready.store(true, Ordering::SeqCst);
@@ -280,16 +280,19 @@ fn spawn_message_handler(
 }
 
 /// 处理 rtn_data 消息：合约查询清理、重连缓冲、数据合并
-fn handle_rtn_data(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime, data: &Value) {
-    let Some(payload) = data.get("data") else {
+async fn handle_rtn_data(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime, data: Value) {
+    let Value::Object(mut payload_root) = data else {
         return;
     };
-    let Some(array) = payload.as_array() else {
+    let Some(payload) = payload_root.remove("data") else {
+        return;
+    };
+    let Value::Array(array) = payload else {
         return;
     };
 
     // 清理已完成的合约查询
-    for item in array {
+    for item in &array {
         if let Some(symbols) = item.get("symbols")
             && let Some(obj) = symbols.as_object()
         {
@@ -304,18 +307,18 @@ fn handle_rtn_data(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime, data: &Value
 
     let reconnect_index = array.iter().position(has_reconnect_notify);
     if let Some(index) = reconnect_index {
-        start_reconnect_buffering(base, runtime, array, index);
+        start_reconnect_buffering(base, runtime, &array, index);
     } else if runtime.reconnect_pending.load(Ordering::SeqCst) {
-        append_reconnect_diffs(runtime, array);
+        append_reconnect_diffs(runtime, &array);
     }
 
     if runtime.reconnect_pending.load(Ordering::SeqCst) {
-        check_reconnect_completion(base, runtime);
+        check_reconnect_completion(base, runtime).await;
         return;
     }
 
-    runtime.dm.merge_data(payload.clone(), true, true);
-    sync_market_state(runtime, array);
+    let report = runtime.dm.merge_data_report(Value::Array(array), true, true);
+    sync_market_state(runtime, &report.changed_paths).await;
 }
 
 /// 检测到重连通知后，开始缓冲数据到临时 DM
@@ -358,7 +361,7 @@ fn append_reconnect_diffs(runtime: &QuoteRuntime, array: &[Value]) {
 }
 
 /// 检查重连数据是否完整，完整则一次性合并到主 DM
-fn check_reconnect_completion(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime) {
+async fn check_reconnect_completion(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime) {
     let dm_temp = runtime.reconnect_dm.read().unwrap().as_ref().cloned();
     let charts_snapshot = runtime.charts.read().unwrap().clone();
     let subscribe_snapshot = runtime.subscribe_quote.read().unwrap().clone();
@@ -368,14 +371,16 @@ fn check_reconnect_completion(base: &Arc<TqWebsocket>, runtime: &QuoteRuntime) {
     };
 
     if is_md_reconnect_complete(&dm_temp, &charts_snapshot, &subscribe_snapshot) {
-        let mut diffs = runtime.reconnect_diffs.write().unwrap();
-        let pending = diffs.clone();
-        diffs.clear();
+        let pending = {
+            let mut diffs = runtime.reconnect_diffs.write().unwrap();
+            let pending = diffs.clone();
+            diffs.clear();
+            pending
+        };
         runtime.reconnect_pending.store(false, Ordering::SeqCst);
         *runtime.reconnect_dm.write().unwrap() = None;
-        let pending_snapshot = pending.clone();
-        runtime.dm.merge_data(Value::Array(pending), true, true);
-        sync_market_state(runtime, &pending_snapshot);
+        let report = runtime.dm.merge_data_report(Value::Array(pending), true, true);
+        sync_market_state(runtime, &report.changed_paths).await;
         debug!("data completed");
     } else {
         debug!(pack = ?json!({"aid": "peek_message"}), "wait for data completed");
@@ -394,91 +399,72 @@ fn register_backpressure_callback(base: &Arc<TqWebsocket>, backpressure: Backpre
     });
 }
 
-#[derive(Default)]
-struct MarketDiffKeys {
-    quotes: HashSet<String>,
-    klines: HashSet<(String, i64)>,
-    ticks: HashSet<String>,
-}
-
-fn collect_diff_keys(array: &[Value]) -> MarketDiffKeys {
-    let mut keys = MarketDiffKeys::default();
-    for diff in array {
-        if let Some(quotes) = diff.get("quotes").and_then(|v| v.as_object()) {
-            keys.quotes.extend(quotes.keys().cloned());
-        }
-        if let Some(klines) = diff.get("klines").and_then(|v| v.as_object()) {
-            for (symbol, durations) in klines {
-                let Some(durations) = durations.as_object() else {
-                    continue;
-                };
-                for duration_str in durations.keys() {
-                    if let Ok(duration) = duration_str.parse::<i64>() {
-                        keys.klines.insert((symbol.clone(), duration));
-                    }
-                }
-            }
-        }
-        if let Some(ticks) = diff.get("ticks").and_then(|v| v.as_object()) {
-            keys.ticks.extend(ticks.keys().cloned());
-        }
-    }
-    keys
-}
-
-fn sync_market_state(runtime: &QuoteRuntime, array: &[Value]) {
-    let keys = collect_diff_keys(array);
-    if keys.quotes.is_empty() && keys.klines.is_empty() && keys.ticks.is_empty() {
+async fn sync_market_state(runtime: &QuoteRuntime, changed_paths: &MergeChangedPaths) {
+    if changed_paths.quote_symbols.is_empty()
+        && changed_paths.kline_keys.is_empty()
+        && changed_paths.tick_symbols.is_empty()
+    {
         return;
     }
     let dm = Arc::clone(&runtime.dm);
     let market_state = Arc::clone(&runtime.market_state);
-    tokio::spawn(async move {
-        for symbol in keys.quotes {
-            if let Ok(mut quote) = dm.get_quote_data(&symbol) {
-                quote.update_change();
-                market_state.update_quote(SymbolId::from(symbol), quote).await;
-            }
+    let quote_symbols = changed_paths.quote_symbols.clone();
+    let kline_keys = changed_paths.kline_keys.clone();
+    let tick_symbols = changed_paths.tick_symbols.clone();
+    for symbol in quote_symbols {
+        if let Ok(mut quote) = dm.get_quote_data(&symbol) {
+            quote.update_change();
+            market_state.update_quote(SymbolId::from(symbol), quote).await;
         }
+    }
 
-        for (symbol, duration_nanos) in keys.klines {
-            if let Some(kline) = load_latest_kline(&dm, &symbol, duration_nanos) {
-                market_state
-                    .update_kline(
-                        KlineKey {
-                            symbol: SymbolId::from(symbol),
-                            duration_nanos,
-                        },
-                        kline,
-                    )
-                    .await;
-            }
+    for (symbol, duration_nanos) in kline_keys {
+        if let Some(kline) = load_latest_kline(&dm, &symbol, duration_nanos) {
+            market_state
+                .update_kline(
+                    KlineKey {
+                        symbol: SymbolId::from(symbol),
+                        duration_nanos,
+                    },
+                    kline,
+                )
+                .await;
         }
+    }
 
-        for symbol in keys.ticks {
-            if let Some(tick) = load_latest_tick(&dm, &symbol) {
-                market_state.update_tick(SymbolId::from(symbol), tick).await;
-            }
+    for symbol in tick_symbols {
+        if let Some(tick) = load_latest_tick(&dm, &symbol) {
+            market_state.update_tick(SymbolId::from(symbol), tick).await;
         }
-    });
+    }
 }
 
 fn load_latest_kline(dm: &DataManager, symbol: &str, duration: i64) -> Option<crate::types::Kline> {
     let duration_str = duration.to_string();
-    let last_id = dm
-        .get_by_path(&["klines", symbol, &duration_str, "last_id"])
-        .and_then(|v| v.as_i64())?;
-    let id_key = last_id.to_string();
-    let value = dm.get_by_path(&["klines", symbol, &duration_str, "data", &id_key])?;
+    let (last_id, value) = dm.with_path_ref(&["klines", symbol, &duration_str], |series| {
+        let Some(Value::Object(series)) = series else {
+            return None;
+        };
+        let last_id = series.get("last_id").and_then(Value::as_i64)?;
+        let id_key = last_id.to_string();
+        let value = series.get("data")?.get(&id_key)?.clone();
+        Some((last_id, value))
+    })?;
     let mut kline = dm.convert_to_struct::<crate::types::Kline>(&value).ok()?;
     kline.id = last_id;
     Some(kline)
 }
 
 fn load_latest_tick(dm: &DataManager, symbol: &str) -> Option<crate::types::Tick> {
-    let last_id = dm.get_by_path(&["ticks", symbol, "last_id"]).and_then(|v| v.as_i64())?;
-    let id_key = last_id.to_string();
-    let value = dm.get_by_path(&["ticks", symbol, "data", &id_key])?;
+    let (last_id, value) = dm.with_path_ref(&["ticks", symbol], |series| {
+        let Some(Value::Object(series)) = series else {
+            return None;
+        };
+        let last_id = series.get("last_id").and_then(Value::as_i64)?;
+        let id_key = last_id.to_string();
+        let value = series.get("data")?.get(&id_key)?.clone();
+        Some((last_id, value))
+    })?;
     let mut tick = dm.convert_to_struct::<crate::types::Tick>(&value).ok()?;
     tick.id = last_id;
     Some(tick)
@@ -569,5 +555,123 @@ impl TqQuoteWebsocket {
             .values()
             .flat_map(|symbols| symbols.iter().cloned())
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::marketdata::TqApi;
+    use serde_json::json;
+
+    fn test_runtime(dm: Arc<DataManager>, market_state: Arc<MarketDataState>) -> QuoteRuntime {
+        QuoteRuntime {
+            dm,
+            market_state,
+            subscribe_quote: Arc::new(std::sync::RwLock::new(None)),
+            quote_subscriptions: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            charts: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            pending_ins_query: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            login_ready: Arc::new(AtomicBool::new(false)),
+            reconnect_pending: Arc::new(AtomicBool::new(false)),
+            reconnect_diffs: Arc::new(std::sync::RwLock::new(Vec::new())),
+            reconnect_dm: Arc::new(std::sync::RwLock::new(None)),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_rtn_data_applies_market_state_before_returning() {
+        let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+        let market_state = Arc::new(MarketDataState::default());
+        let runtime = test_runtime(Arc::clone(&dm), Arc::clone(&market_state));
+        let api = TqApi::new(Arc::clone(&market_state));
+        let ws = Arc::new(TqWebsocket::new(
+            "ws://127.0.0.1/".to_string(),
+            WebSocketConfig::default(),
+        ));
+
+        handle_rtn_data(
+            &ws,
+            &runtime,
+            json!({
+                "aid": "rtn_data",
+                "data": [{
+                    "quotes": {
+                        "SHFE.au2602": {
+                            "instrument_id": "SHFE.au2602",
+                            "datetime": "2024-01-01 09:00:00.000000",
+                            "last_price": 501.0,
+                            "pre_settlement": 500.0
+                        }
+                    },
+                    "klines": {
+                        "SHFE.au2602": {
+                            "60000000000": {
+                                "last_id": 1,
+                                "data": {
+                                    "1": {
+                                        "datetime": 1_000_000_000i64,
+                                        "open": 500.0,
+                                        "close": 501.0,
+                                        "high": 502.0,
+                                        "low": 499.0,
+                                        "open_oi": 10,
+                                        "close_oi": 11,
+                                        "volume": 100
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "ticks": {
+                        "SHFE.au2602": {
+                            "last_id": 7,
+                            "data": {
+                                "7": {
+                                    "datetime": 1_000_000_123i64,
+                                    "last_price": 501.5
+                                }
+                            }
+                        }
+                    }
+                }]
+            }),
+        )
+        .await;
+
+        let updates = api.wait_update_and_drain().await.unwrap();
+        assert_eq!(updates.quotes, vec![SymbolId::from("SHFE.au2602")]);
+        assert_eq!(
+            updates.klines,
+            vec![KlineKey {
+                symbol: SymbolId::from("SHFE.au2602"),
+                duration_nanos: 60_000_000_000,
+            }]
+        );
+        assert_eq!(updates.ticks, vec![SymbolId::from("SHFE.au2602")]);
+
+        let quote = market_state
+            .quote_snapshot(&SymbolId::from("SHFE.au2602"))
+            .await
+            .expect("quote should be visible before handle_rtn_data returns");
+        assert_eq!(quote.last_price, 501.0);
+        assert_eq!(quote.change, 1.0);
+
+        let kline = market_state
+            .kline_snapshot(&KlineKey {
+                symbol: SymbolId::from("SHFE.au2602"),
+                duration_nanos: 60_000_000_000,
+            })
+            .await
+            .expect("kline should be visible before handle_rtn_data returns");
+        assert_eq!(kline.id, 1);
+        assert_eq!(kline.close, 501.0);
+
+        let tick = market_state
+            .tick_snapshot(&SymbolId::from("SHFE.au2602"))
+            .await
+            .expect("tick should be visible before handle_rtn_data returns");
+        assert_eq!(tick.id, 7);
+        assert_eq!(tick.last_price, 501.5);
     }
 }

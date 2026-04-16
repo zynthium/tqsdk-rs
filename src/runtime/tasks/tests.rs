@@ -541,6 +541,68 @@ async fn target_pos_cancel_transitions_to_finished_after_owned_orders_are_closed
     assert!(task.is_finished(), "task should report finished after cleanup");
 }
 
+#[test]
+fn target_pos_restarts_or_errors_after_worker_finished() {
+    let (task, execution) = {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("first runtime should build");
+        rt.block_on(async {
+            let market = Arc::new(FakeMarketAdapter::new(Quote {
+                instrument_id: "SHFE.rb2601".to_string(),
+                exchange_id: "SHFE".to_string(),
+                ask_price1: 101.0,
+                bid_price1: 100.0,
+                last_price: 100.0,
+                ..Quote::default()
+            }));
+            let execution = Arc::new(FakeExecutionAdapter::with_position(
+                make_position("SHFE", "rb2601"),
+                true,
+            ));
+            let runtime = Arc::new(TqRuntime::with_id(
+                "runtime-1",
+                RuntimeMode::Live,
+                market,
+                execution.clone(),
+            ));
+            let account = runtime.account("SIM").expect("account should exist");
+            let task = account
+                .target_pos("SHFE.rb2601")
+                .build()
+                .expect("target task should build");
+
+            task.set_target_volume(0).expect("initial target should be accepted");
+            timeout(Duration::from_secs(1), task.wait_target_reached())
+                .await
+                .expect("initial worker should process the zero target")
+                .expect("zero target should already be reached");
+
+            (task, execution)
+        })
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("second runtime should build");
+    rt.block_on(async move {
+        task.set_target_volume(1)
+            .expect("task should not silently accept a dead worker");
+        timeout(Duration::from_secs(1), task.wait_target_reached())
+            .await
+            .expect("task should restart a finished worker and reach the new target")
+            .expect("restarted worker should reach target cleanly");
+
+        let position = execution
+            .position("SIM", "SHFE.rb2601")
+            .await
+            .expect("position should be readable after restart");
+        assert_eq!(net_position(&position), 1);
+    });
+}
+
 #[tokio::test]
 async fn target_pos_handle_runs_same_batch_orders_concurrently() {
     let market = Arc::new(FakeMarketAdapter::new(Quote {

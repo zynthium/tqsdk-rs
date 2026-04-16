@@ -15,7 +15,6 @@ use async_channel::Receiver;
 use chrono::{DateTime, NaiveDate, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration as StdDuration;
 use tokio::sync::RwLock;
 
@@ -136,8 +135,14 @@ impl Client {
     }
 
     /// 设置认证器
-    pub async fn set_auth<A: Authenticator + 'static>(&mut self, auth: A) {
+    pub async fn set_auth<A: Authenticator + 'static>(&mut self, auth: A) -> Result<()> {
+        if self.live.is_active() || self.live.market_state.is_closed() {
+            return Err(TqError::InternalError(
+                "cannot replace auth on an active or closed Client session; create a new Client instead".to_string(),
+            ));
+        }
         self.auth = Arc::new(RwLock::new(auth));
+        Ok(())
     }
 
     /// 获取认证器的只读引用
@@ -151,19 +156,21 @@ impl Client {
     }
 
     fn series_api(&self) -> Result<Arc<SeriesAPI>> {
-        if !self.market_active.load(Ordering::SeqCst) {
+        if !self.live.is_active() {
             return Err(TqError::InternalError("Series API 未初始化或已关闭".to_string()));
         }
-        self.series_api
+        self.live
+            .series_api
             .clone()
             .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))
     }
 
     fn ins_api(&self) -> Result<Arc<InsAPI>> {
-        if !self.market_active.load(Ordering::SeqCst) {
+        if !self.live.is_active() {
             return Err(TqError::InternalError("合约查询 API 未初始化或已关闭".to_string()));
         }
-        self.ins_api
+        self.live
+            .ins_api
             .clone()
             .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))
     }
@@ -395,7 +402,7 @@ impl Client {
 
     /// 订阅 Quote。
     pub async fn subscribe_quote(&self, symbols: &[&str]) -> Result<Arc<QuoteSubscription>> {
-        if !self.market_active.load(Ordering::SeqCst) || self.quotes_ws.is_none() {
+        if !self.live.is_active() || self.live.quotes_ws.is_none() {
             return Err(TqError::InternalError("行情 WebSocket 未初始化或已关闭".to_string()));
         }
         {
@@ -404,7 +411,7 @@ impl Client {
         }
         let symbol_list: Vec<String> = symbols.iter().map(|s| s.to_string()).collect();
         Ok(Arc::new(
-            QuoteSubscription::new(self.quotes_ws.as_ref().unwrap().clone(), symbol_list).await?,
+            QuoteSubscription::new(self.live.quotes_ws.as_ref().unwrap().clone(), symbol_list).await?,
         ))
     }
 
@@ -529,7 +536,9 @@ impl Client {
 
     pub fn into_runtime(self) -> Arc<TqRuntime> {
         let market = Arc::new(LiveMarketAdapter::new(
-            Arc::clone(&self.dm),
+            Arc::clone(&self.live.dm),
+            Arc::clone(&self.live.market_state),
+            self.live.quotes_ws.clone(),
             Arc::clone(&self.auth),
             self.config.clone(),
             self.endpoints.clone(),
