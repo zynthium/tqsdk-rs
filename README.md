@@ -748,22 +748,18 @@ if snapshot.update.chart_ready {
 
 ### 7. 认证管理
 
-#### 切换账号（运行时）
+#### 切换账号
 
-支持在运行时动态切换账号：
+`Client` 表示一次 live 会话。不要在已有 live 会话上替换认证器并复用行情状态；切换账号时应关闭旧 `Client`，再使用新账号创建新的 `Client`。
 
 ```rust
-use tqsdk_rs::{auth::TqAuth, EndpointConfig};
+use tqsdk_rs::Client;
 
-// 创建新的认证器
-let auth_url = EndpointConfig::from_env().auth_url;
-let mut new_auth = TqAuth::new("user2".to_string(), "pass2".to_string(), auth_url);
-new_auth.login().await?;
+client.close().await?;
 
-// 切换认证器
-client.set_auth(new_auth).await;
-
-// 重新初始化行情（使用新账号）
+let mut client = Client::builder("user2", "pass2")
+    .build()
+    .await?;
 client.init_market().await?;
 ```
 

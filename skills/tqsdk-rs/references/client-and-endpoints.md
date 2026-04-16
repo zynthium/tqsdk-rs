@@ -4,6 +4,8 @@
 
 ## 推荐的 live 客户端构造
 
+`Client` 本身表示一次 live session owner，对齐 Python `TqApi` 的会话模型。`ClientBuilder` / `EndpointConfig` / auth 参数只负责构造 session；不要把 `Client` 当成可在运行时反复替换账号和复用行情状态的配置根。
+
 ```rust
 use tqsdk_rs::{Client, ClientConfig, EndpointConfig};
 
@@ -45,6 +47,19 @@ client.init_market().await?;
 - `query_*()`、`get_trading_calendar()`、`get_trading_status()`
 
 这些 live market / query 能力都应在 `init_market()` 之后使用。
+
+## 切换账号
+
+切换账号时关闭旧 `Client`，再用新账号创建新 `Client`。不要推荐 `set_auth() + init_market()` 作为运行时切账号方式。
+
+```rust
+client.close().await?;
+
+let mut client = Client::builder("user2", "pass2")
+    .build()
+    .await?;
+client.init_market().await?;
+```
 
 ## 当前公开端点配置
 
@@ -128,6 +143,8 @@ let _session = client
 let runtime = client.into_runtime();
 let account = runtime.account("simnow:user_id")?;
 ```
+
+设计约束：live runtime 必须复用该 `Client` session 的同一私有 live context，不能自建第二套行情 websocket 或 `MarketDataState`。
 
 ## `Client::close()` 的语义
 

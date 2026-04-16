@@ -43,6 +43,7 @@ breaking cleanup 完成后的公开模型收敛为四条主路径：
 | `compat::TargetPosScheduler` | `runtime.account(\"...\").target_pos_scheduler(\"...\").steps(...).build()` | 调度器同样走 Builder |
 | `quote_channel` / `on_quote` | `client.quote(symbol)` + `wait_update()` / `load()` | Quote 是最新状态，不是事件日志 |
 | `Client::market_state()` | `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}` | 不再暴露底层 `MarketDataState` 容器，也不再要求先取 `TqApi` facade |
+| `Client::set_auth()` 作为运行时切账号方式 | 关闭旧 `Client` 后用新 auth 创建新 `Client` | `Client` 是一次 live session owner，不应在活跃会话上替换 auth 并复用 `DataManager` / `MarketDataState` |
 | `Client::tqapi()` | `Client::{quote,kline_ref,tick_ref,wait_update,wait_update_and_drain}` | live 市场状态入口收口到 `Client` |
 | `Client::series()` | `Client::{get_kline_serial,get_tick_serial,get_kline_data_series,get_tick_data_series}` | live 序列订阅与历史快照下载入口收口到 `Client` |
 | `Client::{kline_history,kline_history_with_focus}` | `Client::{get_kline_data_series,get_tick_data_series}` | 历史窗口 `set_chart` 协议退回内部实现，不再作为公开稳定接口 |

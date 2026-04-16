@@ -88,7 +88,8 @@ Client (facade + builder + market)
 
 ## Breaking Target
 
-- live 主路径已收口到 `Client`：行情状态读取、序列订阅和 query facade 都直接挂在 `Client`；`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。
+- live 主路径已收口到 `Client`：`Client` 应被视为一次 live session owner，对齐 Python `TqApi` 的会话模型；行情状态读取、序列订阅和 query facade 都直接挂在 `Client`，`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。
+- `ClientBuilder` / `ClientConfig` / `TqAuth` 是构造侧概念，不应再引入 public `LiveClient` / `LiveSession` 双对象；如果内部需要聚合 live 资源，应使用私有 `LiveContext`。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；当前已改为创建即生效。
 - `TradeSession` 继续按“状态 vs 事件”分层：
   账户/持仓是 snapshot getter + `wait_update()`。
@@ -107,6 +108,7 @@ Client (facade + builder + market)
 - 背压控制：多个消费通道已改为有界缓冲，慢消费者场景下允许丢弃旧更新。
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - transport 收口：`TqWebsocket`、`TqQuoteWebsocket`、`TqTradeWebsocket` 等原始连接拼装件保持 crate 内部，外部统一从 `Client` / `TradeSession` / `ReplaySession` 进入。
+- live owner：`Client` 私有 live context 应统一拥有 `DataManager`、`MarketDataState`、quote websocket、`SeriesAPI`、`InsAPI` 和 close signal；runtime live adapter 必须复用同一 context，不能自建第二套行情 websocket / state。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
 - 公开入口收口：运行时的公开表面聚焦在 `TqRuntime`、`AccountHandle` 和 Builder 任务类型；adapter、registry、child-order planning 等拼装件保持 crate 内部。
