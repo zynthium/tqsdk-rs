@@ -54,7 +54,6 @@ client.init_market().await?;
 
 如果用户追问 `set_auth()` 是否还能用：它只适合 live 尚未初始化的 `Client`；active 或已关闭的 session 会返回错误。
 如果用户追问 `switch_to_live()`：把它讲成 market mode 切换接口，而不是 re-auth / 切账号接口；当前实现会替换整个 private live context。
-
 ```rust
 client.close().await?;
 

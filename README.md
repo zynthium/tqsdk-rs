@@ -758,7 +758,6 @@ if snapshot.update.chart_ready {
 
 已关闭的 `Client` 不应再通过 `init_market()` 复活；如果需要新的 live 会话，重新创建 `Client`。
 `switch_to_live()` 只应用于 market mode 切换；它会替换整个 private live context，不是 re-auth 或运行时切账号入口。
-
 ```rust
 use tqsdk_rs::Client;
 
