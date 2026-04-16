@@ -327,10 +327,6 @@ impl TqApi {
         }
     }
 
-    pub fn state(&self) -> Arc<MarketDataState> {
-        Arc::clone(&self.state)
-    }
-
     pub fn quote(&self, symbol: impl Into<SymbolId>) -> QuoteRef {
         QuoteRef::new(Arc::clone(&self.state), symbol.into())
     }

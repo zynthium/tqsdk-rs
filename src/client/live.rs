@@ -1,4 +1,3 @@
-use super::Client;
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::ins::InsAPI;
 use crate::marketdata::{MarketDataState, TqApi};
@@ -40,19 +39,5 @@ impl LiveContext {
 
     pub(crate) fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::SeqCst);
-    }
-}
-
-impl Client {
-    pub(crate) fn make_live_context(&self) -> LiveContext {
-        LiveContext::new(DataManagerConfig {
-            default_view_width: self.config.view_width,
-            enable_auto_cleanup: true,
-            ..DataManagerConfig::default()
-        })
-    }
-
-    pub(crate) fn replace_live_context(&mut self) {
-        self.live = self.make_live_context();
     }
 }

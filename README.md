@@ -26,7 +26,8 @@
 - live API 收口到 `Client` 单入口。
   `Client` 直接承载行情状态读取、序列订阅与 query facade；
   `TqApi` 已退出 crate root / prelude / README 主路径；
-  `SeriesAPI`、`InsAPI` 仅保留模块级 advanced path。
+  `SeriesAPI`、`InsAPI` 仅保留模块级 advanced path；
+  `marketdata` 内部装配不再作为对外扩展入口。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out。
   `QuoteSubscription` / `SeriesSubscription` 已是创建即生效。
 - `TradeSession` 按“状态 vs 事件”分层。
@@ -485,7 +486,7 @@ loop {
 }
 ```
 
-`QuoteRef` 是 `MarketDataState` 上的快照句柄，不拥有订阅本身；关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态不再继续推进。
+`QuoteRef` 是当前 live session 上的快照句柄，不拥有订阅本身；关闭 `QuoteSubscription` 后，已有 `QuoteRef` 不会失效，只是状态不再继续推进。
 
 `Quote` 当前已对齐支持 TqSdk 3.9.3 新增的 `open_limit` 字段；该字段目前仅期货合约提供，缺失时按 `0` 处理。
 
@@ -757,7 +758,6 @@ if snapshot.update.chart_ready {
 `Client` 表示一次 live 会话。不要在已有 live 会话上替换认证器并复用行情状态；切换账号时应关闭旧 `Client`，再使用新账号创建新的 `Client`。
 
 已关闭的 `Client` 不应再通过 `init_market()` 复活；如果需要新的 live 会话，重新创建 `Client`。
-`switch_to_live()` 只应用于 market mode 切换；它会替换整个 private live context，不是 re-auth 或运行时切账号入口。
 ```rust
 use tqsdk_rs::Client;
 
@@ -772,18 +772,18 @@ client.init_market().await?;
 #### 权限检查
 
 ```rust
-let auth = client.get_auth().await;
-
-if auth.has_feature("futr") {
+if client.has_feature("futr").await {
     println!("有期货权限");
 }
 
-match auth.has_md_grants(&["SHFE.au2602", "SHFE.ag2512"]) {
+println!("auth_id={}", client.auth_id().await);
+
+match client.check_md_grants(&["SHFE.au2602", "SHFE.ag2512"]).await {
     Ok(()) => println!("有行情权限"),
     Err(err) => println!("权限不足: {}", err),
 }
 
-match auth.has_md_grants(&["SSE.000300"]) {
+match client.check_md_grants(&["SSE.000300"]).await {
     Ok(()) => println!("有指数行情权限"),
     Err(err) => println!("指数权限不足(需 lmt_idx): {}", err),
 }

@@ -10,6 +10,7 @@
 - live 主路径优先 `Client` / `ClientBuilder`。
 - `Client` 是一次 live session owner，对齐 Python `TqApi`；不要新增 public `LiveClient` / `LiveSession` 双对象。
 - 切换账号应关闭旧 `Client` 并创建新 `Client`，不要把 `set_auth()+init_market()` 当作 canonical 路径。
+- 权限检查优先 `Client::{auth_id,has_feature,check_md_grants}`，不要暴露 auth guard 作为主路径。
 - 回放/回测主路径优先 `ReplaySession`。
 - `DataManager` 是 DIFF 状态中心，通知逻辑优先 `subscribe_epoch()` 驱动。
 - `QuoteSubscription` / `SeriesSubscription` 已是 auto-start，`close()` 只负责提前释放资源。
@@ -26,6 +27,7 @@
 - 已被移除的 quote / series / trade callback 或 channel fan-out API
 - runtime `compat::` 目标持仓 facade
 - runtime 自建第二套行情 websocket / `MarketDataState`
+- `Client::set_auth()` / `Client::get_auth()` / `switch_to_live()` 公开入口
 
 ## 常用命令
 

@@ -108,7 +108,7 @@ Client (facade + builder + market)
 - 重连完整性：重连阶段通过临时缓冲校验数据，再合并回主状态。
 - transport 收口：`TqWebsocket`、`TqQuoteWebsocket`、`TqTradeWebsocket` 等原始连接拼装件保持 crate 内部，外部统一从 `Client` / `TradeSession` / `ReplaySession` 进入。
 - live owner：当前由 `Client` 私有 `LiveContext` 统一拥有 `DataManager`、`MarketDataState`、quote websocket、`SeriesAPI`、`InsAPI` 和 close signal；runtime live adapter 复用同一 context，不能自建第二套行情 websocket / state。
-- mode transition：`switch_to_live()` 仅负责 market mode 切换；它会替换整个 private live context，不承担 re-auth 或切账号职责。
+- mode transition：live context 重建属于 `Client` 私有实现细节，不再作为公开 API 暴露，也不承担 re-auth 或切账号职责。
 - 任务所有权：`TaskRegistry` 保证同一 runtime/account/symbol 的目标持仓任务唯一，并阻止冲突的手工下单。
 - 执行解耦：`TargetPosTask` / `TargetPosScheduler` 复用相同任务逻辑，只通过 `ExecutionAdapter` / `MarketAdapter` 切换 live 与 replay runtime 行为。
 - 公开入口收口：运行时的公开表面聚焦在 `TqRuntime`、`AccountHandle` 和 Builder 任务类型；adapter、registry、child-order planning 等拼装件保持 crate 内部。

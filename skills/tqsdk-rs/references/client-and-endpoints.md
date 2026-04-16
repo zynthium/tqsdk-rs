@@ -50,10 +50,7 @@ client.init_market().await?;
 
 ## 切换账号
 
-切换账号时关闭旧 `Client`，再用新账号创建新 `Client`。不要推荐 `set_auth() + init_market()` 作为运行时切账号方式。
-
-如果用户追问 `set_auth()` 是否还能用：它只适合 live 尚未初始化的 `Client`；active 或已关闭的 session 会返回错误。
-如果用户追问 `switch_to_live()`：把它讲成 market mode 切换接口，而不是 re-auth / 切账号接口；当前实现会替换整个 private live context。
+切换账号时关闭旧 `Client`，再用新账号创建新 `Client`。不要推荐 `set_auth() + init_market()` 作为运行时切账号方式；这些入口已经退出公开 API。
 ```rust
 client.close().await?;
 
@@ -159,3 +156,16 @@ let account = runtime.account("simnow:user_id")?;
 - 让该 `Client` session 进入终止态；如需重新进入 live 模式，应创建新 `Client`，不要对已关闭 session 再调用 `init_market()`
 
 普通文档 / 问答里可以把它讲成“退出前显式释放资源”的收尾动作。
+
+## 权限检查
+
+公开权限检查统一走 `Client` facade，不再暴露 auth guard：
+
+```rust
+if client.has_feature("futr").await {
+    println!("有期货权限");
+}
+
+println!("auth_id={}", client.auth_id().await);
+client.check_md_grants(&["SHFE.au2602"]).await?;
+```

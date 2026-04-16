@@ -136,6 +136,7 @@ src/
 - live API 继续收口到 `Client`，不要把新能力重新挂回 `TqApi` / `SeriesAPI` / `InsAPI`。
 - runtime live adapter 必须复用 `Client` 的同一私有 live context，不要再自建第二套行情 websocket / `MarketDataState`。
 - 切换账号应关闭旧 `Client` 并创建新 `Client`；不要把 `set_auth()+init_market()` 写成运行时切账号 canonical 路径。
+- 权限检查优先 `Client::{auth_id,has_feature,check_md_grants}`；不要把 auth guard 暴露回主路径。
 - 修改 `DataManager` merge/query/watch 语义时，要显式考虑向后兼容性。
 - 修改 `DataManager` 通知路径时，继续优先 `subscribe_epoch()` + `get_path_epoch()`，不要为新逻辑重新引入 callback plumbing。
 - 修改重连、背压或消息队列时，要说明是否改变了丢弃策略、顺序语义或完整性保证。

@@ -18,9 +18,7 @@ struct TestAuth;
 #[derive(Default)]
 struct SmTestAuth;
 
-struct NamedTestAuth {
-    auth_id: &'static str,
-}
+struct CapabilityTestAuth;
 
 #[async_trait]
 impl Authenticator for TestAuth {
@@ -109,7 +107,7 @@ impl Authenticator for SmTestAuth {
 }
 
 #[async_trait]
-impl Authenticator for NamedTestAuth {
+impl Authenticator for CapabilityTestAuth {
     fn base_header(&self) -> HeaderMap {
         HeaderMap::new()
     }
@@ -126,12 +124,16 @@ impl Authenticator for NamedTestAuth {
         Ok("wss://example.com".to_string())
     }
 
-    fn has_feature(&self, _feature: &str) -> bool {
-        false
+    fn has_feature(&self, feature: &str) -> bool {
+        feature == "futr"
     }
 
-    fn has_md_grants(&self, _symbols: &[&str]) -> Result<()> {
-        Ok(())
+    fn has_md_grants(&self, symbols: &[&str]) -> Result<()> {
+        if symbols == ["SHFE.au2602"] {
+            Ok(())
+        } else {
+            Err(TqError::permission_denied_futures())
+        }
     }
 
     fn has_td_grants(&self, _symbol: &str) -> Result<()> {
@@ -139,7 +141,7 @@ impl Authenticator for NamedTestAuth {
     }
 
     fn get_auth_id(&self) -> &str {
-        self.auth_id
+        "capability-auth"
     }
 
     fn get_access_token(&self) -> &str {
@@ -370,22 +372,14 @@ async fn close_invalidates_market_wait_paths() {
 }
 
 #[tokio::test]
-async fn set_auth_rejects_active_client_session() {
-    let mut client = build_client_with_market();
+async fn client_exposes_auth_capabilities_without_guard_types() {
+    let client = build_inactive_client_with_auth(CapabilityTestAuth);
 
-    let result = client.set_auth(NamedTestAuth { auth_id: "new-auth" }).await;
-
-    assert!(result.is_err());
-    assert_eq!(client.get_auth_id().await, "");
-}
-
-#[tokio::test]
-async fn set_auth_allows_inactive_client_before_market_init() {
-    let mut client = build_inactive_client();
-
-    client.set_auth(NamedTestAuth { auth_id: "new-auth" }).await.unwrap();
-
-    assert_eq!(client.get_auth_id().await, "new-auth");
+    assert!(client.has_feature("futr").await);
+    assert!(!client.has_feature("sec").await);
+    assert_eq!(client.auth_id().await, "capability-auth");
+    assert!(client.check_md_grants(&["SHFE.au2602"]).await.is_ok());
+    assert!(client.check_md_grants(&["DCE.m2609"]).await.is_err());
 }
 
 #[tokio::test]
@@ -395,7 +389,11 @@ async fn replace_live_context_discards_closed_session_state() {
     let old_dm = Arc::clone(&client.live.dm);
 
     client.close_market().await.unwrap();
-    client.replace_live_context();
+    client.live = super::live::LiveContext::new(crate::datamanager::DataManagerConfig {
+        default_view_width: client.config.view_width,
+        enable_auto_cleanup: true,
+        ..crate::datamanager::DataManagerConfig::default()
+    });
 
     assert!(old_market_state.is_closed());
     assert!(!client.live.market_state.is_closed());
@@ -630,7 +628,13 @@ async fn builder_can_preconfigure_trade_sessions_with_login_options() {
         .await
         .expect("builder should create client with configured login options");
 
-    let session = client.get_trade_session("simnow:user").await.unwrap();
+    let session = client
+        .trade_sessions
+        .read()
+        .unwrap()
+        .get("simnow:user")
+        .cloned()
+        .unwrap();
     let login = session.login_options_for_test();
     assert_eq!(login.front.as_ref().unwrap().broker_id, "9999");
     assert_eq!(login.client_system_info.as_deref(), Some("SYSINFO"));

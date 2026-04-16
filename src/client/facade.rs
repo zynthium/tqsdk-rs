@@ -1,5 +1,5 @@
 use super::{Client, ClientBuilder, ClientConfig, TradeSessionOptions};
-use crate::auth::{Authenticator, BrokerInfo};
+use crate::auth::BrokerInfo;
 use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::download::{DataDownloadOptions, DataDownloadRequest, DataDownloadWriter, DataDownloader};
 use crate::errors::{Result, TqError};
@@ -16,7 +16,6 @@ use chrono::{DateTime, NaiveDate, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use tokio::sync::RwLock;
 
 fn urlsafe_base64_encode(input: &str) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -134,23 +133,15 @@ impl Client {
         &self.endpoints.ins_url
     }
 
-    /// 设置认证器
-    pub async fn set_auth<A: Authenticator + 'static>(&mut self, auth: A) -> Result<()> {
-        if self.live.is_active() || self.live.market_state.is_closed() {
-            return Err(TqError::InternalError(
-                "cannot replace auth on an active or closed Client session; create a new Client instead".to_string(),
-            ));
-        }
-        self.auth = Arc::new(RwLock::new(auth));
-        Ok(())
+    pub async fn has_feature(&self, feature: &str) -> bool {
+        self.auth.read().await.has_feature(feature)
     }
 
-    /// 获取认证器的只读引用
-    pub async fn get_auth(&self) -> tokio::sync::RwLockReadGuard<'_, dyn Authenticator> {
-        self.auth.read().await
+    pub async fn check_md_grants(&self, symbols: &[&str]) -> Result<()> {
+        self.auth.read().await.has_md_grants(symbols)
     }
 
-    pub async fn get_auth_id(&self) -> String {
+    pub async fn auth_id(&self) -> String {
         let auth = self.auth.read().await;
         auth.get_auth_id().to_string()
     }
@@ -520,18 +511,6 @@ impl Client {
         sessions.insert(key, Arc::clone(&session));
 
         Ok(session)
-    }
-
-    /// 注册交易会话
-    pub async fn register_trade_session(&self, key: &str, session: Arc<TradeSession>) {
-        let mut sessions = self.trade_sessions.write().unwrap();
-        sessions.insert(key.to_string(), session);
-    }
-
-    /// 获取交易会话
-    pub async fn get_trade_session(&self, key: &str) -> Option<Arc<TradeSession>> {
-        let sessions = self.trade_sessions.read().unwrap();
-        sessions.get(key).cloned()
     }
 
     pub fn into_runtime(self) -> Arc<TqRuntime> {

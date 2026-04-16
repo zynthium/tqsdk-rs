@@ -41,7 +41,11 @@ pub mod utils;
 pub mod types;
 
 pub mod download;
+#[cfg(clippy)]
+#[doc(hidden)]
 pub mod marketdata;
+#[cfg(not(clippy))]
+pub(crate) mod marketdata;
 pub mod prelude;
 pub mod replay;
 

@@ -297,20 +297,6 @@ impl Client {
         Ok(())
     }
 
-    pub async fn switch_to_live(&mut self) -> Result<()> {
-        self.close_market().await?;
-        self.replace_live_context();
-        self.live.dm.merge_data(
-            json!({
-                "action": { "mode": "real" },
-                "_tqsdk_backtest": null
-            }),
-            true,
-            true,
-        );
-        self.init_market().await
-    }
-
     pub(super) async fn close_market(&self) -> Result<()> {
         self.live.set_active(false);
         self.live.market_state.close();
