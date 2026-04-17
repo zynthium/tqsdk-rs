@@ -43,6 +43,7 @@ pub struct ReplaySession {
     market: Arc<ReplayMarketState>,
     execution: Option<Arc<ReplayExecutionState>>,
     runtime: Option<Arc<TqRuntime>>,
+    runtime_account_keys: Option<Vec<String>>,
     active_trading_day: Option<NaiveDate>,
     active_trading_day_end_nanos: Option<i64>,
 }
@@ -194,6 +195,7 @@ impl ReplaySession {
             market,
             execution: None,
             runtime: None,
+            runtime_account_keys: None,
             active_trading_day: None,
             active_trading_day_end_nanos: None,
         })
@@ -270,14 +272,20 @@ impl ReplaySession {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let account_keys = normalize_runtime_accounts(accounts);
+        if account_keys.is_empty() {
+            return Err(TqError::InvalidParameter("runtime accounts 不能为空".to_string()));
+        }
+
         if let Some(runtime) = &self.runtime {
+            if self.runtime_account_keys.as_ref() != Some(&account_keys) {
+                return Err(TqError::InvalidParameter(
+                    "runtime accounts 必须与首次初始化一致".to_string(),
+                ));
+            }
             return Ok(Arc::clone(runtime));
         }
 
-        let account_keys = accounts
-            .into_iter()
-            .map(|account| account.as_ref().to_string())
-            .collect::<Vec<_>>();
         let execution = Arc::new(ReplayExecutionState::new(
             &account_keys,
             SimBroker::new(account_keys.clone(), self.config.initial_balance),
@@ -287,7 +295,7 @@ impl ReplaySession {
         }
         let market = Arc::new(ReplayMarketAdapter::new(Arc::clone(&self.market)));
         let adapter = Arc::new(ReplayExecutionAdapter::new(
-            account_keys,
+            account_keys.clone(),
             Arc::clone(&execution),
             Arc::clone(&self.market),
             self.bootstrap.clone(),
@@ -296,6 +304,7 @@ impl ReplaySession {
 
         self.execution = Some(execution);
         self.runtime = Some(Arc::clone(&runtime));
+        self.runtime_account_keys = Some(account_keys);
         Ok(runtime)
     }
 
@@ -432,6 +441,21 @@ impl ReplaySession {
             }
         }
     }
+}
+
+fn normalize_runtime_accounts<I, S>(accounts: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut normalized = accounts
+        .into_iter()
+        .map(|account| account.as_ref().trim().to_string())
+        .filter(|account| !account.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
 }
 
 fn preview_bar_open_quote(

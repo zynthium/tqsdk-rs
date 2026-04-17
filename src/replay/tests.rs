@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::errors::TqError;
 use crate::runtime::TargetPosTask;
 use crate::types::{
     DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Kline, OFFSET_CLOSE, OFFSET_OPEN, PRICE_TYPE_ANY,
@@ -132,6 +133,57 @@ async fn replay_session_runtime_can_drive_target_pos_task() {
     assert_eq!(result.final_positions[0].exchange_id, "SHFE");
     assert_eq!(result.final_positions[0].instrument_id, "rb2605");
     assert_eq!(result.final_positions[0].volume_long, 1);
+}
+
+#[tokio::test]
+async fn replay_session_runtime_accepts_same_account_set_in_different_order() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::new(),
+        klines: HashMap::new(),
+        ticks: HashMap::new(),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    let first = session.runtime([" TQSIM ", "OTHER", "TQSIM"]).await.unwrap();
+    let second = session.runtime(["OTHER", "TQSIM"]).await.unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn replay_session_runtime_rejects_mismatched_account_sets() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::new(),
+        klines: HashMap::new(),
+        ticks: HashMap::new(),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    session.runtime(["TQSIM"]).await.unwrap();
+    let err = match session.runtime(["TQSIM", "OTHER"]).await {
+        Ok(_) => panic!("expected mismatched account set to be rejected"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, TqError::InvalidParameter(_)));
 }
 
 #[tokio::test]
