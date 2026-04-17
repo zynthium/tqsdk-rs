@@ -2,7 +2,7 @@ pub use crate::{
     AccountHandle, Client, ClientConfig, DataDownloadAdjType, DataDownloadOptions, DataDownloadRequest,
     DataDownloadWriteMode, DataDownloadWriter, DataDownloader, EndpointConfig, KlineRef, MarketDataUpdates,
     OffsetPriority, OrderDirection, OrderEventStream, PriceMode, QuoteRef, QuoteSubscription, ReplayConfig,
-    ReplaySession, Result, RuntimeResult, SeriesSubscription, TargetPosConfig, TargetPosScheduleStep,
+    ReplayReport, ReplaySession, Result, RuntimeResult, SeriesSubscription, TargetPosConfig, TargetPosScheduleStep,
     TargetPosScheduler, TargetPosTask, TickRef, TqError, TqRuntime, TradeEventRecvError, TradeEventStream,
     TradeFrontConfig, TradeLoginOptions, TradeOnlyEventStream, TradeSession, TradeSessionEvent, TradeSessionEventKind,
     TradeSessionOptions, VolumeSplitPolicy, create_logger_layer, init_logger,
@@ -27,5 +27,13 @@ mod tests {
 
         use crate::prelude::*;
         let _prelude_updates: Option<MarketDataUpdates> = None;
+    }
+
+    #[test]
+    fn root_and_prelude_export_replay_report() {
+        let _root_report: Option<crate::ReplayReport> = None;
+
+        use crate::prelude::*;
+        let _prelude_report: Option<ReplayReport> = None;
     }
 }

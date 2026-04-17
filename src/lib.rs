@@ -95,7 +95,7 @@ pub use errors::{Result, TqError};
 pub use logger::{create_logger_layer, init_logger};
 pub use marketdata::{KlineRef, MarketDataUpdates, QuoteRef, TickRef};
 pub use quote::QuoteSubscription;
-pub use replay::{ReplayConfig, ReplaySession};
+pub use replay::{ReplayConfig, ReplayReport, ReplaySession};
 pub use runtime::{
     AccountHandle, OffsetPriority, OrderDirection, PriceMode, RuntimeResult, TargetPosConfig, TargetPosScheduleStep,
     TargetPosScheduler, TargetPosTask, TqRuntime, VolumeSplitPolicy,

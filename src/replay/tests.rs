@@ -1,13 +1,13 @@
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::errors::TqError;
 use crate::runtime::TargetPosTask;
 use crate::types::{
-    DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Kline, OFFSET_CLOSE, OFFSET_OPEN, PRICE_TYPE_ANY,
-    PRICE_TYPE_LIMIT, Tick,
+    Account, DIRECTION_BUY, DIRECTION_SELL, InsertOrderRequest, Kline, OFFSET_CLOSE, OFFSET_OPEN, PRICE_TYPE_ANY,
+    PRICE_TYPE_LIMIT, Tick, Trade,
 };
 use async_trait::async_trait;
 use tokio::time::{sleep, timeout};
@@ -18,12 +18,100 @@ use super::providers::{ContinuousContractProvider, ContinuousMapping};
 use super::quote::{QuoteSelection, QuoteSynthesizer};
 use super::series::SeriesStore;
 use super::sim::SimBroker;
-use super::{BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayQuote, ReplaySession};
+use super::{
+    BacktestResult, BarState, DailySettlementLog, InstrumentMetadata, ReplayConfig, ReplayQuote, ReplaySession,
+};
 
 struct FakeHistoricalSource {
     meta: HashMap<String, InstrumentMetadata>,
     klines: HashMap<(String, i64), Vec<Kline>>,
     ticks: HashMap<String, Vec<Tick>>,
+}
+
+fn sample_trade(
+    exchange_id: &str,
+    instrument_id: &str,
+    direction: &str,
+    offset: &str,
+    volume: i64,
+    price: f64,
+    trade_date_time: i64,
+) -> Trade {
+    Trade {
+        seqno: 0,
+        user_id: "TQSIM".to_string(),
+        trade_id: String::new(),
+        exchange_id: exchange_id.to_string(),
+        instrument_id: instrument_id.to_string(),
+        order_id: String::new(),
+        exchange_trade_id: String::new(),
+        direction: direction.to_string(),
+        offset: offset.to_string(),
+        volume,
+        price,
+        trade_date_time,
+        commission: 0.0,
+        epoch: None,
+    }
+}
+
+fn account_with_balance(pre_balance: f64, balance: f64) -> Account {
+    Account {
+        user_id: "TQSIM".to_string(),
+        currency: "CNY".to_string(),
+        available: balance,
+        balance,
+        close_profit: 0.0,
+        commission: 0.0,
+        ctp_available: balance,
+        ctp_balance: balance,
+        deposit: 0.0,
+        float_profit: 0.0,
+        frozen_commission: 0.0,
+        frozen_margin: 0.0,
+        frozen_premium: 0.0,
+        margin: 0.0,
+        market_value: 0.0,
+        position_profit: 0.0,
+        pre_balance,
+        premium: 0.0,
+        risk_ratio: 0.0,
+        static_balance: balance,
+        withdraw: 0.0,
+        epoch: None,
+    }
+}
+
+#[test]
+fn replay_report_counts_days_and_trades() {
+    let result = BacktestResult {
+        settlements: vec![
+            DailySettlementLog {
+                trading_day: NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
+                account: account_with_balance(10_000_000.0, 10_000_000.0),
+                positions: vec![],
+                trades: vec![],
+            },
+            DailySettlementLog {
+                trading_day: NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(),
+                account: account_with_balance(10_100_000.0, 10_100_000.0),
+                positions: vec![],
+                trades: vec![],
+            },
+        ],
+        final_accounts: vec![],
+        final_positions: vec![],
+        trades: vec![
+            sample_trade("SHFE", "rb2605", "BUY", "OPEN", 1, 3_200.0, 1_000),
+            sample_trade("SHFE", "rb2605", "SELL", "CLOSE", 1, 3_210.0, 2_000),
+        ],
+        symbol_volume_multipliers: BTreeMap::from([("SHFE.rb2605".to_string(), 10)]),
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_eq!(report.trade_count, 2);
+    assert_eq!(report.trading_day_count, 2);
 }
 
 #[async_trait]
