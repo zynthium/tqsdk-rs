@@ -46,6 +46,8 @@ src/
 - `Client` 应视为一次 live session owner，对齐 Python `TqApi` 的会话模型；不要新增 public `LiveClient` / `LiveSession` 双对象。
 - `ClientBuilder` / `ClientConfig` / `TqAuth` 是构造侧概念；不要把 `Client` 降级为可反复切换 active live context 的配置根。
 - `ReplaySession` 是唯一推荐的公开回放/回测入口。
+- `ReplaySession` 内核支持按交易日应用辅助元数据 patch；当前已覆盖可注入 historical source 的主连 `underlying_symbol` 日切，但 `Client::create_backtest_session()` 默认历史源尚未接入历史主连映射抓取。不要把当前状态写成完整的 Python `TqBacktestContinuous` 生产等价物。
+- 当前 replay 明确不覆盖股票回放 / T+1、分红送股时间线、时间驱动 `TqReplay` 等价物或内建 report metrics。
 - `DataManager` 是 DIFF 协议状态中心；merge 通知继续以 `subscribe_epoch()` 为主。
 - WebSocket 层继续保持 I/O actor 模式，避免跨 `await` 持锁。
 - `QuoteSubscription` 和 `SeriesSubscription` 已是 auto-start；创建后立即生效，`close()` 只负责提前释放资源。

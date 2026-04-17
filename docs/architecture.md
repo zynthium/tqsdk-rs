@@ -95,6 +95,13 @@ Client (facade + builder + market)
   订单/成交/通知/异步错误是可靠事件流。
 - `ReplaySession` 与 `TqRuntime` 保持独立主路径，不为了 live API 对称性而重新缠回 `Client`。
 
+## Replay Capability Boundary
+
+- 当前 production replay 聚焦期货 / 商品期权回放，已覆盖显式 `ReplaySession` 入口、一步一推进的时间语义、隐式 quote driver、日切结算，以及 runtime / `TargetPosTask` 集成。
+- replay 内核现在支持辅助时间线：`HistoricalSource::load_auxiliary_events()` 可按交易日提供辅助事件，`ReplaySession` 会在建立或切换交易日时应用这些 patch。当前已用于主连 `underlying_symbol` 日切。
+- 当前仓库仍没有默认的“历史主连映射”上游抓取路径；`Client::create_backtest_session()` 所使用的 `SdkHistoricalSource` 目前不会自动拉取历史 continuous mapping，因此这项能力现阶段主要面向可注入 / 可测试的 historical source。
+- 当前明确不覆盖：股票回放 / T+1 股票模拟、分红送股时间线注入、时间驱动的 `TqReplay` 等价物、内建 report metrics。
+
 ## 关键设计模式
 
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
@@ -114,6 +121,7 @@ Client (facade + builder + market)
 - 公开入口收口：运行时的公开表面聚焦在 `TqRuntime`、`AccountHandle` 和 Builder 任务类型；adapter、registry、child-order planning 等拼装件保持 crate 内部。
 - 回测入口收敛：公开回测路径统一通过 `Client::create_backtest_session` 构造 `ReplaySession`，不再维持独立 `BacktestHandle` facade。
 - 回放实现收口：`ReplayKernel`、quote 合成器、`SimBroker` 等回放拼装件属于内部实现细节；公开回测入口聚焦在 `ReplaySession` 与返回的 handles/result。
+- replay 辅助时间线：`HistoricalSource` 可以提供按交易日排序的辅助事件，`ReplaySession` 在交易日建立 / 切换时原子应用这些 patch；这避免把主连切换或其他未来 replay 扩展重新塞回 quote snapshot plumbing。
 - 订阅生命周期：`InsAPI` 的交易状态订阅按 symbol 做引用计数，receiver 释放后会自动回收订阅意图。
 - 交易状态分层：`TradeSession` 以 DataManager epoch 驱动内部 watcher，再用 path epoch 区分账户/持仓快照与可靠订单/成交事件。
 - breaking 目标：`TradeSession` 的通知与异步错误同样并入可靠事件流；账户/持仓相关 callback/channel 不再保留。

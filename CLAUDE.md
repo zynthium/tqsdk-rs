@@ -12,6 +12,8 @@
 - 切换账号应关闭旧 `Client` 并创建新 `Client`，不要把 `set_auth()+init_market()` 当作 canonical 路径。
 - 权限检查优先 `Client::{auth_id,has_feature,check_md_grants}`，不要暴露 auth guard 作为主路径。
 - 回放/回测主路径优先 `ReplaySession`。
+- replay 内核支持按交易日应用辅助元数据 patch；当前已覆盖可注入 historical source 的主连 `underlying_symbol` 日切，但默认 `Client::create_backtest_session()` 历史源还不会自动抓历史主连映射。
+- 当前 replay 非目标仍包括股票回放 / T+1、分红送股时间线、时间驱动 `TqReplay` 等价物和内建 report metrics。
 - `DataManager` 是 DIFF 状态中心，通知逻辑优先 `subscribe_epoch()` 驱动。
 - `QuoteSubscription` / `SeriesSubscription` 已是 auto-start，`close()` 只负责提前释放资源。
 - market ref 新代码优先使用 `try_load()` / `snapshot()` / `is_ready()`；`load()` 仅作为兼容 convenience API。

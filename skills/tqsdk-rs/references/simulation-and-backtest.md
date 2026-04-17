@@ -73,6 +73,13 @@ println!("trades={}", result.trades.len());
 - 只看 replay quote 时，通常先 `quote(symbol)` 就够
 - runtime 下单也会为未显式订阅的 symbol 建立必要的 quote 驱动
 
+## 当前能力边界
+
+- 当前 replay / backtest 主路径聚焦期货 / 商品期权。
+- replay 内核已支持日切结算，以及按交易日应用辅助元数据 patch；这层能力现在可用于主连 `underlying_symbol` 日切。
+- 默认 `Client::create_backtest_session()` 历史源还不会自动抓取历史主连映射；如果要依赖 continuous mapping 时间线，当前应使用可注入的 historical source 或测试源。
+- 当前还不覆盖：股票回放 / T+1、分红送股时间线、时间驱动 `TqReplay` 等价物、内建 report metrics。
+
 ## replay runtime
 
 回测下的 target-pos 入口：
