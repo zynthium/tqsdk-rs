@@ -10,7 +10,10 @@ use chrono::{DateTime, Utc};
 use reqwest::header::HeaderMap;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fs::{self, File};
 use std::future::Future;
+use std::io::Write;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -147,6 +150,74 @@ fn sample_tick(id: i64, price: f64) -> Tick {
         open_interest: id * 100,
         epoch: None,
     }
+}
+
+fn write_native_i64(file: &mut File, value: i64) {
+    file.write_all(&value.to_ne_bytes()).expect("write i64 should succeed");
+}
+
+fn write_native_f64(file: &mut File, value: f64) {
+    file.write_all(&value.to_ne_bytes()).expect("write f64 should succeed");
+}
+
+fn write_python_kline_cache_file(dir: &Path, symbol: &str, dur_nano: i64, rows: &[Kline]) {
+    let start_id = rows.first().expect("rows should not be empty").id;
+    let end_id = rows.last().expect("rows should not be empty").id + 1;
+    let path = dir.join(format!("{symbol}.{dur_nano}.{start_id}.{end_id}"));
+    let mut file = File::create(path).expect("create kline cache file should succeed");
+    for row in rows {
+        write_native_i64(&mut file, row.id);
+        write_native_i64(&mut file, row.datetime);
+        write_native_f64(&mut file, row.open);
+        write_native_f64(&mut file, row.high);
+        write_native_f64(&mut file, row.low);
+        write_native_f64(&mut file, row.close);
+        write_native_f64(&mut file, row.volume as f64);
+        write_native_f64(&mut file, row.open_oi as f64);
+        write_native_f64(&mut file, row.close_oi as f64);
+    }
+    file.flush().expect("flush kline cache file should succeed");
+}
+
+fn write_python_tick_cache_file(dir: &Path, symbol: &str, rows: &[Tick], five_level: bool) {
+    let start_id = rows.first().expect("rows should not be empty").id;
+    let end_id = rows.last().expect("rows should not be empty").id + 1;
+    let path = dir.join(format!("{symbol}.0.{start_id}.{end_id}"));
+    let mut file = File::create(path).expect("create tick cache file should succeed");
+    for row in rows {
+        write_native_i64(&mut file, row.id);
+        write_native_i64(&mut file, row.datetime);
+        write_native_f64(&mut file, row.last_price);
+        write_native_f64(&mut file, row.highest);
+        write_native_f64(&mut file, row.lowest);
+        write_native_f64(&mut file, row.average);
+        write_native_f64(&mut file, row.volume as f64);
+        write_native_f64(&mut file, row.amount);
+        write_native_f64(&mut file, row.open_interest as f64);
+        write_native_f64(&mut file, row.bid_price1);
+        write_native_f64(&mut file, row.bid_volume1 as f64);
+        write_native_f64(&mut file, row.ask_price1);
+        write_native_f64(&mut file, row.ask_volume1 as f64);
+        if five_level {
+            write_native_f64(&mut file, row.bid_price2);
+            write_native_f64(&mut file, row.bid_volume2 as f64);
+            write_native_f64(&mut file, row.ask_price2);
+            write_native_f64(&mut file, row.ask_volume2 as f64);
+            write_native_f64(&mut file, row.bid_price3);
+            write_native_f64(&mut file, row.bid_volume3 as f64);
+            write_native_f64(&mut file, row.ask_price3);
+            write_native_f64(&mut file, row.ask_volume3 as f64);
+            write_native_f64(&mut file, row.bid_price4);
+            write_native_f64(&mut file, row.bid_volume4 as f64);
+            write_native_f64(&mut file, row.ask_price4);
+            write_native_f64(&mut file, row.ask_volume4 as f64);
+            write_native_f64(&mut file, row.bid_price5);
+            write_native_f64(&mut file, row.bid_volume5 as f64);
+            write_native_f64(&mut file, row.ask_price5);
+            write_native_f64(&mut file, row.ask_volume5 as f64);
+        }
+    }
+    file.flush().expect("flush tick cache file should succeed");
 }
 
 async fn build_series_subscription(message_queue_capacity: usize) -> SeriesSubscription {
@@ -317,6 +388,58 @@ async fn kline_data_series_by_datetime_returns_cached_data_without_network() {
 }
 
 #[tokio::test]
+async fn kline_data_series_reads_python_style_raw_cache_files_without_reencoding() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
+
+    let symbol = "SHFE.au2602";
+    let duration = 1_000_000_000i64;
+    let test_cache_dir = unique_test_cache_dir("python_raw_kline_cache_hit");
+    fs::create_dir_all(&test_cache_dir).expect("create cache dir should succeed");
+    write_python_kline_cache_file(
+        &test_cache_dir,
+        symbol,
+        duration,
+        &[
+            sample_kline(1000, 10.0),
+            sample_kline(1001, 11.0),
+            sample_kline(1002, 12.0),
+            sample_kline(1003, 13.0),
+        ],
+    );
+    api.data_series_cache = Arc::new(DataSeriesCache::new(Some(test_cache_dir.clone())));
+
+    let start_dt = DateTime::<Utc>::from_timestamp_nanos(1001 * 1_000_000_000);
+    let end_dt = DateTime::<Utc>::from_timestamp_nanos(1003 * 1_000_000_000);
+    let out = api
+        .kline_data_series(symbol, StdDuration::from_secs(1), start_dt, end_dt)
+        .await
+        .expect("python-style raw kline cache should satisfy history request");
+
+    assert_eq!(out.iter().map(|kline| kline.id).collect::<Vec<_>>(), vec![1001, 1002]);
+    assert_eq!(out[0].close, 11.0);
+    assert_eq!(out[1].close, 12.0);
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
 async fn kline_data_series_by_datetime_cache_miss_should_trigger_fetch_path() {
     let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
     let ws = Arc::new(TqQuoteWebsocket::new(
@@ -470,6 +593,61 @@ async fn tick_data_series_returns_cached_data_without_network() {
         .expect("tick cache hit should not require websocket fetch");
 
     assert_eq!(out.iter().map(|tick| tick.id).collect::<Vec<_>>(), vec![1000, 1001]);
+
+    let _ = std::fs::remove_dir_all(test_cache_dir);
+}
+
+#[tokio::test]
+async fn tick_data_series_reads_python_style_raw_cache_files_without_reencoding() {
+    let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+    let ws = Arc::new(TqQuoteWebsocket::new(
+        "wss://example.com".to_string(),
+        Arc::clone(&dm),
+        Arc::new(MarketDataState::default()),
+        WebSocketConfig::default(),
+    ));
+    ws.force_send_failure_for_test();
+    let auth: Arc<RwLock<dyn Authenticator>> = Arc::new(RwLock::new(TestAuth::with_features(&["tq_dl"])));
+    let mut api = SeriesAPI::new_with_cache_policy(
+        dm,
+        ws,
+        auth,
+        SeriesCachePolicy {
+            enabled: true,
+            ..SeriesCachePolicy::default()
+        },
+    );
+
+    let symbol = "DCE.m2609";
+    let test_cache_dir = unique_test_cache_dir("python_raw_tick_cache_hit");
+    fs::create_dir_all(&test_cache_dir).expect("create cache dir should succeed");
+    write_python_tick_cache_file(
+        &test_cache_dir,
+        symbol,
+        &[
+            sample_tick(1000, 10.0),
+            sample_tick(1001, 11.0),
+            sample_tick(1002, 12.0),
+        ],
+        false,
+    );
+    api.data_series_cache = Arc::new(DataSeriesCache::new(Some(test_cache_dir.clone())));
+
+    let out = api
+        .tick_data_series(
+            symbol,
+            DateTime::<Utc>::from_timestamp_nanos(1000 * 100),
+            DateTime::<Utc>::from_timestamp_nanos(1002 * 100),
+        )
+        .await
+        .expect("python-style raw tick cache should satisfy history request");
+
+    assert_eq!(out.iter().map(|tick| tick.id).collect::<Vec<_>>(), vec![1000, 1001]);
+    assert!(
+        out[0].bid_price2.is_nan(),
+        "one-level tick cache should not fabricate level-2 depth"
+    );
+    assert_eq!(out[0].ask_volume1, 21);
 
     let _ = std::fs::remove_dir_all(test_cache_dir);
 }

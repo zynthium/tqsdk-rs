@@ -563,6 +563,7 @@ mod tests {
     use super::*;
     use crate::marketdata::TqApi;
     use serde_json::json;
+    use tokio::time::{Duration, timeout};
 
     fn test_runtime(dm: Arc<DataManager>, market_state: Arc<MarketDataState>) -> QuoteRuntime {
         QuoteRuntime {
@@ -673,5 +674,119 @@ mod tests {
             .expect("tick should be visible before handle_rtn_data returns");
         assert_eq!(tick.id, 7);
         assert_eq!(tick.last_price, 501.5);
+    }
+
+    #[tokio::test]
+    async fn handle_rtn_data_releases_epoch_and_wait_update_only_after_completed_merge() {
+        let dm = Arc::new(DataManager::new(HashMap::new(), DataManagerConfig::default()));
+        let market_state = Arc::new(MarketDataState::default());
+        let runtime = test_runtime(Arc::clone(&dm), Arc::clone(&market_state));
+        let api = TqApi::new(Arc::clone(&market_state));
+        let wait_api = api.clone();
+        let quote_ref = api.quote("SHFE.au2602");
+        let mut epoch_rx = dm.subscribe_epoch();
+        let ws = Arc::new(TqWebsocket::new(
+            "ws://127.0.0.1/".to_string(),
+            WebSocketConfig::default(),
+        ));
+
+        let wait_task = tokio::spawn(async move {
+            wait_api
+                .wait_update_and_drain()
+                .await
+                .expect("wait_update should succeed")
+        });
+        let epoch_task = tokio::spawn(async move {
+            epoch_rx.changed().await.expect("epoch receiver should be notified");
+            *epoch_rx.borrow_and_update()
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!wait_task.is_finished(), "wait_update should stay blocked before merge");
+        assert!(
+            !epoch_task.is_finished(),
+            "epoch receiver should stay blocked before merge"
+        );
+
+        handle_rtn_data(
+            &ws,
+            &runtime,
+            json!({
+                "aid": "rtn_data",
+                "data": [{
+                    "quotes": {
+                        "SHFE.au2602": {
+                            "instrument_id": "SHFE.au2602",
+                            "datetime": "2024-01-01 09:00:00.000000",
+                            "last_price": 501.0,
+                            "pre_settlement": 500.0
+                        }
+                    },
+                    "klines": {
+                        "SHFE.au2602": {
+                            "60000000000": {
+                                "last_id": 1,
+                                "data": {
+                                    "1": {
+                                        "datetime": 1_000_000_000i64,
+                                        "open": 500.0,
+                                        "close": 501.0,
+                                        "high": 502.0,
+                                        "low": 499.0,
+                                        "open_oi": 10,
+                                        "close_oi": 11,
+                                        "volume": 100
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "ticks": {
+                        "SHFE.au2602": {
+                            "last_id": 7,
+                            "data": {
+                                "7": {
+                                    "datetime": 1_000_000_123i64,
+                                    "last_price": 501.5
+                                }
+                            }
+                        }
+                    }
+                }]
+            }),
+        )
+        .await;
+
+        let epoch = timeout(Duration::from_millis(100), epoch_task)
+            .await
+            .expect("epoch wait should finish after completed merge")
+            .expect("epoch task should not panic");
+        assert_eq!(epoch, 1);
+        assert_eq!(
+            dm.get_by_path(&["quotes", "SHFE.au2602", "last_price"]),
+            Some(json!(501.0))
+        );
+        assert_eq!(dm.get_path_epoch(&["quotes", "SHFE.au2602"]), 1);
+
+        let updates = timeout(Duration::from_millis(100), wait_task)
+            .await
+            .expect("wait_update should finish after completed merge")
+            .expect("wait task should not panic");
+        assert_eq!(updates.quotes, vec![SymbolId::from("SHFE.au2602")]);
+        assert_eq!(
+            updates.klines,
+            vec![KlineKey {
+                symbol: SymbolId::from("SHFE.au2602"),
+                duration_nanos: 60_000_000_000,
+            }]
+        );
+        assert_eq!(updates.ticks, vec![SymbolId::from("SHFE.au2602")]);
+
+        let quote = quote_ref
+            .try_load()
+            .await
+            .expect("quote snapshot should be ready once wait_update returns");
+        assert_eq!(quote.last_price, 501.0);
+        assert_eq!(quote.change, 1.0);
     }
 }
