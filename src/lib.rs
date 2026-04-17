@@ -15,6 +15,9 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // 如需 SDK 日志，请显式初始化；build() 不会自动抢占全局 tracing 配置。
+//!     // tqsdk_rs::init_logger("info", true);
+//!
 //!     let mut client = Client::builder("username", "password")
 //!         .config(ClientConfig::default())
 //!         .endpoints(EndpointConfig::from_env())
@@ -41,11 +44,11 @@ pub mod utils;
 pub mod types;
 
 pub mod download;
-#[cfg(clippy)]
+#[cfg(feature = "internal-bench")]
 #[doc(hidden)]
 pub mod marketdata;
-#[cfg(not(clippy))]
-pub(crate) mod marketdata;
+#[cfg(not(feature = "internal-bench"))]
+mod marketdata;
 pub mod prelude;
 pub mod replay;
 
@@ -90,7 +93,7 @@ pub use download::{
 };
 pub use errors::{Result, TqError};
 pub use logger::{create_logger_layer, init_logger};
-pub use marketdata::{KlineRef, QuoteRef, TickRef};
+pub use marketdata::{KlineRef, MarketDataUpdates, QuoteRef, TickRef};
 pub use quote::QuoteSubscription;
 pub use replay::{ReplayConfig, ReplaySession};
 pub use runtime::{
@@ -100,7 +103,7 @@ pub use runtime::{
 pub use series::SeriesSubscription;
 pub use trade_session::{
     OrderEventStream, TradeEventRecvError, TradeEventStream, TradeFrontConfig, TradeLoginOptions, TradeOnlyEventStream,
-    TradeSession, TradeSessionEventKind,
+    TradeSession, TradeSessionEvent, TradeSessionEventKind,
 };
 pub use types::*; // SeriesData 和 UpdateInfo 已在此导出
 

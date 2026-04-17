@@ -9,8 +9,11 @@ use crate::websocket::WebSocketConfig;
 use async_trait::async_trait;
 use reqwest::header::HeaderMap;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tracing_subscriber::prelude::*;
 
 #[derive(Default)]
 struct TestAuth;
@@ -147,6 +150,66 @@ impl Authenticator for CapabilityTestAuth {
     fn get_access_token(&self) -> &str {
         ""
     }
+}
+
+#[test]
+fn client_market_accessors_use_str_signatures() {
+    let _quote_getter: fn(&Client, &str) -> crate::QuoteRef = Client::quote;
+    let _kline_getter: fn(&Client, &str, Duration) -> crate::KlineRef = Client::kline_ref;
+    let _tick_getter: fn(&Client, &str) -> crate::TickRef = Client::tick_ref;
+}
+
+#[test]
+fn client_query_and_download_facades_remain_public() {
+    fn _query_quotes<'a>(client: &'a Client) -> Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send + 'a>> {
+        Box::pin(client.query_quotes(None, None, None, None, None))
+    }
+
+    fn _spawn_downloader(client: &Client, request: crate::DataDownloadRequest) -> Result<crate::DataDownloader> {
+        client.spawn_data_downloader(request)
+    }
+
+    fn _spawn_downloader_with_options(
+        client: &Client,
+        request: crate::DataDownloadRequest,
+        options: crate::DataDownloadOptions,
+    ) -> Result<crate::DataDownloader> {
+        client.spawn_data_downloader_with_options(request, options)
+    }
+
+    fn _spawn_downloader_to_writer(
+        client: &Client,
+        request: crate::DataDownloadRequest,
+        writer: crate::DataDownloadWriter,
+        options: crate::DataDownloadOptions,
+    ) -> Result<crate::DataDownloader> {
+        client.spawn_data_downloader_to_writer(request, writer, options)
+    }
+
+    let _ = (
+        _query_quotes,
+        _spawn_downloader,
+        _spawn_downloader_with_options,
+        _spawn_downloader_to_writer,
+    );
+}
+
+#[tokio::test]
+async fn client_builder_does_not_init_global_logger_implicitly() {
+    let _client = Client::builder("tester", "secret")
+        .auth(TestAuth)
+        .build()
+        .await
+        .expect("client should build with injected auth");
+
+    let init_result = tracing_subscriber::registry()
+        .with(crate::create_logger_layer("info", true))
+        .try_init();
+
+    assert!(
+        init_result.is_ok(),
+        "builder should not pre-initialize the global tracing subscriber"
+    );
 }
 
 fn build_client_with_market() -> Client {

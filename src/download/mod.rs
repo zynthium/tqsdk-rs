@@ -265,11 +265,11 @@ impl DataDownloader {
         })
     }
 
-    pub fn spawn(series: Arc<SeriesAPI>, request: DataDownloadRequest) -> Result<Self> {
+    pub(crate) fn spawn(series: Arc<SeriesAPI>, request: DataDownloadRequest) -> Result<Self> {
         Self::spawn_with_source(series, request)
     }
 
-    pub fn spawn_with_options(
+    pub(crate) fn spawn_with_options(
         series: Arc<SeriesAPI>,
         request: DataDownloadRequest,
         options: DataDownloadOptions,
@@ -277,7 +277,7 @@ impl DataDownloader {
         Self::spawn_with_source_and_options(series, request, options)
     }
 
-    pub fn spawn_to_writer(
+    pub(crate) fn spawn_to_writer(
         series: Arc<SeriesAPI>,
         request: DataDownloadRequest,
         writer: DataDownloadWriter,

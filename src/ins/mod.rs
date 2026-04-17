@@ -24,7 +24,7 @@ use tokio::time::{Duration, Instant, MissedTickBehavior};
 use uuid::Uuid;
 
 /// 合约查询与基础数据接口
-pub struct InsAPI {
+pub(crate) struct InsAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     trading_status_ws: Option<Arc<TqTradingStatusWebsocket>>,
