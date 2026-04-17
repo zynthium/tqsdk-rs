@@ -937,7 +937,6 @@ fn datamanager_watchers_same_path_cancel_independently() {
     let mut first = dm.watch_register(path.clone());
     let second = dm.watch_register(path.clone());
     let rx1 = first.receiver().clone();
-    let rx2 = second.receiver().clone();
 
     assert!(first.cancel());
     assert_eq!(
@@ -959,7 +958,7 @@ fn datamanager_watchers_same_path_cancel_independently() {
     );
 
     assert!(rx1.try_recv().is_err());
-    assert!(rx2.try_recv().is_ok());
+    assert!(second.receiver().try_recv().is_ok());
 
     drop(second);
     assert!(
@@ -1015,7 +1014,6 @@ fn data_watch_handle_drop_unregisters_its_own_watcher_only() {
     let path_key = path.join(".");
     let first = dm.watch_handle(path.clone());
     let second = dm.watch_handle(path.clone());
-    let rx2 = second.receiver().clone();
 
     drop(first);
     assert_eq!(
@@ -1035,12 +1033,60 @@ fn data_watch_handle_drop_unregisters_its_own_watcher_only() {
         true,
         true,
     );
-    assert!(rx2.try_recv().is_ok());
+    assert!(second.receiver().try_recv().is_ok());
 
     drop(second);
     assert!(
         !dm.watchers.read().unwrap().contains_key(&path_key),
         "dropping the final handle should unregister the remaining watcher"
+    );
+}
+
+#[test]
+fn data_watch_handle_temporary_receiver_clone_stays_active() {
+    let mut initial_data = HashMap::new();
+    initial_data.insert("quotes".to_string(), json!({}));
+    let dm = DataManager::new(initial_data, DataManagerConfig::default());
+
+    let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
+    let path_key = path.join(".");
+    let rx = dm.watch_handle(path.clone()).receiver().clone();
+
+    assert_eq!(
+        dm.watchers.read().unwrap().get(&path_key).map(Vec::len),
+        Some(1),
+        "temporary handle drop should keep watcher while receiver clone is alive"
+    );
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+    assert!(rx.try_recv().is_ok());
+
+    drop(rx);
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 501.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    assert!(
+        !dm.watchers.read().unwrap().contains_key(&path_key),
+        "closed receiver clones should be pruned on subsequent notify_watchers"
     );
 }
 

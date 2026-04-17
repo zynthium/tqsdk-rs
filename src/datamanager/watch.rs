@@ -121,6 +121,10 @@ impl WatchRegistration {
 }
 
 impl DataWatchHandle {
+    /// Borrowed access to the underlying receiver.
+    ///
+    /// This does not transfer ownership of the registration. If the handle is
+    /// dropped and no extra receiver clones exist, the watcher is unregistered.
     pub fn receiver(&self) -> &Receiver<Value> {
         self.registration.receiver()
     }
@@ -129,6 +133,10 @@ impl DataWatchHandle {
         self.registration.cancel()
     }
 
+    /// Transfer ownership into a standalone receiver.
+    ///
+    /// This detaches receiver usage from handle lifetime and keeps legacy
+    /// `watch()` behavior.
     pub fn into_receiver(self) -> Receiver<Value> {
         self.registration.into_receiver()
     }
@@ -136,7 +144,9 @@ impl DataWatchHandle {
 
 impl Drop for WatchRegistration {
     fn drop(&mut self) {
-        let _ = self.cancel();
+        if self.rx.receiver_count() <= 1 {
+            let _ = self.cancel();
+        }
     }
 }
 
