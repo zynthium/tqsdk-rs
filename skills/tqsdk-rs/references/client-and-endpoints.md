@@ -24,6 +24,14 @@ client.init_market().await?;
 
 如果用户没有特别要求，优先推荐 builder 风格，而不是直接把 `Client::new(...)` 当主写法。
 
+如果要看到 SDK 日志，需显式调用：
+
+```rust
+tqsdk_rs::init_logger("info", true);
+```
+
+不要暗示 `ClientBuilder::build()` 会自动初始化 tracing；SDK 不再抢占宿主应用的全局 subscriber。
+
 ## `ClientConfig` 里值得提的项
 
 - `log_level`

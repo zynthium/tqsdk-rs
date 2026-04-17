@@ -134,9 +134,12 @@ src/
 - `skills/tqsdk-rs/` 是当前 public shape 的知识包，不是历史归档；当架构、公开 API、README canonical 路径、示例、迁移建议或 agent 规则变化时，要同步更新。
 - 如果本次改动删除或替换了 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
 - live API 继续收口到 `Client`，不要把新能力重新挂回 `TqApi` / `SeriesAPI` / `InsAPI`。
+- root / `prelude` 的 canonical contract 继续包含 `TradeSessionEvent` 与 `MarketDataUpdates`，不要让主路径用户被迫回退到内部模块命名空间。
+- `SeriesAPI` / `InsAPI` 已退回 crate 内部装配细节；query / series / downloader 主路径应继续收口到 `Client` facade。
 - runtime live adapter 必须复用 `Client` 的同一私有 live context，不要再自建第二套行情 websocket / `MarketDataState`。
 - 切换账号应关闭旧 `Client` 并创建新 `Client`；不要把 `set_auth()+init_market()` 写成运行时切账号 canonical 路径。
 - 权限检查优先 `Client::{auth_id,has_feature,check_md_grants}`；不要把 auth guard 暴露回主路径。
+- `ClientBuilder::build()` 不应隐式初始化 tracing；如需 SDK 日志，请显式调用 `init_logger()` 或组合 `create_logger_layer()`。
 - 修改 `DataManager` merge/query/watch 语义时，要显式考虑向后兼容性。
 - 修改 `DataManager` 通知路径时，继续优先 `subscribe_epoch()` + `get_path_epoch()`，不要为新逻辑重新引入 callback plumbing。
 - 修改重连、背压或消息队列时，要说明是否改变了丢弃策略、顺序语义或完整性保证。

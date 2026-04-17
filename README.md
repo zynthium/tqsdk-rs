@@ -26,7 +26,7 @@
 - live API 收口到 `Client` 单入口。
   `Client` 直接承载行情状态读取、序列订阅与 query facade；
   `TqApi` 已退出 crate root / prelude / README 主路径；
-  `SeriesAPI`、`InsAPI` 仅保留模块级 advanced path；
+  `SeriesAPI`、`InsAPI` 已退回 crate 内部装配细节；
   `marketdata` 内部装配不再作为对外扩展入口。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out。
   `QuoteSubscription` / `SeriesSubscription` 已是创建即生效。
@@ -991,6 +991,8 @@ match client.subscribe_quote(&["SHFE.au2602"]).await {
 ```rust
 use tqsdk_rs::{create_logger_layer, init_logger};
 
+// SDK 不会在 ClientBuilder::build() 中隐式初始化全局 tracing。
+// 如需 SDK 日志，请显式调用 init_logger()，或把 layer 接到你的业务 subscriber 上。
 init_logger("debug", false);
 
 let layer = create_logger_layer("info", false);
@@ -999,6 +1001,7 @@ let layer = create_logger_layer("info", false);
 - 开发阶段建议 `debug`。
 - 线上长期运行建议 `info` 或 `warn`。
 - 如果要与业务日志系统合并，优先使用 `create_logger_layer()`。
+- `ClientBuilder::build()` 不会自动初始化全局日志，避免和宿主应用的 tracing 配置互相抢占。
 
 ### 5. 合约代码格式
 
