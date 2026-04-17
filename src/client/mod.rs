@@ -92,15 +92,15 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn quote(&self, symbol: impl Into<crate::marketdata::SymbolId>) -> QuoteRef {
+    pub fn quote(&self, symbol: &str) -> QuoteRef {
         self.live.live_api.quote(symbol)
     }
 
-    pub fn kline_ref(&self, symbol: impl Into<crate::marketdata::SymbolId>, duration: Duration) -> KlineRef {
+    pub fn kline_ref(&self, symbol: &str, duration: Duration) -> KlineRef {
         self.live.live_api.kline(symbol, duration)
     }
 
-    pub fn tick_ref(&self, symbol: impl Into<crate::marketdata::SymbolId>) -> TickRef {
+    pub fn tick_ref(&self, symbol: &str) -> TickRef {
         self.live.live_api.tick(symbol)
     }
 

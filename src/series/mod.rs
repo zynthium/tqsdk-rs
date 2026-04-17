@@ -46,7 +46,7 @@ impl KlineSymbols {
 /// 该类型负责创建并管理 `SeriesSubscription`，用于按图表维度持续接收
 /// K 线或 Tick 数据更新。
 #[derive(Clone)]
-pub struct SeriesAPI {
+pub(crate) struct SeriesAPI {
     dm: Arc<DataManager>,
     ws: Arc<TqQuoteWebsocket>,
     auth: Arc<RwLock<dyn Authenticator>>,

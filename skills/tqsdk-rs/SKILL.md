@@ -77,6 +77,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - target-pos 入口统一讲 account builder
 - 不要把 `TradeSession` 的公开叙事写成账户 / 持仓 callback 或 best-effort channel 模型
 - 不要默认把底层 `websocket/`、`SeriesAPI`、`InsAPI` 讲成普通用户主路径
+- 不要暗示 `ClientBuilder::build()` 会自动初始化 SDK 日志；日志应显式使用 `init_logger()` 或 `create_logger_layer()`
 
 ## 回答风格
 

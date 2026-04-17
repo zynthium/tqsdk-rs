@@ -228,8 +228,6 @@ impl ClientBuilder {
     ///
     /// 如果认证失败，返回错误
     pub async fn build(self) -> Result<Client> {
-        crate::logger::init_logger(&self.config.log_level, true);
-
         let auth: Arc<AsyncRwLock<dyn Authenticator>> = if let Some(custom_auth) = self.auth {
             custom_auth
         } else {

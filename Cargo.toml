@@ -67,6 +67,7 @@ polars = { version = "0.53.0", features = ["lazy", "dtype-datetime"], optional =
 [features]
 default = []
 polars = ["dep:polars"]
+internal-bench = []
 
 [dev-dependencies]
 tracing-appender = "0.2.4"
@@ -91,7 +92,9 @@ path = "examples/backtest.rs"
 [[bench]]
 name = "marketdata_state"
 harness = false
+required-features = ["internal-bench"]
 
 [[bench]]
 name = "marketdata_state_stress"
 harness = false
+required-features = ["internal-bench"]
