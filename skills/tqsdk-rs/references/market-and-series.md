@@ -45,6 +45,8 @@ loop {
 - Quote：`Client::quote(symbol)` -> `QuoteRef`
 - latest K 线：`Client::kline_ref(symbol, duration)` -> `KlineRef`
 - latest Tick：`Client::tick_ref(symbol)` -> `TickRef`
+- `QuoteRef` / `KlineRef` / `TickRef` 新推荐路径：`wait_update()` + `try_load()`，或 `snapshot()` / `is_ready()`
+- `load()` 为 legacy convenience：首帧前返回默认值
 
 这些 ref 适合状态驱动策略循环；通常与 `client.wait_update()` 或 `client.wait_update_and_drain()` 配合使用。
 
@@ -76,6 +78,10 @@ if snapshot.update.has_new_bar {
 - `snapshot()` 读取当前快照（可能是 `None`）
 - `load()` 读取当前 `Arc<SeriesData>`；首次快照前可能报错
 - `close()` 提前释放窗口订阅
+
+## DataManager watcher 生命周期
+
+- `DataManager::watch_handle()` 优先于 `watch()` / `unwatch()`
 
 ## 多合约对齐 K 线
 

@@ -2,6 +2,14 @@
 
 当用户描述“没数据”“不更新”“报未初始化”“回测不动”“事件 lagged”这类问题时，先读本文件。
 
+## 常见错误边界（typed errors）
+
+- `MarketNotInitialized`: 忘记 `init_market()`
+- `ClientClosed`: 在已关闭 client 上继续使用 live 功能
+- `SubscriptionClosed`: 在已关闭 quote/series watcher 上继续等待
+- `TradeSessionNotConnected`: `TradeSession` 尚未 `connect()`
+- `DataNotReady`: market ref 首帧尚未到达
+
 ## `subscribe_quote()` / `get_kline_serial()` / `query_*()` 报未初始化
 
 先检查是不是漏了：

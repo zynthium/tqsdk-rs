@@ -197,6 +197,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+> `Client::build()` 只负责认证与构造 session owner；live 行情能力在
+> `client.init_market().await?` 后才可用。
+> 如需显式错误而不是延迟到后续调用时再失败，优先使用
+> `Client::{try_quote,try_kline_ref,try_tick_ref}`。
+
 ### 目标持仓任务（Builder，推荐）
 
 `TqRuntime` 由 `ClientBuilder::build_runtime()`、`Client::into_runtime()` 或
@@ -338,6 +343,9 @@ println!("trades={}", result.trades.len());
 - runtime 在 `step()` 返回后新发出的订单，最早从下一次 `step()` 开始参与撮合，不会回头消费已处理过的本 step 价格路径。
 - `quote()` 在没有显式 tick / kline 订阅时会自动补一个隐式 1 分钟 feed；runtime 下单也会自动为未显式订阅的 symbol 建立回放 quote 驱动。
 
+> `ReplaySession::runtime(accounts)` 在第一次成功初始化后会固定 account set；
+> 后续只有传入同一组账户（顺序无关、重复忽略）才会复用同一个 runtime。
+
 基于 `ReplaySession` 的日线 / 盘中策略示例可参考：
 - `examples/pivot_point.rs`
 - `examples/doublema.rs`
@@ -423,6 +431,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### 1. 行情数据 (状态驱动 API - 推荐)
 
 `tqsdk-rs` 提供高性能的状态驱动行情订阅。通过 `Client` 直接获取数据引用（`QuoteRef`/`KlineRef`/`TickRef`），并使用 `wait_update()` 驱动策略循环。
+
+> `QuoteRef` / `KlineRef` / `TickRef` 的 `load()` 是 legacy convenience API：
+> 在首帧到达前会返回默认值。新代码优先使用
+> `snapshot()` / `is_ready()` / `try_load()`。
 
 #### Quote 订阅 - 实时行情
 
@@ -679,6 +691,10 @@ dm.merge_data(
     true,
 );
 ```
+
+> `DataManager::watch_handle()` 是推荐的 watcher 生命周期 API；
+> `watch()` / `unwatch()` 仅保留为 legacy convenience，`unwatch(path)`
+> 仍然是 path-wide 行为，不适合多个同路径 watcher 并存时做精确释放。
 
 ### 4. 回测与历史回放（推荐）
 
