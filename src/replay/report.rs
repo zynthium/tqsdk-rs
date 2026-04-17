@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::BacktestResult;
 
 const TRADING_DAYS_OF_YEAR: f64 = 250.0;
+const RISK_FREE_RATE: f64 = 0.025;
 
 fn balance_series(result: &BacktestResult) -> Vec<f64> {
     result
@@ -149,6 +150,61 @@ fn trade_metrics(result: &BacktestResult) -> (Option<f64>, Option<f64>) {
     (winning_rate, profit_loss_ratio)
 }
 
+fn daily_yields(result: &BacktestResult) -> Vec<f64> {
+    let mut prev = match initial_balance(result) {
+        Some(value) if value > 0.0 => value,
+        _ => return Vec::new(),
+    };
+
+    let mut yields = Vec::new();
+    for settlement in &result.settlements {
+        let balance = settlement.account.balance;
+        if prev > 0.0 {
+            yields.push(balance / prev - 1.0);
+        }
+        prev = balance;
+    }
+    yields
+}
+
+fn daily_risk_free() -> f64 {
+    (1.0 + RISK_FREE_RATE).powf(1.0 / TRADING_DAYS_OF_YEAR) - 1.0
+}
+
+fn population_stddev(values: &[f64], mu: f64) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let variance = values.iter().map(|value| (value - mu).powi(2)).sum::<f64>() / values.len() as f64;
+    let stddev = variance.sqrt();
+    if stddev == 0.0 { None } else { Some(stddev) }
+}
+
+fn sharpe_ratio(result: &BacktestResult) -> Option<f64> {
+    let yields = daily_yields(result);
+    if yields.len() < 2 {
+        return None;
+    }
+    let rf = daily_risk_free();
+    let mean = yields.iter().sum::<f64>() / yields.len() as f64;
+    let stddev = population_stddev(&yields, mean)?;
+    finite_metric(TRADING_DAYS_OF_YEAR.sqrt() * (mean - rf) / stddev)
+}
+
+fn sortino_ratio(result: &BacktestResult) -> Option<f64> {
+    let yields = daily_yields(result);
+    if yields.len() < 2 {
+        return None;
+    }
+    let rf = daily_risk_free();
+    let mean = yields.iter().sum::<f64>() / yields.len() as f64;
+    let downside = yields.iter().copied().filter(|value| *value < rf).collect::<Vec<_>>();
+    let downside_stddev = population_stddev(&downside, rf)?;
+    finite_metric(
+        (TRADING_DAYS_OF_YEAR * downside.len() as f64 / yields.len() as f64).sqrt() * (mean - rf) / downside_stddev,
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplayReport {
     pub trade_count: usize,
@@ -174,8 +230,8 @@ impl ReplayReport {
             return_rate: return_rate(result),
             annualized_return: annualized_return(result),
             max_drawdown: max_drawdown(result),
-            sharpe_ratio: None,
-            sortino_ratio: None,
+            sharpe_ratio: sharpe_ratio(result),
+            sortino_ratio: sortino_ratio(result),
         }
     }
 }

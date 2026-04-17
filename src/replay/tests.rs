@@ -225,6 +225,64 @@ fn replay_report_normalizes_closetoday_to_close_before_pairing() {
     assert_eq!(report.profit_loss_ratio, None);
 }
 
+#[test]
+fn replay_report_returns_none_for_risk_adjusted_metrics_without_enough_daily_yields() {
+    let result = BacktestResult {
+        settlements: vec![settlement_with_balance(
+            NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(),
+            10_000_000.0,
+            10_100_000.0,
+        )],
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_eq!(report.sharpe_ratio, None);
+    assert_eq!(report.sortino_ratio, None);
+}
+
+#[test]
+fn replay_report_returns_none_when_python_formula_would_divide_by_zero_stddev() {
+    let result = BacktestResult {
+        settlements: vec![
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(), 10_000_000.0, 11_000_000.0),
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(), 11_000_000.0, 12_100_000.0),
+        ],
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_eq!(report.sharpe_ratio, None);
+}
+
+#[test]
+fn replay_report_matches_python_sharpe_and_sortino_formulas() {
+    let result = BacktestResult {
+        settlements: vec![
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(), 100.0, 110.0),
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(), 110.0, 99.0),
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(), 99.0, 108.9),
+        ],
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+    let rf = (1.0_f64 + 0.025_f64).powf(1.0_f64 / 250.0_f64) - 1.0_f64;
+    let yields = [0.10_f64, -0.10_f64, 0.10_f64];
+    let mean = yields.iter().sum::<f64>() / yields.len() as f64;
+    let stddev = (yields.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / yields.len() as f64).sqrt();
+    let expected_sharpe = 250.0_f64.sqrt() * (mean - rf) / stddev;
+
+    let downside = yields.into_iter().filter(|v| *v < rf).collect::<Vec<_>>();
+    let downside_stddev = (downside.iter().map(|v| (v - rf).powi(2)).sum::<f64>() / downside.len() as f64).sqrt();
+    let expected_sortino = (250.0_f64 * downside.len() as f64 / 3.0_f64).sqrt() * (mean - rf) / downside_stddev;
+
+    assert_close(report.sharpe_ratio.unwrap(), expected_sharpe);
+    assert_close(report.sortino_ratio.unwrap(), expected_sortino);
+}
+
 #[async_trait]
 impl HistoricalSource for FakeHistoricalSource {
     async fn instrument_metadata(&self, symbol: &str) -> crate::Result<InstrumentMetadata> {
