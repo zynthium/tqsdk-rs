@@ -73,6 +73,10 @@ pub(crate) struct WatchRegistration {
     watchers: Option<WeakWatcherRegistry>,
 }
 
+pub struct DataWatchHandle {
+    registration: WatchRegistration,
+}
+
 struct CachedNumericValueIndex {
     epoch: i64,
     index: Arc<HashMap<i64, Value>>,

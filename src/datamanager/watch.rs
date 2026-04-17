@@ -1,4 +1,4 @@
-use super::{DataManager, PathWatcher, WatchRegistration};
+use super::{DataManager, DataWatchHandle, PathWatcher, WatchRegistration};
 use crate::errors::{Result, TqError};
 use async_channel::{Receiver, TrySendError, bounded};
 use serde_json::Value;
@@ -15,7 +15,13 @@ impl DataManager {
     ///
     /// 返回一个 receiver，数据变化时会推送到这个 channel
     pub fn watch(&self, path: Vec<String>) -> Receiver<Value> {
-        self.watch_register(path).into_receiver()
+        self.watch_handle(path).into_receiver()
+    }
+
+    pub fn watch_handle(&self, path: Vec<String>) -> DataWatchHandle {
+        DataWatchHandle {
+            registration: self.watch_register(path),
+        }
     }
 
     pub(crate) fn watch_register(&self, path: Vec<String>) -> WatchRegistration {
@@ -111,6 +117,20 @@ impl WatchRegistration {
     fn into_receiver(mut self) -> Receiver<Value> {
         self.watchers = None;
         self.rx.clone()
+    }
+}
+
+impl DataWatchHandle {
+    pub fn receiver(&self) -> &Receiver<Value> {
+        self.registration.receiver()
+    }
+
+    pub fn cancel(&mut self) -> bool {
+        self.registration.cancel()
+    }
+
+    pub fn into_receiver(self) -> Receiver<Value> {
+        self.registration.into_receiver()
     }
 }
 

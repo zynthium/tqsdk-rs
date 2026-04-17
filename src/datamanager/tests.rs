@@ -969,6 +969,82 @@ fn datamanager_watchers_same_path_cancel_independently() {
 }
 
 #[test]
+fn data_watch_handle_cancel_is_per_registration() {
+    let mut initial_data = HashMap::new();
+    initial_data.insert("quotes".to_string(), json!({}));
+    let dm = DataManager::new(initial_data, DataManagerConfig::default());
+
+    let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
+    let path_key = path.join(".");
+    let mut first = dm.watch_handle(path.clone());
+    let second = dm.watch_handle(path.clone());
+    let rx1 = first.receiver().clone();
+    let rx2 = second.receiver().clone();
+
+    assert!(first.cancel());
+    assert!(!first.cancel(), "cancel should be idempotent for one handle");
+    assert_eq!(
+        dm.watchers.read().unwrap().get(&path_key).map(Vec::len),
+        Some(1),
+        "cancel should only remove the targeted registration"
+    );
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    assert!(rx1.try_recv().is_err());
+    assert!(rx2.try_recv().is_ok());
+}
+
+#[test]
+fn data_watch_handle_drop_unregisters_its_own_watcher_only() {
+    let mut initial_data = HashMap::new();
+    initial_data.insert("quotes".to_string(), json!({}));
+    let dm = DataManager::new(initial_data, DataManagerConfig::default());
+
+    let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
+    let path_key = path.join(".");
+    let first = dm.watch_handle(path.clone());
+    let second = dm.watch_handle(path.clone());
+    let rx2 = second.receiver().clone();
+
+    drop(first);
+    assert_eq!(
+        dm.watchers.read().unwrap().get(&path_key).map(Vec::len),
+        Some(1),
+        "dropping one handle should only unregister its own watcher"
+    );
+
+    dm.merge_data(
+        json!({
+            "quotes": {
+                "SHFE.au2602": {
+                    "last_price": 500.0
+                }
+            }
+        }),
+        true,
+        true,
+    );
+    assert!(rx2.try_recv().is_ok());
+
+    drop(second);
+    assert!(
+        !dm.watchers.read().unwrap().contains_key(&path_key),
+        "dropping the final handle should unregister the remaining watcher"
+    );
+}
+
+#[test]
 fn test_notify_watchers_prunes_closed_receivers() {
     let mut initial_data = HashMap::new();
     initial_data.insert("quotes".to_string(), json!({}));

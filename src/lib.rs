@@ -86,7 +86,7 @@ pub mod polars_ext;
 
 // 重新导出常用类型
 pub use client::{Client, ClientBuilder, ClientConfig, EndpointConfig, TradeSessionOptions};
-pub use datamanager::{DataManager, DataManagerConfig};
+pub use datamanager::{DataManager, DataManagerConfig, DataWatchHandle};
 pub use download::{
     DataDownloadAdjType, DataDownloadOptions, DataDownloadRequest, DataDownloadWriteMode, DataDownloadWriter,
     DataDownloader,
