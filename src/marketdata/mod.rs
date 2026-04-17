@@ -344,7 +344,7 @@ impl TqApi {
         let mut close_rx = self.state.subscribe_close();
         loop {
             if *close_rx.borrow() {
-                return Err(TqError::InternalError("market data session closed".to_string()));
+                return Err(TqError::client_closed("market wait_update"));
             }
             let current = *rx.borrow();
             let seen = self.inner.seen_epoch.load(Ordering::SeqCst);
@@ -354,10 +354,10 @@ impl TqApi {
             }
             tokio::select! {
                 changed = rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("market data channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::DataNotReady("market data channel closed".to_string()))?;
                 }
                 changed = close_rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::client_closed("market wait_update"))?;
                 }
             }
         }

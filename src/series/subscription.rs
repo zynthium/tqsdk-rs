@@ -264,6 +264,9 @@ impl SeriesSubscription {
         }
         let mut rx = self.wait_rx.lock().await;
         loop {
+            if !*self.running.read().await {
+                return Err(TqError::subscription_closed("Series"));
+            }
             if rx.changed().await.is_err() {
                 return Err(TqError::subscription_closed("Series"));
             }
@@ -307,6 +310,7 @@ impl SeriesSubscription {
             let mut running = self.running.write().await;
             *running = false;
         }
+        let _ = self.snapshot_tx.send_replace(None);
         self.abort_watch_task();
 
         info!("关闭 Series 订阅: {}", self.options.chart_id.as_deref().unwrap_or(""));

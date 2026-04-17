@@ -674,3 +674,21 @@ async fn series_wait_update_after_close_returns_subscription_closed() {
         .expect_err("wait_update should fail after close");
     assert!(matches!(err, TqError::SubscriptionClosed { .. }));
 }
+
+#[tokio::test]
+async fn series_wait_update_close_wakes_already_blocked_waiter() {
+    let sub = Arc::new(build_series_subscription(WebSocketConfig::default().message_queue_capacity).await);
+    let waiter_sub = Arc::clone(&sub);
+    let waiter = tokio::spawn(async move { waiter_sub.wait_update().await });
+
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished(), "wait_update should be blocked before close");
+
+    sub.close().await.expect("close should succeed");
+
+    let result = timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("blocked waiter should be woken by close")
+        .expect("waiter task should not panic");
+    assert!(matches!(result, Err(TqError::SubscriptionClosed { .. })));
+}

@@ -1,4 +1,5 @@
 use super::{KlineKey, MarketDataState, SymbolId, TqApi};
+use crate::errors::TqError;
 use crate::types::{Kline, Quote, Tick};
 use std::sync::Arc;
 use std::time::Duration;
@@ -199,4 +200,17 @@ async fn wait_update_and_drain_reports_unique_changed_keys() {
     assert!(empty.quotes.is_empty());
     assert!(empty.klines.is_empty());
     assert!(empty.ticks.is_empty());
+}
+
+#[tokio::test]
+async fn wait_paths_return_client_closed_after_market_close() {
+    let state = Arc::new(MarketDataState::default());
+    let api = TqApi::new(Arc::clone(&state));
+    state.close();
+
+    let wait = api.wait_update().await;
+    assert!(matches!(wait, Err(TqError::ClientClosed { .. })));
+
+    let drain = api.wait_update_and_drain().await;
+    assert!(matches!(drain, Err(TqError::ClientClosed { .. })));
 }

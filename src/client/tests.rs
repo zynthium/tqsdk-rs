@@ -402,7 +402,11 @@ async fn close_invalidates_market_interfaces_with_typed_errors() {
         "get_kline_serial should return ClientClosed after client.close()"
     );
 
-    assert!(client.get_tick_serial("SHFE.au2602", 64).await.is_err());
+    let get_tick_result = client.get_tick_serial("SHFE.au2602", 64).await;
+    assert!(
+        matches!(get_tick_result, Err(TqError::ClientClosed { .. })),
+        "get_tick_serial should return ClientClosed after client.close()"
+    );
 }
 
 #[tokio::test]
@@ -417,32 +421,32 @@ async fn close_invalidates_market_wait_paths() {
 
     let client_wait = tokio::time::timeout(Duration::from_millis(100), client.wait_update()).await;
     assert!(
-        matches!(client_wait, Ok(Err(_))),
-        "Client::wait_update should return a close error, got {client_wait:?}"
+        matches!(client_wait, Ok(Err(TqError::ClientClosed { .. }))),
+        "Client::wait_update should return ClientClosed, got {client_wait:?}"
     );
 
     let client_drain = tokio::time::timeout(Duration::from_millis(100), client.wait_update_and_drain()).await;
     assert!(
-        matches!(client_drain, Ok(Err(_))),
-        "Client::wait_update_and_drain should return a close error, got {client_drain:?}"
+        matches!(client_drain, Ok(Err(TqError::ClientClosed { .. }))),
+        "Client::wait_update_and_drain should return ClientClosed, got {client_drain:?}"
     );
 
     let quote_wait = tokio::time::timeout(Duration::from_millis(100), quote_ref.wait_update()).await;
     assert!(
-        matches!(quote_wait, Ok(Err(_))),
-        "QuoteRef::wait_update should return a close error, got {quote_wait:?}"
+        matches!(quote_wait, Ok(Err(TqError::ClientClosed { .. }))),
+        "QuoteRef::wait_update should return ClientClosed, got {quote_wait:?}"
     );
 
     let kline_wait = tokio::time::timeout(Duration::from_millis(100), kline_ref.wait_update()).await;
     assert!(
-        matches!(kline_wait, Ok(Err(_))),
-        "KlineRef::wait_update should return a close error, got {kline_wait:?}"
+        matches!(kline_wait, Ok(Err(TqError::ClientClosed { .. }))),
+        "KlineRef::wait_update should return ClientClosed, got {kline_wait:?}"
     );
 
     let tick_wait = tokio::time::timeout(Duration::from_millis(100), tick_ref.wait_update()).await;
     assert!(
-        matches!(tick_wait, Ok(Err(_))),
-        "TickRef::wait_update should return a close error, got {tick_wait:?}"
+        matches!(tick_wait, Ok(Err(TqError::ClientClosed { .. }))),
+        "TickRef::wait_update should return ClientClosed, got {tick_wait:?}"
     );
 }
 
@@ -487,7 +491,7 @@ async fn init_market_rejects_closed_client_session() {
 
     let result = client.init_market().await;
 
-    assert!(result.is_err());
+    assert!(matches!(result, Err(TqError::ClientClosed { .. })));
 }
 
 #[tokio::test]
@@ -797,11 +801,38 @@ async fn create_backtest_session_does_not_activate_client_market_state() {
         .expect("creating replay session should not initialize live market state");
 
     assert!(!client.live.is_active());
-    assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
-    assert!(
+    assert!(matches!(
+        client.subscribe_quote(&["SHFE.au2602"]).await,
+        Err(TqError::MarketNotInitialized { .. })
+    ));
+    assert!(matches!(
         client
             .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(TqError::MarketNotInitialized { .. })
+    ));
+}
+
+#[tokio::test]
+async fn inactive_market_access_returns_market_not_initialized() {
+    let client = build_inactive_client();
+
+    assert!(matches!(
+        client.query_quotes(None, None, None, None, None).await,
+        Err(TqError::MarketNotInitialized { .. })
+    ));
+    assert!(matches!(
+        client.subscribe_quote(&["SHFE.au2602"]).await,
+        Err(TqError::MarketNotInitialized { .. })
+    ));
+    assert!(matches!(
+        client
+            .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
+            .await,
+        Err(TqError::MarketNotInitialized { .. })
+    ));
+    assert!(matches!(
+        client.get_tick_serial("SHFE.au2602", 64).await,
+        Err(TqError::MarketNotInitialized { .. })
+    ));
 }
