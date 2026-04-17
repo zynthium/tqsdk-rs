@@ -323,11 +323,18 @@ impl SimBroker {
     }
 
     pub fn finish(&self) -> Result<BacktestResult> {
+        let symbol_volume_multipliers = self
+            .metadata
+            .iter()
+            .map(|(symbol, metadata)| (symbol.clone(), metadata.volume_multiple))
+            .collect();
+
         Ok(BacktestResult {
             settlements: self.settlements.clone(),
             final_accounts: self.sorted_accounts_snapshot(),
             final_positions: self.sorted_positions_snapshot(),
             trades: self.all_trades.clone(),
+            symbol_volume_multipliers,
         })
     }
 

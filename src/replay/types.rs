@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -103,4 +105,5 @@ pub struct BacktestResult {
     pub final_accounts: Vec<Account>,
     pub final_positions: Vec<Position>,
     pub trades: Vec<Trade>,
+    pub symbol_volume_multipliers: BTreeMap<String, i32>,
 }

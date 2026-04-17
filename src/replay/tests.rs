@@ -2468,6 +2468,25 @@ fn sim_broker_finish_returns_accumulated_settlements_and_final_state() {
 }
 
 #[test]
+fn sim_broker_finish_includes_symbol_volume_multipliers_for_reports() {
+    let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
+    broker.register_symbol(InstrumentMetadata {
+        symbol: "SHFE.rb2605".to_string(),
+        exchange_id: "SHFE".to_string(),
+        instrument_id: "rb2605".to_string(),
+        class: "FUTURE".to_string(),
+        volume_multiple: 10,
+        margin: 1_000.0,
+        commission: 2.0,
+        ..InstrumentMetadata::default()
+    });
+
+    let result = broker.finish().unwrap();
+
+    assert_eq!(result.symbol_volume_multipliers.get("SHFE.rb2605"), Some(&10));
+}
+
+#[test]
 fn sim_broker_marks_futures_account_to_market_and_charges_commission() {
     let symbol = "SHFE.rb2605";
     let mut broker = SimBroker::new(vec!["TQSIM".to_string()], 10_000_000.0);
