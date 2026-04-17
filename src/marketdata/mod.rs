@@ -158,11 +158,15 @@ impl MarketDataState {
             .read()
             .await
             .get(symbol)
-            .map(|entry| Arc::clone(&entry.value))
+            .and_then(|entry| (entry.epoch > 0).then(|| Arc::clone(&entry.value)))
     }
 
     pub async fn kline_snapshot(&self, key: &KlineKey) -> Option<Arc<Kline>> {
-        self.klines.read().await.get(key).map(|entry| Arc::clone(&entry.value))
+        self.klines
+            .read()
+            .await
+            .get(key)
+            .and_then(|entry| (entry.epoch > 0).then(|| Arc::clone(&entry.value)))
     }
 
     pub async fn tick_snapshot(&self, symbol: &SymbolId) -> Option<Arc<Tick>> {
@@ -170,7 +174,7 @@ impl MarketDataState {
             .read()
             .await
             .get(symbol)
-            .map(|entry| Arc::clone(&entry.value))
+            .and_then(|entry| (entry.epoch > 0).then(|| Arc::clone(&entry.value)))
     }
 
     pub async fn subscribe_quote_epoch(&self, symbol: &SymbolId) -> watch::Receiver<u64> {

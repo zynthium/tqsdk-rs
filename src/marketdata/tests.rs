@@ -179,6 +179,64 @@ async fn quote_ref_try_load_reports_not_ready_before_first_snapshot() {
 }
 
 #[tokio::test]
+async fn refs_remain_not_ready_for_placeholder_entries_before_first_real_update() {
+    let state = Arc::new(MarketDataState::default());
+    let api = TqApi::new(Arc::clone(&state));
+    let symbol = "SHFE.au2602";
+
+    let quote_wait_ref = api.quote(symbol);
+    let quote_check_ref = api.quote(symbol);
+    let kline_wait_ref = api.kline(symbol, Duration::from_secs(60));
+    let kline_check_ref = api.kline(symbol, Duration::from_secs(60));
+    let tick_wait_ref = api.tick(symbol);
+    let tick_check_ref = api.tick(symbol);
+
+    let quote_wait_task =
+        tokio::spawn(
+            async move { tokio::time::timeout(Duration::from_millis(20), quote_wait_ref.wait_update()).await },
+        );
+    let kline_wait_task =
+        tokio::spawn(
+            async move { tokio::time::timeout(Duration::from_millis(20), kline_wait_ref.wait_update()).await },
+        );
+    let tick_wait_task =
+        tokio::spawn(async move { tokio::time::timeout(Duration::from_millis(20), tick_wait_ref.wait_update()).await });
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    assert!(quote_check_ref.snapshot().await.is_none());
+    assert!(!quote_check_ref.is_ready().await);
+    assert!(matches!(
+        quote_check_ref.try_load().await,
+        Err(TqError::DataNotReady(_))
+    ));
+
+    assert!(kline_check_ref.snapshot().await.is_none());
+    assert!(!kline_check_ref.is_ready().await);
+    assert!(matches!(
+        kline_check_ref.try_load().await,
+        Err(TqError::DataNotReady(_))
+    ));
+
+    assert!(tick_check_ref.snapshot().await.is_none());
+    assert!(!tick_check_ref.is_ready().await);
+    assert!(matches!(tick_check_ref.try_load().await, Err(TqError::DataNotReady(_))));
+
+    assert!(matches!(
+        quote_wait_task.await.unwrap(),
+        Err(tokio::time::error::Elapsed { .. })
+    ));
+    assert!(matches!(
+        kline_wait_task.await.unwrap(),
+        Err(tokio::time::error::Elapsed { .. })
+    ));
+    assert!(matches!(
+        tick_wait_task.await.unwrap(),
+        Err(tokio::time::error::Elapsed { .. })
+    ));
+}
+
+#[tokio::test]
 async fn quote_ref_try_load_returns_live_snapshot_after_update() {
     let state = Arc::new(MarketDataState::default());
     let quote_ref = QuoteRef::new_for_test(Arc::clone(&state), "SHFE.au2602");
