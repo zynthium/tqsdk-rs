@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use super::BacktestResult;
@@ -59,6 +61,94 @@ fn max_drawdown(result: &BacktestResult) -> Option<f64> {
     Some(max_drawdown)
 }
 
+#[derive(Debug, Clone)]
+struct LotTrade {
+    symbol: String,
+    direction: String,
+    offset: String,
+    price: f64,
+}
+
+fn normalize_offset(offset: &str) -> &str {
+    if offset == "CLOSETODAY" { "CLOSE" } else { offset }
+}
+
+fn expand_lot_trades(result: &BacktestResult) -> Vec<LotTrade> {
+    let mut trades = Vec::new();
+    for trade in &result.trades {
+        let symbol = format!("{}.{}", trade.exchange_id, trade.instrument_id);
+        for _ in 0..trade.volume.max(0) {
+            trades.push(LotTrade {
+                symbol: symbol.clone(),
+                direction: trade.direction.clone(),
+                offset: normalize_offset(&trade.offset).to_string(),
+                price: trade.price,
+            });
+        }
+    }
+    trades
+}
+
+fn trade_metrics(result: &BacktestResult) -> (Option<f64>, Option<f64>) {
+    let lot_trades = expand_lot_trades(result);
+    let all_symbols = lot_trades
+        .iter()
+        .map(|trade| trade.symbol.clone())
+        .collect::<BTreeSet<_>>();
+
+    let mut profit_volumes = 0usize;
+    let mut loss_volumes = 0usize;
+    let mut profit_value = 0.0;
+    let mut loss_value = 0.0;
+
+    for symbol in all_symbols {
+        let volume_multiple = *result.symbol_volume_multipliers.get(&symbol).unwrap_or(&1) as f64;
+        for direction in ["BUY", "SELL"] {
+            let close_direction = if direction == "BUY" { "SELL" } else { "BUY" };
+            let open_prices = lot_trades
+                .iter()
+                .filter(|trade| trade.symbol == symbol && trade.direction == direction && trade.offset == "OPEN")
+                .map(|trade| trade.price);
+            let close_prices = lot_trades
+                .iter()
+                .filter(|trade| trade.symbol == symbol && trade.direction == close_direction && trade.offset == "CLOSE")
+                .map(|trade| trade.price);
+
+            for (open_price, close_price) in open_prices.zip(close_prices) {
+                let profit = (close_price - open_price) * if direction == "BUY" { 1.0 } else { -1.0 };
+                if profit >= 0.0 {
+                    profit_volumes += 1;
+                    profit_value += profit * volume_multiple;
+                } else {
+                    loss_volumes += 1;
+                    loss_value += profit * volume_multiple;
+                }
+            }
+        }
+    }
+
+    let total = profit_volumes + loss_volumes;
+    let winning_rate = if total > 0 {
+        Some(profit_volumes as f64 / total as f64)
+    } else {
+        None
+    };
+
+    let profit_loss_ratio = if profit_volumes > 0 && loss_volumes > 0 {
+        let profit_per_volume = profit_value / profit_volumes as f64;
+        let loss_per_volume = loss_value / loss_volumes as f64;
+        if loss_per_volume == 0.0 {
+            None
+        } else {
+            finite_metric((profit_per_volume / loss_per_volume).abs())
+        }
+    } else {
+        None
+    };
+
+    (winning_rate, profit_loss_ratio)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReplayReport {
     pub trade_count: usize,
@@ -74,11 +164,13 @@ pub struct ReplayReport {
 
 impl ReplayReport {
     pub fn from_result(result: &BacktestResult) -> Self {
+        let (winning_rate, profit_loss_ratio) = trade_metrics(result);
+
         Self {
             trade_count: result.trades.len(),
             trading_day_count: result.settlements.len(),
-            winning_rate: None,
-            profit_loss_ratio: None,
+            winning_rate,
+            profit_loss_ratio,
             return_rate: return_rate(result),
             annualized_return: annualized_return(result),
             max_drawdown: max_drawdown(result),

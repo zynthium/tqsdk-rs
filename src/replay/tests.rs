@@ -176,6 +176,55 @@ fn replay_report_computes_max_drawdown_from_running_peak_balance() {
     assert_close(report.max_drawdown.unwrap(), 0.1);
 }
 
+#[test]
+fn replay_report_uses_python_style_lot_pairing_for_win_rate_and_profit_loss_ratio() {
+    let result = BacktestResult {
+        trades: vec![
+            sample_trade("SHFE", "rb2605", "BUY", "OPEN", 2, 3_200.0, 1_000),
+            sample_trade("SHFE", "rb2605", "SELL", "CLOSE", 1, 3_220.0, 2_000),
+            sample_trade("SHFE", "rb2605", "SELL", "CLOSE", 1, 3_180.0, 3_000),
+        ],
+        symbol_volume_multipliers: BTreeMap::from([("SHFE.rb2605".to_string(), 10)]),
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_close(report.winning_rate.unwrap(), 0.5);
+    assert_close(report.profit_loss_ratio.unwrap(), 1.0);
+}
+
+#[test]
+fn replay_report_returns_none_for_round_trip_metrics_without_completed_pairs() {
+    let result = BacktestResult {
+        trades: vec![sample_trade("SHFE", "rb2605", "BUY", "OPEN", 1, 3_200.0, 1_000)],
+        symbol_volume_multipliers: BTreeMap::from([("SHFE.rb2605".to_string(), 10)]),
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_eq!(report.winning_rate, None);
+    assert_eq!(report.profit_loss_ratio, None);
+}
+
+#[test]
+fn replay_report_normalizes_closetoday_to_close_before_pairing() {
+    let result = BacktestResult {
+        trades: vec![
+            sample_trade("SHFE", "rb2605", "BUY", "OPEN", 1, 3_200.0, 1_000),
+            sample_trade("SHFE", "rb2605", "SELL", "CLOSETODAY", 1, 3_210.0, 2_000),
+        ],
+        symbol_volume_multipliers: BTreeMap::from([("SHFE.rb2605".to_string(), 10)]),
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_close(report.winning_rate.unwrap(), 1.0);
+    assert_eq!(report.profit_loss_ratio, None);
+}
+
 #[async_trait]
 impl HistoricalSource for FakeHistoricalSource {
     async fn instrument_metadata(&self, symbol: &str) -> crate::Result<InstrumentMetadata> {
