@@ -6,9 +6,9 @@
 
 - `MarketNotInitialized`: 忘记 `init_market()`
 - `ClientClosed`: 在已关闭 client 上继续使用 live 功能
-- `SubscriptionClosed`: 在已关闭 quote/series watcher 上继续等待
+- `SubscriptionClosed`: 在已关闭的 `SeriesSubscription`（或其他已关闭 subscription 句柄）上继续等待/读取
 - `TradeSessionNotConnected`: `TradeSession` 尚未 `connect()`
-- `DataNotReady`: market ref 首帧尚未到达
+- `DataNotReady`: 数据尚未 ready，或内部通道已关闭导致当前读取路径暂不可用
 
 ## `subscribe_quote()` / `get_kline_serial()` / `query_*()` 报未初始化
 

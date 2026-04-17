@@ -156,7 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let _quote_sub = client.subscribe_quote(&[symbol]).await?;
 
-    let quote_ref = client.quote(symbol);
+    let quote_ref = client.try_quote(symbol)?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -165,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         
         quote_ref.wait_update().await?;
-        let q = quote_ref.load().await;
+        let q = quote_ref.try_load().await?;
         println!("{} 最新价 = {}", q.instrument_id, q.last_price);
     }
 
@@ -197,7 +197,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-> `Client::build()` 只负责认证与构造 session owner；live 行情能力在
+> `Client::builder(...).build()` / `ClientBuilder::build()` 只负责认证与构造 session owner；live 行情能力在
 > `client.init_market().await?` 后才可用。
 > 如需显式错误而不是延迟到后续调用时再失败，优先使用
 > `Client::{try_quote,try_kline_ref,try_tick_ref}`。
@@ -443,14 +443,14 @@ let symbol = "SHFE.au2602";
 
 let _quote_sub = client.subscribe_quote(&[symbol]).await?;
 
-let quote_ref = client.quote(symbol);
+let quote_ref = client.try_quote(symbol)?;
 
 loop {
     // 等待任意数据更新，并获取本次变化的集合
     let updates = client.wait_update_and_drain().await?;
     
     if updates.quotes.contains(&symbol.into()) {
-        let q = quote_ref.load().await;
+        let q = quote_ref.try_load().await?;
         println!("{} 最新价: {}", q.instrument_id, q.last_price);
     }
 }

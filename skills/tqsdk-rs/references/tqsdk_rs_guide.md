@@ -17,8 +17,8 @@
 
 | 任务 | 当前 canonical API | 备注 |
 |------|--------------------|------|
-| live Quote | `init_market()` -> `subscribe_quote()` -> `quote()` -> `wait_update()` / `load()` | 订阅 auto-start |
-| live 最新 K 线 / Tick | `kline_ref()` / `tick_ref()` | 读取 latest state |
+| live Quote | `init_market()` -> `subscribe_quote()` -> `try_quote()` -> `wait_update()` / `try_load()` | 订阅 auto-start；也可 `snapshot()` / `is_ready()` |
+| live 最新 K 线 / Tick | `try_kline_ref()` / `try_tick_ref()` | 显式 precondition；读取 latest state |
 | live 窗口序列 | `get_kline_serial()` / `get_tick_serial()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，bounded to `10000` |
 | 一次性历史快照 | `get_kline_data_series()` / `get_tick_data_series()` | 语义为 `[start_dt, end_dt)` |
 | 长时间历史导出 | `spawn_data_downloader*()` | 后台下载任务，不是实时订阅 |
@@ -27,7 +27,7 @@
 | 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 |
 | live target-pos | `ClientBuilder::trade_session*().build_runtime()` 或 `client.into_runtime()` | `runtime.account("broker:user")` |
 | replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` | `step()` 是唯一时间推进 |
-| replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | backtest runtime |
+| replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | 首次成功初始化后 account set 固定；换账户集合需新建 `ReplaySession` |
 | DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 |
 
 ## 当前推荐初始化顺序
@@ -42,6 +42,8 @@ Client::builder -> build -> init_market
   -> kline_ref / tick_ref / get_kline_serial / get_tick_serial
   -> query_* / get_trading_calendar / get_trading_status
 ```
+
+补充：需要显式 market precondition 时，优先用 `try_quote` / `try_kline_ref` / `try_tick_ref`。
 
 ### 手工交易
 
@@ -86,6 +88,8 @@ Client::builder -> build
   -> step() 循环
   -> finish()
 ```
+
+补充：`ReplaySession::runtime([account])` 在第一次成功初始化后会固定账户集合；后续仅同一集合（顺序无关、重复忽略）会复用同一 runtime。
 
 ## 什么时候不要切错路径
 

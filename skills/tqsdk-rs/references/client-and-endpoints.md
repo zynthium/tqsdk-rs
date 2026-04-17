@@ -49,7 +49,7 @@ tqsdk_rs::init_logger("info", true);
 
 ## `init_market()` 的规则
 
-- `Client::build()` != `init_market()`
+- `Client::builder(...).build()` / `ClientBuilder::build()` != `init_market()`
 - 需要显式 market precondition 时用 `try_quote` / `try_kline_ref` / `try_tick_ref`
 
 - `subscribe_quote()`、`quote()` 的有效更新

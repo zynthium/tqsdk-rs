@@ -16,11 +16,11 @@ client.init_market().await?;
 
 let symbol = "SHFE.au2602";
 let _quote_sub = client.subscribe_quote(&[symbol]).await?;
-let quote = client.quote(symbol);
+let quote = client.try_quote(symbol)?;
 
 loop {
     quote.wait_update().await?;
-    let q = quote.load().await;
+    let q = quote.try_load().await?;
     println!("{} {}", q.instrument_id, q.last_price);
 }
 ```
