@@ -289,9 +289,7 @@ impl Client {
     /// 初始化行情功能
     pub async fn init_market(&mut self) -> Result<()> {
         if self.live.market_state.is_closed() {
-            return Err(TqError::InternalError(
-                "cannot initialize market on a closed Client session; create a new Client instead".to_string(),
-            ));
+            return Err(TqError::client_closed("init_market"));
         }
         let _ = self.initialize_market_runtime(false).await?;
         Ok(())

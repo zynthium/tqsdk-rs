@@ -291,7 +291,7 @@ impl TradeSession {
     /// 等待交易快照在本会话下推进至少一次。
     pub async fn wait_update(&self) -> Result<()> {
         if !self.running.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(TqError::InternalError("交易会话未连接或已关闭".to_string()));
+            return Err(TqError::TradeSessionNotConnected);
         }
 
         let seen_epoch = self.snapshot_seen_epoch.load(Ordering::SeqCst);
@@ -302,12 +302,12 @@ impl TradeSession {
                     self.snapshot_seen_epoch.store(epoch, Ordering::SeqCst);
                     return Ok(());
                 }
-                None => return Err(TqError::InternalError("交易会话已关闭".to_string())),
+                None => return Err(TqError::TradeSessionNotConnected),
                 _ => {}
             }
 
             if rx.changed().await.is_err() {
-                return Err(TqError::InternalError("交易快照订阅已关闭".to_string()));
+                return Err(TqError::TradeSessionNotConnected);
             }
         }
     }

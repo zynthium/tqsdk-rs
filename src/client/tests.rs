@@ -378,18 +378,30 @@ async fn subscribe_quote_creation_failure_rolls_back_server_state() {
 }
 
 #[tokio::test]
-async fn close_invalidates_market_interfaces() {
+async fn close_invalidates_market_interfaces_with_typed_errors() {
     let client = build_client_with_market();
     client.close().await.unwrap();
 
-    assert!(client.query_quotes(None, None, None, None, None).await.is_err());
-    assert!(client.subscribe_quote(&["SHFE.au2602"]).await.is_err());
+    let query_quotes_err = client
+        .query_quotes(None, None, None, None, None)
+        .await
+        .expect_err("query_quotes should fail after client.close()");
+    assert!(matches!(query_quotes_err, TqError::ClientClosed { .. }));
+
+    let subscribe_quote_result = client.subscribe_quote(&["SHFE.au2602"]).await;
     assert!(
-        client
-            .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
-            .await
-            .is_err()
+        matches!(subscribe_quote_result, Err(TqError::ClientClosed { .. })),
+        "subscribe_quote should return ClientClosed after client.close()"
     );
+
+    let get_kline_result = client
+        .get_kline_serial("SHFE.au2602", Duration::from_secs(60), 64)
+        .await;
+    assert!(
+        matches!(get_kline_result, Err(TqError::ClientClosed { .. })),
+        "get_kline_serial should return ClientClosed after client.close()"
+    );
+
     assert!(client.get_tick_serial("SHFE.au2602", 64).await.is_err());
 }
 

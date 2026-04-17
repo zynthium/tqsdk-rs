@@ -147,23 +147,29 @@ impl Client {
     }
 
     fn series_api(&self) -> Result<Arc<SeriesAPI>> {
+        if self.live.market_state.is_closed() {
+            return Err(TqError::client_closed("Series API"));
+        }
         if !self.live.is_active() {
-            return Err(TqError::InternalError("Series API 未初始化或已关闭".to_string()));
+            return Err(TqError::market_not_initialized("Series API"));
         }
         self.live
             .series_api
             .clone()
-            .ok_or_else(|| TqError::InternalError("Series API 未初始化".to_string()))
+            .ok_or_else(|| TqError::market_not_initialized("Series API"))
     }
 
     fn ins_api(&self) -> Result<Arc<InsAPI>> {
+        if self.live.market_state.is_closed() {
+            return Err(TqError::client_closed("合约查询 API"));
+        }
         if !self.live.is_active() {
-            return Err(TqError::InternalError("合约查询 API 未初始化或已关闭".to_string()));
+            return Err(TqError::market_not_initialized("合约查询 API"));
         }
         self.live
             .ins_api
             .clone()
-            .ok_or_else(|| TqError::InternalError("合约查询 API 未初始化".to_string()))
+            .ok_or_else(|| TqError::market_not_initialized("合约查询 API"))
     }
 
     pub async fn query_graphql(&self, query: &str, variables: Option<serde_json::Value>) -> Result<serde_json::Value> {
@@ -393,8 +399,11 @@ impl Client {
 
     /// 订阅 Quote。
     pub async fn subscribe_quote(&self, symbols: &[&str]) -> Result<Arc<QuoteSubscription>> {
+        if self.live.market_state.is_closed() {
+            return Err(TqError::client_closed("quote 订阅"));
+        }
         if !self.live.is_active() || self.live.quotes_ws.is_none() {
-            return Err(TqError::InternalError("行情 WebSocket 未初始化或已关闭".to_string()));
+            return Err(TqError::market_not_initialized("quote 订阅"));
         }
         {
             let auth = self.auth.read().await;

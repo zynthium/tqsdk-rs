@@ -260,12 +260,12 @@ impl SeriesSubscription {
     /// 等待下一次窗口快照更新。
     pub async fn wait_update(&self) -> Result<SeriesSnapshot> {
         if !*self.running.read().await {
-            return Err(TqError::InternalError("Series 订阅已关闭".to_string()));
+            return Err(TqError::subscription_closed("Series"));
         }
         let mut rx = self.wait_rx.lock().await;
         loop {
             if rx.changed().await.is_err() {
-                return Err(TqError::InternalError("Series 快照订阅已关闭".to_string()));
+                return Err(TqError::subscription_closed("Series"));
             }
             if let Some(snapshot) = rx.borrow().clone() {
                 return Ok(snapshot);

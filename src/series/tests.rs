@@ -662,3 +662,15 @@ async fn series_subscription_start_and_close_manage_watch_task_lifecycle() {
     sub.close().await.expect("close should succeed");
     assert!(!sub.watch_task_active_for_test());
 }
+
+#[tokio::test]
+async fn series_wait_update_after_close_returns_subscription_closed() {
+    let sub = build_series_subscription(WebSocketConfig::default().message_queue_capacity).await;
+    sub.close().await.expect("close should succeed");
+
+    let err = sub
+        .wait_update()
+        .await
+        .expect_err("wait_update should fail after close");
+    assert!(matches!(err, TqError::SubscriptionClosed { .. }));
+}

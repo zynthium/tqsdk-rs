@@ -1,5 +1,6 @@
 use super::*;
 use crate::datamanager::{DataManager, DataManagerConfig};
+use crate::errors::TqError;
 use crate::types::{
     DIRECTION_BUY, InsertOrderOptions, InsertOrderRequest, Notification, OFFSET_OPEN, PRICE_TYPE_ANY, PRICE_TYPE_BEST,
     PRICE_TYPE_LIMIT, TIME_CONDITION_GFD, TIME_CONDITION_IOC, VOLUME_CONDITION_ALL, VOLUME_CONDITION_ANY,
@@ -73,6 +74,18 @@ fn position_json() -> serde_json::Value {
         "volume_long_today": 1,
         "volume_long": 1
     })
+}
+
+#[tokio::test]
+async fn trade_session_wait_update_before_connect_returns_not_connected() {
+    let dm = build_dm();
+    let session = build_session(dm);
+
+    let err = session
+        .wait_update()
+        .await
+        .expect_err("wait_update should fail before connect");
+    assert!(matches!(err, TqError::TradeSessionNotConnected));
 }
 
 #[tokio::test]

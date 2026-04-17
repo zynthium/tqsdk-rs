@@ -88,6 +88,26 @@ pub enum TqError {
     #[error("数据未找到: {0}")]
     DataNotFound(String),
 
+    /// 行情未初始化
+    #[error("{capability} 需要先初始化行情 (请先调用 init_market())")]
+    MarketNotInitialized { capability: &'static str },
+
+    /// 客户端已关闭
+    #[error("{capability} 不可用: Client 已关闭")]
+    ClientClosed { capability: &'static str },
+
+    /// 订阅已关闭
+    #[error("{kind} 订阅已关闭")]
+    SubscriptionClosed { kind: &'static str },
+
+    /// 交易会话未连接
+    #[error("交易会话未连接")]
+    TradeSessionNotConnected,
+
+    /// 数据尚未就绪
+    #[error("数据尚未就绪: {0}")]
+    DataNotReady(String),
+
     /// 内部错误
     #[error("内部错误: {0}")]
     InternalError(String),
@@ -148,6 +168,21 @@ impl TqError {
         TqError::InvalidParameter(
             "使用 focus_datetime 时必须提供 focus_position，且 focus_position 必须 >= 0".to_string(),
         )
+    }
+
+    /// 行情未初始化错误
+    pub fn market_not_initialized(capability: &'static str) -> Self {
+        TqError::MarketNotInitialized { capability }
+    }
+
+    /// 客户端已关闭错误
+    pub fn client_closed(capability: &'static str) -> Self {
+        TqError::ClientClosed { capability }
+    }
+
+    /// 订阅已关闭错误
+    pub fn subscription_closed(kind: &'static str) -> Self {
+        TqError::SubscriptionClosed { kind }
     }
 
     pub fn truncate_body(body: String) -> String {

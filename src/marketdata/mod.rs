@@ -472,7 +472,7 @@ impl QuoteRef {
         let mut close_rx = self.state.subscribe_close();
         loop {
             if *close_rx.borrow() {
-                return Err(TqError::InternalError("market data session closed".to_string()));
+                return Err(TqError::client_closed("quote wait_update"));
             }
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
@@ -482,10 +482,10 @@ impl QuoteRef {
             }
             tokio::select! {
                 changed = rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("quote channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::DataNotReady("quote channel closed".to_string()))?;
                 }
                 changed = close_rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::client_closed("quote wait_update"))?;
                 }
             }
         }
@@ -537,7 +537,7 @@ impl KlineRef {
         let mut close_rx = self.state.subscribe_close();
         loop {
             if *close_rx.borrow() {
-                return Err(TqError::InternalError("market data session closed".to_string()));
+                return Err(TqError::client_closed("kline wait_update"));
             }
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
@@ -547,10 +547,10 @@ impl KlineRef {
             }
             tokio::select! {
                 changed = rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("kline channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::DataNotReady("kline channel closed".to_string()))?;
                 }
                 changed = close_rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::client_closed("kline wait_update"))?;
                 }
             }
         }
@@ -598,7 +598,7 @@ impl TickRef {
         let mut close_rx = self.state.subscribe_close();
         loop {
             if *close_rx.borrow() {
-                return Err(TqError::InternalError("market data session closed".to_string()));
+                return Err(TqError::client_closed("tick wait_update"));
             }
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
@@ -608,10 +608,10 @@ impl TickRef {
             }
             tokio::select! {
                 changed = rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("tick channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::DataNotReady("tick channel closed".to_string()))?;
                 }
                 changed = close_rx.changed() => {
-                    changed.map_err(|_| TqError::InternalError("market data close channel closed".to_string()))?;
+                    changed.map_err(|_| TqError::client_closed("tick wait_update"))?;
                 }
             }
         }
