@@ -1,4 +1,4 @@
-use super::{KlineKey, MarketDataState, SymbolId, TqApi};
+use super::{KlineKey, MarketDataState, QuoteRef, SymbolId, TqApi};
 use crate::errors::TqError;
 use crate::types::{Kline, Quote, Tick};
 use std::sync::Arc;
@@ -164,6 +164,39 @@ async fn kline_and_tick_is_changing_semantics_match_quote() {
 
     assert!(k.is_changing().await);
     assert!(t.is_changing().await);
+}
+
+#[tokio::test]
+async fn quote_ref_try_load_reports_not_ready_before_first_snapshot() {
+    let state = Arc::new(MarketDataState::default());
+    let quote_ref = QuoteRef::new_for_test(Arc::clone(&state), "SHFE.au2602");
+
+    assert!(!quote_ref.is_ready().await);
+    assert!(quote_ref.snapshot().await.is_none());
+
+    let err = quote_ref.try_load().await.unwrap_err();
+    assert!(matches!(err, TqError::DataNotReady(_)));
+}
+
+#[tokio::test]
+async fn quote_ref_try_load_returns_live_snapshot_after_update() {
+    let state = Arc::new(MarketDataState::default());
+    let quote_ref = QuoteRef::new_for_test(Arc::clone(&state), "SHFE.au2602");
+
+    state
+        .update_quote(
+            "SHFE.au2602".into(),
+            Quote {
+                instrument_id: "au2602".to_string(),
+                last_price: 520.5,
+                ..Default::default()
+            },
+        )
+        .await;
+
+    assert!(quote_ref.is_ready().await);
+    let quote = quote_ref.try_load().await.unwrap();
+    assert_eq!(quote.last_price, 520.5);
 }
 
 #[tokio::test]

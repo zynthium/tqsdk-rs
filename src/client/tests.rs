@@ -836,3 +836,14 @@ async fn inactive_market_access_returns_market_not_initialized() {
         Err(TqError::MarketNotInitialized { .. })
     ));
 }
+
+#[test]
+fn checked_market_getters_require_initialized_market() {
+    let client = build_inactive_client();
+
+    let err = match client.try_quote("SHFE.au2602") {
+        Ok(_) => panic!("try_quote should fail when market is not initialized"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, TqError::MarketNotInitialized { .. }));
+}

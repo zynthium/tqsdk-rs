@@ -446,15 +446,33 @@ impl QuoteRef {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test(state: Arc<MarketDataState>, symbol: &str) -> Self {
+        Self::new(state, symbol.into())
+    }
+
     pub fn symbol(&self) -> &str {
         self.symbol.as_str()
     }
 
-    pub async fn load(&self) -> Arc<Quote> {
-        self.state
-            .quote_snapshot(&self.symbol)
+    pub async fn snapshot(&self) -> Option<Arc<Quote>> {
+        self.state.quote_snapshot(&self.symbol).await
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        self.snapshot().await.is_some()
+    }
+
+    pub async fn try_load(&self) -> Result<Arc<Quote>> {
+        self.snapshot()
             .await
-            .unwrap_or_else(|| Arc::new(Quote::default()))
+            .ok_or_else(|| TqError::DataNotReady(format!("quote {}", self.symbol())))
+    }
+
+    /// Legacy convenience API.
+    /// 在首帧到达前会返回默认值；新代码优先使用 `snapshot()` / `is_ready()` / `try_load()`
+    pub async fn load(&self) -> Arc<Quote> {
+        self.snapshot().await.unwrap_or_else(|| Arc::new(Quote::default()))
     }
 
     pub async fn is_changing(&self) -> bool {
@@ -515,11 +533,24 @@ impl KlineRef {
         self.key.duration_nanos
     }
 
-    pub async fn load(&self) -> Arc<Kline> {
-        self.state
-            .kline_snapshot(&self.key)
+    pub async fn snapshot(&self) -> Option<Arc<Kline>> {
+        self.state.kline_snapshot(&self.key).await
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        self.snapshot().await.is_some()
+    }
+
+    pub async fn try_load(&self) -> Result<Arc<Kline>> {
+        self.snapshot()
             .await
-            .unwrap_or_else(|| Arc::new(Kline::default()))
+            .ok_or_else(|| TqError::DataNotReady(format!("kline {}@{}", self.symbol(), self.duration_nanos())))
+    }
+
+    /// Legacy convenience API.
+    /// 在首帧到达前会返回默认值；新代码优先使用 `snapshot()` / `is_ready()` / `try_load()`
+    pub async fn load(&self) -> Arc<Kline> {
+        self.snapshot().await.unwrap_or_else(|| Arc::new(Kline::default()))
     }
 
     pub async fn is_changing(&self) -> bool {
@@ -576,11 +607,24 @@ impl TickRef {
         self.symbol.as_str()
     }
 
-    pub async fn load(&self) -> Arc<Tick> {
-        self.state
-            .tick_snapshot(&self.symbol)
+    pub async fn snapshot(&self) -> Option<Arc<Tick>> {
+        self.state.tick_snapshot(&self.symbol).await
+    }
+
+    pub async fn is_ready(&self) -> bool {
+        self.snapshot().await.is_some()
+    }
+
+    pub async fn try_load(&self) -> Result<Arc<Tick>> {
+        self.snapshot()
             .await
-            .unwrap_or_else(|| Arc::new(Tick::default()))
+            .ok_or_else(|| TqError::DataNotReady(format!("tick {}", self.symbol())))
+    }
+
+    /// Legacy convenience API.
+    /// 在首帧到达前会返回默认值；新代码优先使用 `snapshot()` / `is_ready()` / `try_load()`
+    pub async fn load(&self) -> Arc<Tick> {
+        self.snapshot().await.unwrap_or_else(|| Arc::new(Tick::default()))
     }
 
     pub async fn is_changing(&self) -> bool {

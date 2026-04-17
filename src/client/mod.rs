@@ -12,7 +12,7 @@ mod market;
 mod tests;
 
 use crate::auth::Authenticator;
-use crate::errors::Result;
+use crate::errors::{Result, TqError};
 use crate::marketdata::{KlineRef, MarketDataUpdates, QuoteRef, TickRef};
 use crate::trade_session::{TradeLoginOptions, TradeSession};
 use live::LiveContext;
@@ -92,16 +92,41 @@ pub struct Client {
 }
 
 impl Client {
+    fn ensure_market_ref_capability(&self, capability: &'static str) -> Result<()> {
+        if self.live.market_state.is_closed() {
+            return Err(TqError::client_closed(capability));
+        }
+        if !self.live.is_active() {
+            return Err(TqError::market_not_initialized(capability));
+        }
+        Ok(())
+    }
+
     pub fn quote(&self, symbol: &str) -> QuoteRef {
         self.live.live_api.quote(symbol)
+    }
+
+    pub fn try_quote(&self, symbol: &str) -> Result<QuoteRef> {
+        self.ensure_market_ref_capability("quote ref")?;
+        Ok(self.quote(symbol))
     }
 
     pub fn kline_ref(&self, symbol: &str, duration: Duration) -> KlineRef {
         self.live.live_api.kline(symbol, duration)
     }
 
+    pub fn try_kline_ref(&self, symbol: &str, duration: Duration) -> Result<KlineRef> {
+        self.ensure_market_ref_capability("kline ref")?;
+        Ok(self.kline_ref(symbol, duration))
+    }
+
     pub fn tick_ref(&self, symbol: &str) -> TickRef {
         self.live.live_api.tick(symbol)
+    }
+
+    pub fn try_tick_ref(&self, symbol: &str) -> Result<TickRef> {
+        self.ensure_market_ref_capability("tick ref")?;
+        Ok(self.tick_ref(symbol))
     }
 
     pub async fn wait_update(&self) -> Result<()> {
