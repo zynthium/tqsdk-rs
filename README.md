@@ -466,11 +466,11 @@ let duration = Duration::from_secs(60);
 
 let _sub = client.get_kline_serial(symbol, duration, 300).await?;
 
-let kline_ref = client.kline_ref(symbol, duration);
+let kline_ref = client.try_kline_ref(symbol, duration)?;
 
 loop {
     kline_ref.wait_update().await?;
-    let k = kline_ref.load().await;
+    let k = kline_ref.try_load().await?;
     println!("最新 K 线: id={} close={}", k.id, k.close);
 }
 ```
@@ -484,17 +484,17 @@ let symbols = ["SHFE.au2602", "SHFE.ag2512"];
 
 let _quote_sub = client.subscribe_quote(&symbols).await?;
 
-let au = client.quote("SHFE.au2602");
-let ag = client.quote("SHFE.ag2512");
+let au = client.try_quote("SHFE.au2602")?;
+let ag = client.try_quote("SHFE.ag2512")?;
 
 loop {
     let updates = client.wait_update_and_drain().await?;
 
     if updates.quotes.contains(&"SHFE.au2602".into()) {
-        println!("au 最新价: {}", au.load().await.last_price);
+        println!("au 最新价: {}", au.try_load().await?.last_price);
     }
     if updates.quotes.contains(&"SHFE.ag2512".into()) {
-        println!("ag 最新价: {}", ag.load().await.last_price);
+        println!("ag 最新价: {}", ag.try_load().await?.last_price);
     }
 }
 ```
@@ -967,11 +967,11 @@ tqsdk-rs/
 
 ```rust
 let quote_sub = client.subscribe_quote(&["SHFE.au2602"]).await?;
-let quote_ref = client.quote("SHFE.au2602");
+let quote_ref = client.try_quote("SHFE.au2602")?;
 
 loop {
     quote_ref.wait_update().await?;
-    println!("最新价: {}", quote_ref.load().await.last_price);
+    println!("最新价: {}", quote_ref.try_load().await?.last_price);
 }
 ```
 

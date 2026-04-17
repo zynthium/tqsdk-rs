@@ -6,7 +6,7 @@
 
 - `MarketNotInitialized`: 忘记 `init_market()`
 - `ClientClosed`: 在已关闭 client 上继续使用 live 功能
-- `SubscriptionClosed`: 在已关闭的 `SeriesSubscription`（或其他已关闭 subscription 句柄）上继续等待/读取
+- `SubscriptionClosed`: 在已关闭的 `SeriesSubscription` 上继续等待/读取
 - `TradeSessionNotConnected`: `TradeSession` 尚未 `connect()`
 - `DataNotReady`: 数据尚未 ready，或内部通道已关闭导致当前读取路径暂不可用
 
