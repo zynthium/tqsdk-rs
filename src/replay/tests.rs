@@ -82,6 +82,25 @@ fn account_with_balance(pre_balance: f64, balance: f64) -> Account {
     }
 }
 
+fn settlement_with_balance(trading_day: NaiveDate, pre_balance: f64, balance: f64) -> DailySettlementLog {
+    DailySettlementLog {
+        trading_day,
+        account: account_with_balance(pre_balance, balance),
+        positions: vec![],
+        trades: vec![],
+    }
+}
+
+fn empty_backtest_result() -> BacktestResult {
+    BacktestResult {
+        settlements: vec![],
+        final_accounts: vec![],
+        final_positions: vec![],
+        trades: vec![],
+        symbol_volume_multipliers: BTreeMap::new(),
+    }
+}
+
 #[test]
 fn replay_report_counts_days_and_trades() {
     let result = BacktestResult {
@@ -112,6 +131,49 @@ fn replay_report_counts_days_and_trades() {
 
     assert_eq!(report.trade_count, 2);
     assert_eq!(report.trading_day_count, 2);
+}
+
+#[test]
+fn replay_report_returns_none_for_balance_metrics_without_settlements() {
+    let report = super::ReplayReport::from_result(&empty_backtest_result());
+
+    assert_eq!(report.return_rate, None);
+    assert_eq!(report.annualized_return, None);
+    assert_eq!(report.max_drawdown, None);
+}
+
+#[test]
+fn replay_report_computes_return_and_annualized_yield_from_daily_settlements() {
+    let result = BacktestResult {
+        settlements: vec![
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(), 10_000_000.0, 10_100_000.0),
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(), 10_100_000.0, 10_500_000.0),
+        ],
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+    let ror = 10_500_000.0 / 10_000_000.0 - 1.0;
+    let annual = (10_500_000.0_f64 / 10_000_000.0_f64).powf(250.0_f64 / 2.0_f64) - 1.0_f64;
+
+    assert_close(report.return_rate.unwrap(), ror);
+    assert_close(report.annualized_return.unwrap(), annual);
+}
+
+#[test]
+fn replay_report_computes_max_drawdown_from_running_peak_balance() {
+    let result = BacktestResult {
+        settlements: vec![
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 8).unwrap(), 10_000_000.0, 10_000_000.0),
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 9).unwrap(), 10_000_000.0, 11_000_000.0),
+            settlement_with_balance(NaiveDate::from_ymd_opt(2026, 4, 10).unwrap(), 11_000_000.0, 9_900_000.0),
+        ],
+        ..empty_backtest_result()
+    };
+
+    let report = super::ReplayReport::from_result(&result);
+
+    assert_close(report.max_drawdown.unwrap(), 0.1);
 }
 
 #[async_trait]
