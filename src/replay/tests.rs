@@ -160,6 +160,33 @@ async fn replay_session_runtime_accepts_same_account_set_in_different_order() {
 }
 
 #[tokio::test]
+async fn replay_session_runtime_preserves_initial_account_lookup_keys_after_normalized_reuse() {
+    let source = Arc::new(FakeHistoricalSource {
+        meta: HashMap::new(),
+        klines: HashMap::new(),
+        ticks: HashMap::new(),
+    });
+
+    let mut session = ReplaySession::from_source(
+        ReplayConfig::new(
+            DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
+            DateTime::<Utc>::from_timestamp(3600, 0).unwrap(),
+        )
+        .unwrap(),
+        source,
+    )
+    .await
+    .unwrap();
+
+    let first = session.runtime([" TQSIM "]).await.unwrap();
+    assert!(first.account(" TQSIM ").is_ok());
+
+    let second = session.runtime(["TQSIM"]).await.unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    assert!(second.account(" TQSIM ").is_ok());
+}
+
+#[tokio::test]
 async fn replay_session_runtime_rejects_mismatched_account_sets() {
     let source = Arc::new(FakeHistoricalSource {
         meta: HashMap::new(),

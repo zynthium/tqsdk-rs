@@ -334,7 +334,7 @@ println!("trades={}", result.trades.len());
 回测语义说明：
 
 - `ReplaySession::step()` 是唯一的时间推进入口。
-- `ReplaySession::runtime(accounts)` 会规范化账户集合（trim、去空、去重、忽略顺序）；首次初始化后，后续调用必须提供同一账户集合，否则返回 `InvalidParameter`。
+- `ReplaySession::runtime(accounts)` 会对账户集合做规范化比较（trim、去空、去重、忽略顺序），仅用于判断后续调用是否与首次初始化等价；首次初始化后若账户集合不等价则返回 `InvalidParameter`。返回 runtime 的 `account(...)` 查找 key 仍以首次成功初始化时保留的账户字符串为准，不会被后续调用重写。
 - runtime 在 `step()` 返回后新发出的订单，最早从下一次 `step()` 开始参与撮合，不会回头消费已处理过的本 step 价格路径。
 - `quote()` 在没有显式 tick / kline 订阅时会自动补一个隐式 1 分钟 feed；runtime 下单也会自动为未显式订阅的 symbol 建立回放 quote 驱动。
 

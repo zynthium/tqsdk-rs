@@ -272,13 +272,13 @@ impl ReplaySession {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let account_keys = normalize_runtime_accounts(accounts);
-        if account_keys.is_empty() {
+        let normalized = normalize_runtime_accounts(accounts);
+        if normalized.comparison_keys.is_empty() {
             return Err(TqError::InvalidParameter("runtime accounts 不能为空".to_string()));
         }
 
         if let Some(runtime) = &self.runtime {
-            if self.runtime_account_keys.as_ref() != Some(&account_keys) {
+            if self.runtime_account_keys.as_ref() != Some(&normalized.comparison_keys) {
                 return Err(TqError::InvalidParameter(
                     "runtime accounts 必须与首次初始化一致".to_string(),
                 ));
@@ -287,15 +287,15 @@ impl ReplaySession {
         }
 
         let execution = Arc::new(ReplayExecutionState::new(
-            &account_keys,
-            SimBroker::new(account_keys.clone(), self.config.initial_balance),
+            &normalized.runtime_account_ids,
+            SimBroker::new(normalized.runtime_account_ids.clone(), self.config.initial_balance),
         ));
         for metadata in self.market.all_metadata().await {
             execution.register_symbol(metadata).await;
         }
         let market = Arc::new(ReplayMarketAdapter::new(Arc::clone(&self.market)));
         let adapter = Arc::new(ReplayExecutionAdapter::new(
-            account_keys.clone(),
+            normalized.runtime_account_ids.clone(),
             Arc::clone(&execution),
             Arc::clone(&self.market),
             self.bootstrap.clone(),
@@ -304,7 +304,7 @@ impl ReplaySession {
 
         self.execution = Some(execution);
         self.runtime = Some(Arc::clone(&runtime));
-        self.runtime_account_keys = Some(account_keys);
+        self.runtime_account_keys = Some(normalized.comparison_keys);
         Ok(runtime)
     }
 
@@ -443,19 +443,38 @@ impl ReplaySession {
     }
 }
 
-fn normalize_runtime_accounts<I, S>(accounts: I) -> Vec<String>
+struct RuntimeAccountNormalization {
+    runtime_account_ids: Vec<String>,
+    comparison_keys: Vec<String>,
+}
+
+fn normalize_runtime_accounts<I, S>(accounts: I) -> RuntimeAccountNormalization
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut normalized = accounts
-        .into_iter()
-        .map(|account| account.as_ref().trim().to_string())
-        .filter(|account| !account.is_empty())
-        .collect::<Vec<_>>();
-    normalized.sort();
-    normalized.dedup();
-    normalized
+    let mut seen = HashSet::new();
+    let mut runtime_account_ids = Vec::new();
+    let mut comparison_keys = Vec::new();
+
+    for account in accounts {
+        let raw = account.as_ref();
+        let normalized = raw.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        let normalized = normalized.to_string();
+        if seen.insert(normalized.clone()) {
+            runtime_account_ids.push(raw.to_string());
+            comparison_keys.push(normalized);
+        }
+    }
+
+    comparison_keys.sort();
+    RuntimeAccountNormalization {
+        runtime_account_ids,
+        comparison_keys,
+    }
 }
 
 fn preview_bar_open_quote(
