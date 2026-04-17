@@ -1,6 +1,6 @@
 # 回放与回测
 
-当用户问 `ReplaySession`、`ReplayConfig`、回放句柄、时间推进、回测结果或 replay runtime 时，读本文件。
+当用户问 `ReplaySession`、`ReplayConfig`、回放句柄、时间推进、`BacktestResult`、`ReplayReport` 或 replay runtime 时，读本文件。
 
 ## 当前唯一推荐入口
 
@@ -49,6 +49,9 @@ while let Some(step) = session.step().await? {
 
 let result = session.finish().await?;
 println!("trades={}", result.trades.len());
+
+let report = ReplayReport::from_result(&result);
+println!("max_drawdown={:?}", report.max_drawdown);
 ```
 
 ## `step()` 的语义
@@ -78,7 +81,8 @@ println!("trades={}", result.trades.len());
 - 当前 replay / backtest 主路径聚焦期货 / 商品期权。
 - replay 内核已支持日切结算，以及按交易日应用辅助元数据 patch；这层能力现在可用于主连 `underlying_symbol` 日切。
 - 默认 `Client::create_backtest_session()` 历史源还不会自动抓取历史主连映射；如果要依赖 continuous mapping 时间线，当前应使用可注入的 historical source 或测试源。
-- 当前还不覆盖：股票回放 / T+1、分红送股时间线、时间驱动 `TqReplay` 等价物、内建 report metrics。
+- 当前 replay 已内建纯后处理 report metrics：`ReplayReport::from_result(&BacktestResult)` 计算 headline metrics，但不包含 GUI / 图表渲染。
+- 当前还不覆盖：股票回放 / T+1、分红送股时间线、时间驱动 `TqReplay` 等价物。
 
 ## replay runtime
 
@@ -98,8 +102,24 @@ let task = account.target_pos("SHFE.rb2605").build()?;
 - `final_accounts`
 - `final_positions`
 - `trades`
+- `symbol_volume_multipliers`
 
 这是回测结束后的汇总结果，不是实时更新对象。
+
+`ReplayReport` 是这层原始结果之上的后处理 API：
+
+```rust
+let result = session.finish().await?;
+let report = ReplayReport::from_result(&result);
+println!("winning_rate={:?}", report.winning_rate);
+println!("sortino={:?}", report.sortino_ratio);
+```
+
+注意：
+
+- `ReplayReport` 不驱动时间，也不参与撮合
+- v1 只提供 headline metrics 和基础计数
+- 样本不足或 Python 会返回 `nan` / `inf` 的场景，在 Rust 边界返回 `None`
 
 ## 避免的非 canonical 写法
 

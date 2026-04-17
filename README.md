@@ -17,6 +17,7 @@
 - 零拷贝共享：状态快照与事件对象尽量通过 `Arc<T>` 共享，降低多消费者场景开销。
 - Polars 集成：可选启用 `polars` feature，将序列数据直接转换为 DataFrame。
 - 回测支持：`ReplaySession` 是历史回放、回测推进与 runtime 驱动的唯一推荐入口。
+- 回测报告：`ReplayReport::from_result(&BacktestResult)` 提供 Python 对齐的 headline metrics，保持 GUI-free。
 - 连接入口收口：原始 WebSocket transport 保持为内部实现，公开连接路径统一走 `Client`、`TradeSession` 和 `ReplaySession`。
 
 ## Current Public Contract
@@ -335,7 +336,9 @@ while let Some(step) = session.step().await? {
 task.cancel().await?;
 task.wait_finished().await?;
 let result = session.finish().await?;
+let report = ReplayReport::from_result(&result);
 println!("trades={}", result.trades.len());
+println!("max_drawdown={:?}", report.max_drawdown);
 ```
 
 回测语义说明：
@@ -345,6 +348,8 @@ println!("trades={}", result.trades.len());
 - runtime 在 `step()` 返回后新发出的订单，最早从下一次 `step()` 开始参与撮合，不会回头消费已处理过的本 step 价格路径。
 - `quote()` 在没有显式 tick / kline 订阅时会自动补一个隐式 1 分钟 feed；runtime 下单也会自动为未显式订阅的 symbol 建立回放 quote 驱动。
 - replay 内核支持按交易日应用辅助元数据 patch；当前这层能力可用于主连 `underlying_symbol` 日切，但默认 `Client::create_backtest_session()` 历史源仍未接入历史主连映射抓取，因此不要假设所有回测都会自动获得该时间线。
+- `ReplayReport` 是 `BacktestResult` 的纯后处理层；它不参与 replay 推进，也不改变撮合语义。
+- `ReplayReport` v1 只提供 headline metrics；不稳定样本返回 `Option<f64>`，并且不包含 GUI / 图表渲染。
 
 > `ReplaySession::runtime(accounts)` 在第一次成功初始化后会固定 account set；
 > 后续只有传入同一组账户（顺序无关、重复忽略）才会复用同一个 runtime。
@@ -726,7 +731,9 @@ while let Some(step) = session.step().await? {
 
 println!("closed bars={}", bars.rows().await.len());
 let result = session.finish().await?;
+let report = ReplayReport::from_result(&result);
 println!("final trades={}", result.trades.len());
+println!("sharpe={:?}", report.sharpe_ratio);
 ```
 
 ### 5. 合约查询

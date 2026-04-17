@@ -9,8 +9,10 @@
 2. `TradeSession`
    手工交易链路，负责连接交易前置、读取交易快照、消费可靠事件流。
 3. `ReplaySession`
-   回测 / 回放入口，负责注册 replay 句柄、推进时间、产出最终结果。
-4. `TqRuntime`
+   回测 / 回放入口，负责注册 replay 句柄、推进时间、产出原始 `BacktestResult`。
+4. `ReplayReport`
+   `BacktestResult` 上的纯后处理指标层，负责 Python 对齐 headline metrics，不参与 replay 推进。
+5. `TqRuntime`
    目标持仓和 scheduler 运行时，只在用户明确问 target-pos / runtime 时展开。
 
 ## 当前公开 API 地图
@@ -26,7 +28,7 @@
 | 权限检查 | `auth_id()`、`has_feature()`、`check_md_grants()` | 不再暴露 auth guard |
 | 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 |
 | live target-pos | `ClientBuilder::trade_session*().build_runtime()` 或 `client.into_runtime()` | `runtime.account("broker:user")` |
-| replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` | `step()` 是唯一时间推进 |
+| replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` -> `ReplayReport::from_result(&BacktestResult)` | `step()` 是唯一时间推进；report 是后处理 |
 | replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | 首次成功初始化后 account set 固定；换账户集合需新建 `ReplaySession` |
 | DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 |
 
@@ -87,6 +89,7 @@ Client::builder -> build
   -> 可选 runtime([account])
   -> step() 循环
   -> finish()
+  -> ReplayReport::from_result(&result)
 ```
 
 补充：`ReplaySession::runtime([account])` 在第一次成功初始化后会固定账户集合；后续仅同一集合（顺序无关、重复忽略）会复用同一 runtime。
@@ -96,6 +99,7 @@ Client::builder -> build
 - 用户只问 Quote / K 线 / Tick：不要默认切到 `TqRuntime` 或 `TradeSession`
 - 用户只问合约查询 / 期权筛选：不要展开 `InsAPI` 内部结构，直接给 `Client::query_*()`
 - 用户问回测：直接讲 `ReplaySession`
+- 用户问回测指标 / 报告：先讲 `BacktestResult`，再讲 `ReplayReport`
 - 用户问 target-pos：不要说这是 `TradeSession` 上的方法
 - 用户问“公开入口是什么”：先回答 `Client` / `TradeSession` / `ReplaySession` / `TqRuntime`
 

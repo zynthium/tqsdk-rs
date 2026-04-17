@@ -37,7 +37,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 2. Quote、K 线、Tick、`wait_update()`、`wait_update_and_drain()`、`QuoteRef`、`SeriesSubscription`、历史下载：读 [references/market-and-series.md](references/market-and-series.md)
 3. 合约查询、期权筛选、结算价、持仓排名、EDB、交易日历、交易状态：读 [references/ins-and-reference-data.md](references/ins-and-reference-data.md)
 4. `TradeSession`、可靠事件流、下单撤单、snapshot getter：读 [references/trading-and-orders.md](references/trading-and-orders.md)
-5. `ReplaySession`、`ReplayConfig`、`step()`、`finish()`、回放句柄：读 [references/simulation-and-backtest.md](references/simulation-and-backtest.md)
+5. `ReplaySession`、`ReplayConfig`、`step()`、`finish()`、`BacktestResult`、`ReplayReport`、回放句柄：读 [references/simulation-and-backtest.md](references/simulation-and-backtest.md)
 6. `TqRuntime`、`runtime.account(...).target_pos(...).build()`、scheduler builder：读 [references/runtime-and-target-pos.md](references/runtime-and-target-pos.md)
 7. 示例映射与入口提示：读 [references/example-map.md](references/example-map.md)
 8. 未初始化、无更新、权限、`Lagged`、回放不推进等常见坑：读 [references/error-faq.md](references/error-faq.md)
@@ -53,6 +53,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
    - 账户 / 持仓 / 订单 / 成交的最新状态：`wait_update()` + getter
    - 订单 / 成交 / 通知 / 异步错误事件：可靠事件流 `subscribe_events()` / `subscribe_order_events()` / `subscribe_trade_events()`
 6. `ReplaySession` 是唯一推荐的回测 / 回放入口；`step()` 是唯一时间推进入口。
+7. `ReplayReport` 是 `BacktestResult` 的纯后处理指标层；不要把它讲成回放执行器的一部分。
 7. `TqRuntime` 只在目标持仓 / scheduler / runtime 问题里展开；入口是 `runtime.account("...")`。
 
 ## 优先推荐的公开 API
@@ -65,6 +66,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - `Client::query_*()`, `Client::get_trading_calendar()`, `Client::get_trading_status()`
 - `Client::create_trade_session*()`, `TradeSession::connect()`, `TradeSession::wait_update()`, `TradeSession::subscribe_*_events()`
 - `Client::create_backtest_session()`, `ReplaySession::quote()`, `ReplaySession::kline()`, `ReplaySession::tick()`, `ReplaySession::aligned_kline()`, `ReplaySession::step()`, `ReplaySession::finish()`
+- `ReplayReport::from_result(&BacktestResult)`
 - `ClientBuilder::build_runtime()`, `Client::into_runtime()`, `TqRuntime::account()`, `AccountHandle::target_pos()`, `AccountHandle::target_pos_scheduler()`
 
 ## 避免的非 canonical surface
@@ -74,6 +76,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - 不要把 Quote 讲成 fan-out callback / channel 模型
 - 不要把 Series 讲成 update callback 或 stream fan-out 模型
 - 回测入口统一讲 `ReplaySession`
+- 回测指标统一讲 `ReplayReport::from_result(&result)`，不要暗示 GUI 报告能力
 - target-pos 入口统一讲 account builder
 - 不要把 `TradeSession` 的公开叙事写成账户 / 持仓 callback 或 best-effort channel 模型
 - 不要默认把底层 `websocket/`、`SeriesAPI`、`InsAPI` 讲成普通用户主路径
