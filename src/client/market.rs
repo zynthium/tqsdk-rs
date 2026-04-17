@@ -3,7 +3,7 @@ use crate::datamanager::{DataManager, DataManagerConfig};
 use crate::errors::{Result, TqError};
 use crate::ins::InsAPI;
 use crate::marketdata::MarketDataState;
-use crate::replay::{HistoricalSource, InstrumentMetadata};
+use crate::replay::{HistoricalSource, InstrumentMetadata, ReplayAuxiliaryEvent};
 use crate::series::{SeriesAPI, SeriesCachePolicy};
 use crate::types::Kline;
 use crate::websocket::{TqQuoteWebsocket, TqTradingStatusWebsocket, WebSocketConfig};
@@ -167,6 +167,14 @@ impl HistoricalSource for SdkHistoricalSource {
     ) -> Result<Vec<crate::types::Tick>> {
         let (_, series) = self.ensure_apis().await?;
         series.replay_tick_data_series(symbol, start_dt, end_dt).await
+    }
+
+    async fn load_auxiliary_events(
+        &self,
+        _start_dt: DateTime<Utc>,
+        _end_dt: DateTime<Utc>,
+    ) -> Result<Vec<ReplayAuxiliaryEvent>> {
+        Ok(Vec::new())
     }
 }
 

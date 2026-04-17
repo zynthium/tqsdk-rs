@@ -11,7 +11,8 @@ mod types;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use feed::HistoricalSource;
+pub(crate) use feed::{HistoricalSource, ReplayAuxiliaryEvent};
+pub use providers::{ContinuousContractProvider, ContinuousMapping};
 pub use series::{
     AlignedKlineHandle, AlignedKlineRow, KlineSeriesRow, ReplayKlineHandle, ReplayTickHandle, TickSeriesRow,
 };

@@ -12,7 +12,7 @@ use crate::types::{
 use async_trait::async_trait;
 use tokio::time::{sleep, timeout};
 
-use super::feed::{FeedCursor, FeedEvent, HistoricalSource};
+use super::feed::{FeedCursor, FeedEvent, HistoricalSource, ReplayAuxiliaryEvent};
 use super::kernel::ReplayKernel;
 use super::providers::{ContinuousContractProvider, ContinuousMapping};
 use super::quote::{QuoteSelection, QuoteSynthesizer};
@@ -53,6 +53,45 @@ impl HistoricalSource for FakeHistoricalSource {
         _end_dt: DateTime<Utc>,
     ) -> crate::Result<Vec<Tick>> {
         Ok(self.ticks.get(symbol).cloned().unwrap_or_default())
+    }
+}
+
+struct FakeHistoricalSourceWithAux {
+    inner: FakeHistoricalSource,
+    auxiliary_events: Vec<ReplayAuxiliaryEvent>,
+}
+
+#[async_trait]
+impl HistoricalSource for FakeHistoricalSourceWithAux {
+    async fn instrument_metadata(&self, symbol: &str) -> crate::Result<InstrumentMetadata> {
+        self.inner.instrument_metadata(symbol).await
+    }
+
+    async fn load_klines(
+        &self,
+        symbol: &str,
+        duration: Duration,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> crate::Result<Vec<Kline>> {
+        self.inner.load_klines(symbol, duration, start_dt, end_dt).await
+    }
+
+    async fn load_ticks(
+        &self,
+        symbol: &str,
+        start_dt: DateTime<Utc>,
+        end_dt: DateTime<Utc>,
+    ) -> crate::Result<Vec<Tick>> {
+        self.inner.load_ticks(symbol, start_dt, end_dt).await
+    }
+
+    async fn load_auxiliary_events(
+        &self,
+        _start_dt: DateTime<Utc>,
+        _end_dt: DateTime<Utc>,
+    ) -> crate::Result<Vec<ReplayAuxiliaryEvent>> {
+        Ok(self.auxiliary_events.clone())
     }
 }
 
@@ -1465,6 +1504,119 @@ fn continuous_provider_only_reveals_requested_day() {
 
     let current = provider.mapping_for(NaiveDate::from_ymd_opt(2026, 4, 8).unwrap());
     assert_eq!(current["KQ.m@SHFE.rb"], "SHFE.rb2605");
+}
+
+#[tokio::test]
+async fn replay_session_continuous_contract_switches_underlying_symbol() {
+    let symbol = "KQ.m@SHFE.rb";
+    let first_day = NaiveDate::from_ymd_opt(2026, 4, 8).unwrap();
+    let second_day = NaiveDate::from_ymd_opt(2026, 4, 9).unwrap();
+    let provider = ContinuousContractProvider::from_rows(vec![
+        ContinuousMapping {
+            trading_day: first_day,
+            symbol: symbol.to_string(),
+            underlying_symbol: "SHFE.rb2605".to_string(),
+        },
+        ContinuousMapping {
+            trading_day: second_day,
+            symbol: symbol.to_string(),
+            underlying_symbol: "SHFE.rb2610".to_string(),
+        },
+    ]);
+    let first_day_mapping = provider.mapping_for(first_day);
+    let second_day_mapping = provider.mapping_for(second_day);
+    let expected_first_underlying = first_day_mapping.get(symbol).unwrap().clone();
+    let expected_second_underlying = second_day_mapping.get(symbol).unwrap().clone();
+
+    let source = Arc::new(FakeHistoricalSourceWithAux {
+        inner: FakeHistoricalSource {
+            meta: HashMap::from([(
+                symbol.to_string(),
+                InstrumentMetadata {
+                    underlying_symbol: expected_first_underlying.clone(),
+                    price_tick: 1.0,
+                    ..future_metadata(symbol)
+                },
+            )]),
+            klines: HashMap::from([(
+                (symbol.to_string(), 86_400_000_000_000),
+                vec![
+                    Kline {
+                        id: 1,
+                        datetime: shanghai_nanos(2026, 4, 8, 0, 0, 0),
+                        open: 10.0,
+                        high: 12.0,
+                        low: 9.0,
+                        close: 11.0,
+                        open_oi: 100,
+                        close_oi: 110,
+                        volume: 5,
+                        epoch: None,
+                    },
+                    Kline {
+                        id: 2,
+                        datetime: shanghai_nanos(2026, 4, 9, 0, 0, 0),
+                        open: 11.0,
+                        high: 13.0,
+                        low: 10.0,
+                        close: 12.0,
+                        open_oi: 110,
+                        close_oi: 120,
+                        volume: 6,
+                        epoch: None,
+                    },
+                ],
+            )]),
+            ticks: HashMap::new(),
+        },
+        auxiliary_events: vec![
+            ReplayAuxiliaryEvent::ContinuousMapping(ContinuousMapping {
+                trading_day: first_day,
+                symbol: symbol.to_string(),
+                underlying_symbol: expected_first_underlying.clone(),
+            }),
+            ReplayAuxiliaryEvent::ContinuousMapping(ContinuousMapping {
+                trading_day: second_day,
+                symbol: symbol.to_string(),
+                underlying_symbol: expected_second_underlying.clone(),
+            }),
+        ],
+    });
+
+    let start_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 8, 0, 0, 0)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+    let end_dt = chrono::FixedOffset::east_opt(8 * 3600)
+        .unwrap()
+        .with_ymd_and_hms(2026, 4, 9, 23, 59, 59)
+        .single()
+        .unwrap()
+        .with_timezone(&Utc);
+
+    let mut session = ReplaySession::from_source(ReplayConfig::new(start_dt, end_dt).unwrap(), source)
+        .await
+        .unwrap();
+    let _daily = session.kline(symbol, Duration::from_secs(86_400), 8).await.unwrap();
+    let runtime = session.runtime(["TQSIM"]).await.unwrap();
+    let market = runtime.account("TQSIM").unwrap().runtime().market();
+
+    let mut observed_underlyings = Vec::new();
+    while let Some(step) = session.step().await.unwrap() {
+        let quote = market.latest_quote(symbol).await.unwrap();
+        observed_underlyings.push((step.current_dt, quote.underlying_symbol));
+    }
+
+    assert_eq!(
+        observed_underlyings.first().map(|(_, underlying)| underlying.as_str()),
+        Some(expected_first_underlying.as_str())
+    );
+    assert_eq!(
+        observed_underlyings.last().map(|(_, underlying)| underlying.as_str()),
+        Some(expected_second_underlying.as_str())
+    );
 }
 
 #[test]

@@ -59,6 +59,17 @@ impl ReplayMarketState {
             .collect()
     }
 
+    pub(crate) async fn patch_underlying_symbol(&self, symbol: &str, underlying_symbol: String) {
+        if let Some(metadata) = self
+            .metadata
+            .write()
+            .expect("replay market metadata lock poisoned")
+            .get_mut(symbol)
+        {
+            metadata.underlying_symbol = underlying_symbol;
+        }
+    }
+
     pub(crate) async fn update_quote(&self, quote: ReplayQuote) {
         let symbol = quote.symbol.clone();
         self.quotes

@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::NaiveDate;

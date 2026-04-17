@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use crate::replay::{
 use crate::runtime::{RuntimeMode, TqRuntime};
 use crate::types::Tick;
 
-use super::feed::FeedCursor;
+use super::feed::{FeedCursor, ReplayAuxiliaryEvent};
 use super::kernel::ReplayKernel;
 use super::runtime::{ReplayExecutionAdapter, ReplayExecutionState, ReplayMarketAdapter, ReplayMarketState};
 use super::sim::SimBroker;
@@ -46,6 +46,7 @@ pub struct ReplaySession {
     runtime_account_keys: Option<Vec<String>>,
     active_trading_day: Option<NaiveDate>,
     active_trading_day_end_nanos: Option<i64>,
+    pending_auxiliary: BTreeMap<NaiveDate, Vec<ReplayAuxiliaryEvent>>,
 }
 
 #[derive(Clone)]
@@ -179,6 +180,7 @@ impl ReplayBootstrapper {
 
 impl ReplaySession {
     pub(crate) async fn from_source(config: ReplayConfig, source: Arc<dyn HistoricalSource>) -> Result<Self> {
+        let auxiliary_events = source.load_auxiliary_events(config.start_dt, config.end_dt).await?;
         let kernel = Arc::new(TokioMutex::new(ReplayKernel::default()));
         let market = Arc::new(ReplayMarketState::default());
         let bootstrap = ReplayBootstrapper {
@@ -198,6 +200,7 @@ impl ReplaySession {
             runtime_account_keys: None,
             active_trading_day: None,
             active_trading_day_end_nanos: None,
+            pending_auxiliary: group_auxiliary_events(auxiliary_events),
         })
     }
 
@@ -358,6 +361,7 @@ impl ReplaySession {
         let Some(active_trading_day) = self.active_trading_day else {
             self.active_trading_day = Some(trading_day);
             self.active_trading_day_end_nanos = Some(trading_day_end_nanos);
+            self.apply_auxiliary_for_day(trading_day).await;
             return Ok(None);
         };
 
@@ -370,6 +374,7 @@ impl ReplaySession {
         }
         self.active_trading_day = Some(trading_day);
         self.active_trading_day_end_nanos = Some(trading_day_end_nanos);
+        self.apply_auxiliary_for_day(trading_day).await;
 
         Ok(self.execution.as_ref().map(|_| active_trading_day))
     }
@@ -384,6 +389,27 @@ impl ReplaySession {
             && let Some(underlying) = self.market.metadata_for(&metadata.underlying_symbol).await
         {
             execution.register_symbol(underlying).await;
+        }
+    }
+
+    async fn apply_auxiliary_for_day(&mut self, trading_day: NaiveDate) {
+        let Some(events) = self.pending_auxiliary.remove(&trading_day) else {
+            return;
+        };
+
+        for event in events {
+            match event {
+                ReplayAuxiliaryEvent::ContinuousMapping(mapping) => {
+                    self.market
+                        .patch_underlying_symbol(&mapping.symbol, mapping.underlying_symbol)
+                        .await;
+                    if let Some(execution) = &self.execution
+                        && let Some(updated) = self.market.metadata_for(&mapping.symbol).await
+                    {
+                        execution.register_symbol(updated).await;
+                    }
+                }
+            }
         }
     }
 
@@ -475,6 +501,14 @@ where
         runtime_account_ids,
         comparison_keys,
     }
+}
+
+fn group_auxiliary_events(events: Vec<ReplayAuxiliaryEvent>) -> BTreeMap<NaiveDate, Vec<ReplayAuxiliaryEvent>> {
+    let mut grouped = BTreeMap::new();
+    for event in events {
+        grouped.entry(event.trading_day()).or_insert_with(Vec::new).push(event);
+    }
+    grouped
 }
 
 fn preview_bar_open_quote(

@@ -2,11 +2,32 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::errors::Result;
 use crate::replay::InstrumentMetadata;
 use crate::types::{Kline, Tick};
+
+use super::providers::ContinuousMapping;
+
+#[derive(Debug, Clone)]
+pub enum ReplayAuxiliaryEvent {
+    ContinuousMapping(ContinuousMapping),
+}
+
+impl From<ContinuousMapping> for ReplayAuxiliaryEvent {
+    fn from(mapping: ContinuousMapping) -> Self {
+        Self::ContinuousMapping(mapping)
+    }
+}
+
+impl ReplayAuxiliaryEvent {
+    pub fn trading_day(&self) -> NaiveDate {
+        match self {
+            Self::ContinuousMapping(mapping) => mapping.trading_day,
+        }
+    }
+}
 
 #[async_trait]
 pub(crate) trait HistoricalSource: Send + Sync {
@@ -21,6 +42,14 @@ pub(crate) trait HistoricalSource: Send + Sync {
     ) -> Result<Vec<Kline>>;
 
     async fn load_ticks(&self, symbol: &str, start_dt: DateTime<Utc>, end_dt: DateTime<Utc>) -> Result<Vec<Tick>>;
+
+    async fn load_auxiliary_events(
+        &self,
+        _start_dt: DateTime<Utc>,
+        _end_dt: DateTime<Utc>,
+    ) -> Result<Vec<ReplayAuxiliaryEvent>> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone)]
