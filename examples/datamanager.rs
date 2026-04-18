@@ -1,7 +1,7 @@
 //! DataManager 高级功能示例
 //!
 //! 演示以下功能：
-//! - 路径监听 (Watch/UnWatch)
+//! - 路径监听 (`watch_handle`)
 //! - 数据访问 (Get/GetByPath)
 //! - 多路径同时监听
 //! - merge 完成后的 epoch 订阅
@@ -25,7 +25,8 @@ async fn watch_example() {
     let dm = Arc::new(DataManager::new(initial_data, config));
 
     // 监听特定路径
-    let watch_rx = dm.watch(vec!["quotes".to_string(), "SHFE.au2512".to_string()]);
+    let mut watch_handle = dm.watch_handle(vec!["quotes".to_string(), "SHFE.au2512".to_string()]);
+    let watch_rx = watch_handle.receiver().clone();
 
     // 启动 tokio task 接收数据
     tokio::spawn(async move {
@@ -78,7 +79,7 @@ async fn watch_example() {
 
     // 取消监听
     info!("取消监听...");
-    dm.unwatch(&["quotes".to_string(), "SHFE.au2512".to_string()]).ok();
+    watch_handle.cancel();
 
     info!("Watch 示例结束");
 }
@@ -135,23 +136,23 @@ async fn multi_watch_example() {
 
     // 监听多个路径
     let symbols = vec!["SHFE.au2512", "SHFE.ag2512", "DCE.m2505"];
-    let mut channels = HashMap::new();
+    let mut watchers = Vec::new();
 
     for symbol in &symbols {
-        let rx = dm.watch(vec!["quotes".to_string(), symbol.to_string()]);
-        channels.insert(symbol.to_string(), rx);
-    }
-
-    // 启动多个 tokio task 接收数据
-    for (symbol, rx) in channels {
-        tokio::spawn(async move {
-            while let Ok(data) = rx.recv().await {
-                if let Value::Object(quote_map) = data {
-                    info!(
-                        "📊 {} 更新: {:.2}",
-                        symbol,
-                        quote_map.get("last_price").and_then(|v| v.as_f64()).unwrap_or(0.0)
-                    );
+        let handle = dm.watch_handle(vec!["quotes".to_string(), symbol.to_string()]);
+        let rx = handle.receiver().clone();
+        watchers.push(handle);
+        tokio::spawn({
+            let symbol = symbol.to_string();
+            async move {
+                while let Ok(data) = rx.recv().await {
+                    if let Value::Object(quote_map) = data {
+                        info!(
+                            "📊 {} 更新: {:.2}",
+                            symbol,
+                            quote_map.get("last_price").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                        );
+                    }
                 }
             }
         });
@@ -174,8 +175,8 @@ async fn multi_watch_example() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // 清理
-    for symbol in &symbols {
-        dm.unwatch(&["quotes".to_string(), symbol.to_string()]).ok();
+    for watcher in &mut watchers {
+        watcher.cancel();
     }
 
     info!("多路径监听示例结束");

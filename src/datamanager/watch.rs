@@ -1,5 +1,4 @@
 use super::{DataManager, DataWatchHandle, PathWatcher, WatchRegistration};
-use crate::errors::{Result, TqError};
 use async_channel::{Receiver, TrySendError, bounded};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -11,13 +10,6 @@ use tracing::warn;
 const MAX_CONSECUTIVE_FULL_WATCHER_SENDS: usize = 16;
 
 impl DataManager {
-    /// 监听指定路径的数据变化
-    ///
-    /// 返回一个 receiver，数据变化时会推送到这个 channel
-    pub fn watch(&self, path: Vec<String>) -> Receiver<Value> {
-        self.watch_handle(path).into_receiver()
-    }
-
     pub fn watch_handle(&self, path: Vec<String>) -> DataWatchHandle {
         DataWatchHandle {
             registration: self.watch_register(path),
@@ -45,18 +37,6 @@ impl DataManager {
             rx,
             watchers: Some(std::sync::Arc::downgrade(&self.watchers)),
         }
-    }
-
-    /// 取消路径监听
-    pub fn unwatch(&self, path: &[String]) -> Result<()> {
-        let path_key = path.join(".");
-        let mut watchers = self.watchers.write().unwrap();
-
-        if watchers.remove(&path_key).is_none() {
-            return Err(TqError::DataNotFound(format!("路径未监听: {}", path_key)));
-        }
-
-        Ok(())
     }
 
     /// 通知所有 watchers
@@ -113,11 +93,6 @@ impl WatchRegistration {
         };
         remove_watcher(&watchers, &self.path, self.watcher_id)
     }
-
-    fn into_receiver(mut self) -> Receiver<Value> {
-        self.watchers = None;
-        self.rx.clone()
-    }
 }
 
 impl DataWatchHandle {
@@ -131,14 +106,6 @@ impl DataWatchHandle {
 
     pub fn cancel(&mut self) -> bool {
         self.registration.cancel()
-    }
-
-    /// Transfer ownership into a standalone receiver.
-    ///
-    /// This detaches receiver usage from handle lifetime and keeps legacy
-    /// `watch()` behavior.
-    pub fn into_receiver(self) -> Receiver<Value> {
-        self.registration.into_receiver()
     }
 }
 

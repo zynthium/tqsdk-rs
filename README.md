@@ -35,8 +35,7 @@
   账户/持仓统一走 `wait_update()` + getter；
   订单/成交/通知/异步错误统一走可靠事件流。
 - 不引入 `TqClient` 同义 facade，也不把 runtime / transport 装配层重新暴露为主路径。
-
-当前 README 中的代码示例反映当前 canonical API；后续 breaking slices 只继续收口剩余的 advanced surface 与 `TradeSession` 细节。
+当前 README 中的代码示例反映当前 canonical API。
 
 ## 功能模块
 
@@ -57,7 +56,7 @@
 ### 数据管理
 
 - DIFF 数据合并与默认值补全。
-- `watch` / `unwatch` 路径监听。
+- `watch_handle()` 路径监听与 `DataWatchHandle` 生命周期控制。
 - 数据变化 epoch 追踪与按路径读取。
 
 ### 分析与回测
@@ -73,22 +72,6 @@
 - `ClientBuilder` 配置式构建。
 - `tracing` 日志集成和自定义 Layer。
 - 12 个示例程序覆盖主要使用路径。
-
-## 近期修复与更新
-
-- 修复行情 WebSocket 断线重连后未完成 `ins_query` 可能丢失或重复的问题。
-- 修复 `query_cont_quotes` 在未提供 `has_night` 时仍发送该变量导致的超时问题。
-- 修复 `TradeSession::connect()` 失败后后台任务仍可能继续重连或保活的问题。
-- 修复 `subscribe_order_events()` / `subscribe_trade_events()` 会被通知或异步错误事件挤占 retention 窗口、导致误报 `Lagged` 的问题。
-- 将 `SeriesSubscription` 收敛为快照式状态接口，窗口消费统一改用 `wait_update()` / `load()`。
-- 修复 `quote` / `history` 示例在截止时间后仍可能卡在等待更新的问题，并为 `trade` 示例增加可配置运行时长。
-- 将 Quote、TradingStatus、DataManager watch 与 WebSocket 离线发送队列改为有界缓冲，慢消费者场景下以丢弃更新替代无限堆积。
-- 修复 `has_md_grants` 的指数权限判断顺序：
-  `SSE.000016` / `SSE.000300` / `SSE.000905` / `SSE.000852` 现在会优先校验 `lmt_idx` 权限。
-- 优化交易状态订阅生命周期：
-  多订阅者按引用计数聚合，receiver 释放后会自动减少订阅集合并回发 `subscribe_trading_status`。
-- 日志与磁盘缓存初始化移除库级 `panic` 路径，改为可降级行为和告警输出。
-- token 解析新增 claims 校验（`exp` / `nbf` / `azp`），减少异常 token 对权限边界的影响。
 
 ## 验证与排查
 
@@ -449,9 +432,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 `tqsdk-rs` 提供高性能的状态驱动行情订阅。通过 `Client` 直接获取数据引用（`QuoteRef`/`KlineRef`/`TickRef`），并使用 `wait_update()` 驱动策略循环。
 
-> `QuoteRef` / `KlineRef` / `TickRef` 的 `load()` 是 legacy convenience API：
-> 在首帧到达前会返回默认值。新代码优先使用
-> `snapshot()` / `is_ready()` / `try_load()`。
+`QuoteRef` / `KlineRef` / `TickRef` 通过 `snapshot()` / `is_ready()` / `try_load()`
+读取当前快照。
 
 #### Quote 订阅 - 实时行情
 
@@ -587,7 +569,7 @@ println!("持仓数={}", positions.len());
 
 #### 下单操作
 
-当前接口使用 `InsertOrderRequest`，不再是旧版的扁平参数列表：
+下单接口使用 `InsertOrderRequest`：
 
 ```rust
 use tqsdk_rs::InsertOrderRequest;
@@ -709,9 +691,8 @@ dm.merge_data(
 );
 ```
 
-> `DataManager::watch_handle()` 是推荐的 watcher 生命周期 API；
-> `watch()` / `unwatch()` 仅保留为 legacy convenience，`unwatch(path)`
-> 仍然是 path-wide 行为，不适合多个同路径 watcher 并存时做精确释放。
+`DataManager::watch_handle()` 返回 `DataWatchHandle`。
+同一路径的多个 watcher 彼此独立；提前释放时调用 `cancel()`，否则由 handle/receiver 的生命周期自动回收。
 
 ### 4. 回测与历史回放（推荐）
 
@@ -964,7 +945,7 @@ tqsdk-rs/
 
 - Quote、Kline、Tick、Account、Order、Trade 等结构完整定义。
 - 查询与交易接口统一返回 `Result<T, TqError>`。
-- `InsertOrderRequest` 等结构体接口比旧版字符串参数更稳定。
+- `InsertOrderRequest` 等结构体统一表达交易请求参数。
 
 ### 并发与背压
 

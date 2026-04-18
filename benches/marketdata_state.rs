@@ -88,7 +88,7 @@ fn bench_quote(c: &mut Criterion) {
             let symbol_id = symbol_id.clone();
             async move {
                 state.update_quote(symbol_id, sample_quote(symbol, price)).await;
-                let quote = quote_ref.load().await;
+                let quote = quote_ref.try_load().await.unwrap();
                 black_box(quote.last_price);
             }
         });
@@ -159,7 +159,7 @@ fn bench_kline(c: &mut Criterion) {
             let key = key.clone();
             async move {
                 state.update_kline(key, sample_kline(id, dt, 10.0)).await;
-                let kline = kline_ref.load().await;
+                let kline = kline_ref.try_load().await.unwrap();
                 black_box(kline.close);
             }
         });

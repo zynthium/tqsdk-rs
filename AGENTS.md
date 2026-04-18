@@ -55,8 +55,8 @@ src/
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`。
 - `SeriesSubscription` 的 canonical 发起入口应使用 `Client::{get_kline_serial,get_tick_serial}`。
 - `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要把它们讲成普通“历史窗口”。
-- market ref 新代码优先使用 `try_load()` / `snapshot()` / `is_ready()`；`load()` 仅作为兼容 convenience API。
-- `DataManager` watcher 推荐使用 `watch_handle()`；不要再把 `unwatch(path)` 当成精确释放单个 watcher 的 canonical 路径。
+- market ref 读取路径使用 `try_load()` / `snapshot()` / `is_ready()`。
+- `DataManager` watcher 生命周期使用 `watch_handle()` 与 `DataWatchHandle::cancel()` / drop。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。
 - `Client::builder(...).build()` / `ClientBuilder::build()` 后若要用 live 行情 / serial / query facade，仍需显式 `init_market()`。
 - market 显式前置检查优先 `Client::market_is_initialized()` / `Client::check_market_initialized("...")`；`try_quote` / `try_kline_ref` / `try_tick_ref` 继续作为 fail-fast ref，不要把 bare `quote()` / `kline_ref()` / `tick_ref()` 当成 precondition 主路径。
@@ -141,8 +141,7 @@ src/
 
 - 保持现有架构边界，不要把高层策略逻辑塞回底层传输层。
 - 修改公开 API 时，同时检查 `README.md`、`examples/`、`prelude` re-export、`AGENTS.md`、`CLAUDE.md`。
-- `skills/tqsdk-rs/` 是当前 public shape 的知识包，不是历史归档；当架构、公开 API、README canonical 路径、示例、迁移建议或 agent 规则变化时，要同步更新。
-- 如果本次改动删除或替换了 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
+- `skills/tqsdk-rs/` 是当前 public shape 的知识包；当架构、公开 API、README canonical 路径、示例或 agent 规则变化时，要同步更新。
 - live API 继续收口到 `Client`，不要把新能力重新挂回 `TqApi` / `SeriesAPI` / `InsAPI`。
 - root / `prelude` 的 canonical contract 继续包含 `TradeSessionEvent`、`MarketDataUpdates` 及其字段类型 `SymbolId` / `KlineKey`，不要让主路径用户被迫回退到内部模块命名空间。
 - `SeriesAPI` / `InsAPI` 已退回 crate 内部装配细节；query / series / downloader 主路径应继续收口到 `Client` facade。
@@ -150,13 +149,13 @@ src/
 - 切换账号应关闭旧 `Client` 并创建新 `Client`；不要把 `set_auth()+init_market()` 写成运行时切账号 canonical 路径。
 - 权限检查优先 `Client::{auth_id,has_feature,check_md_grants}`；不要把 auth guard 暴露回主路径。
 - `ClientBuilder::build()` 不应隐式初始化 tracing；如需 SDK 日志，请显式调用 `init_logger()` 或组合 `create_logger_layer()`。
-- 修改 `DataManager` merge/query/watch 语义时，要显式考虑向后兼容性。
+- 修改 `DataManager` merge/query/watch 语义时，要显式考虑 watcher 生命周期、通知时机与丢弃策略。
 - 修改 `DataManager` 通知路径时，继续优先 `subscribe_epoch()` + `get_path_epoch()`，不要为新逻辑重新引入 callback plumbing。
 - 修改重连、背压或消息队列时，要说明是否改变了丢弃策略、顺序语义或完整性保证。
 - 新增错误边界时，优先扩展 `TqError`，不要把公开错误类型打散。
 - 示例代码属于公开接口的一部分；API 变了，示例必须同步。
 - `benches/` 是内部性能验证工件，不是公开 canonical 示例；不要把 advanced/internal 压测脚本搬回 `examples/`。
-- 文档修改不要提及历史版本的 API、示例、迁移建议或 agent 规则。
+- 文档修改只描述当前 contract，不要写替代路径、双轨说明或阶段性路线。
 
 ## Agent 文档同步
 

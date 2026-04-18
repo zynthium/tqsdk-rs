@@ -1088,7 +1088,7 @@ fn build_insert_order_packet_defaults_limit_to_gfd_any() {
 }
 
 #[tokio::test]
-async fn trade_session_send_login_includes_compatibility_fields() {
+async fn trade_session_send_login_includes_client_metadata_fields() {
     let dm = build_dm();
     let session = build_session_with_login_options(
         dm,

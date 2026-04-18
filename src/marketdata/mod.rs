@@ -492,12 +492,6 @@ impl QuoteRef {
             .ok_or_else(|| TqError::DataNotReady(format!("quote {}", self.symbol())))
     }
 
-    /// Legacy convenience API.
-    /// 在首帧到达前会返回默认值；新代码优先使用 `snapshot()` / `is_ready()` / `try_load()`
-    pub async fn load(&self) -> Arc<Quote> {
-        self.snapshot().await.unwrap_or_else(|| Arc::new(Quote::default()))
-    }
-
     pub async fn is_changing(&self) -> bool {
         let current = self.state.quote_epoch(&self.symbol).await;
         let seen = self.seen_epoch.load(Ordering::SeqCst);
@@ -568,12 +562,6 @@ impl KlineRef {
             .ok_or_else(|| TqError::DataNotReady(format!("kline {}@{}", self.symbol(), self.duration_nanos())))
     }
 
-    /// Legacy convenience API.
-    /// 在首帧到达前会返回默认值；新代码优先使用 `snapshot()` / `is_ready()` / `try_load()`
-    pub async fn load(&self) -> Arc<Kline> {
-        self.snapshot().await.unwrap_or_else(|| Arc::new(Kline::default()))
-    }
-
     pub async fn is_changing(&self) -> bool {
         let current = self.state.kline_epoch(&self.key).await;
         let seen = self.seen_epoch.load(Ordering::SeqCst);
@@ -638,12 +626,6 @@ impl TickRef {
         self.snapshot()
             .await
             .ok_or_else(|| TqError::DataNotReady(format!("tick {}", self.symbol())))
-    }
-
-    /// Legacy convenience API.
-    /// 在首帧到达前会返回默认值；新代码优先使用 `snapshot()` / `is_ready()` / `try_load()`
-    pub async fn load(&self) -> Arc<Tick> {
-        self.snapshot().await.unwrap_or_else(|| Arc::new(Tick::default()))
     }
 
     pub async fn is_changing(&self) -> bool {

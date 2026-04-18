@@ -16,8 +16,8 @@
 - 当前 replay 非目标仍包括股票回放 / T+1、分红送股时间线、时间驱动 `TqReplay` 等价物和内建 report metrics。
 - `DataManager` 是 DIFF 状态中心，通知逻辑优先 `subscribe_epoch()` 驱动。
 - `QuoteSubscription` / `SeriesSubscription` 已是 auto-start，`close()` 只负责提前释放资源。
-- market ref 新代码优先使用 `try_load()` / `snapshot()` / `is_ready()`；`load()` 仅作为兼容 convenience API。
-- `DataManager` watcher 推荐使用 `watch_handle()`；不要再把 `unwatch(path)` 当成精确释放单个 watcher 的 canonical 路径。
+- market ref 读取路径使用 `try_load()` / `snapshot()` / `is_ready()`。
+- `DataManager` watcher 生命周期使用 `watch_handle()` 与 `DataWatchHandle::cancel()` / drop。
 - live bounded 序列入口优先 `Client::{get_kline_serial,get_tick_serial}`。
 - `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要和 serial 混用。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。

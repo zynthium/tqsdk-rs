@@ -44,12 +44,12 @@ async fn main() -> Result<()> {
     client.init_market().await?;
 
     let quote_sub = client.subscribe_quote(&[underlying.as_str()]).await?;
-    let quote_ref = client.quote(underlying.as_str());
+    let quote_ref = client.try_quote(underlying.as_str())?;
 
     let underlying_price = tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             quote_ref.wait_update().await?;
-            let q = quote_ref.load().await;
+            let q = quote_ref.try_load().await?;
             if q.instrument_id == underlying && q.last_price.is_finite() && q.last_price > 0.0 {
                 return Ok::<f64, TqError>(q.last_price);
             }

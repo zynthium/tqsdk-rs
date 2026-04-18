@@ -46,10 +46,10 @@ async fn main() -> Result<()> {
 
     let tick_sub = client.get_tick_serial(au.as_str(), 256).await?;
 
-    let au_quote = client.quote(au.as_str());
-    let ag_quote = client.quote(ag.as_str());
-    let au_kline = client.kline_ref(au.as_str(), kline_duration);
-    let au_tick = client.tick_ref(au.as_str());
+    let au_quote = client.try_quote(au.as_str())?;
+    let ag_quote = client.try_quote(ag.as_str())?;
+    let au_kline = client.try_kline_ref(au.as_str(), kline_duration)?;
+    let au_tick = client.try_tick_ref(au.as_str())?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
 
@@ -66,13 +66,13 @@ async fn main() -> Result<()> {
 
         for symbol in updates.quotes {
             if symbol.as_str() == au.as_str() {
-                let q = au_quote.load().await;
+                let q = au_quote.try_load().await?;
                 println!(
                     "Quote {} last={:.2} change={:.2} bid1={:.2} ask1={:.2}",
                     q.instrument_id, q.last_price, q.change, q.bid_price1, q.ask_price1
                 );
             } else if symbol.as_str() == ag.as_str() {
-                let q = ag_quote.load().await;
+                let q = ag_quote.try_load().await?;
                 println!(
                     "Quote {} last={:.2} change={:.2} bid1={:.2} ask1={:.2}",
                     q.instrument_id, q.last_price, q.change, q.bid_price1, q.ask_price1
@@ -82,7 +82,7 @@ async fn main() -> Result<()> {
 
         for key in updates.klines {
             if key.symbol.as_str() == au.as_str() && key.duration_nanos == au_kline.duration_nanos() {
-                let k = au_kline.load().await;
+                let k = au_kline.try_load().await?;
                 println!(
                     "Kline {} id={} O={:.2} H={:.2} L={:.2} C={:.2} V={}",
                     au_kline.symbol(),
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
 
         for symbol in updates.ticks {
             if symbol.as_str() == au.as_str() {
-                let t = au_tick.load().await;
+                let t = au_tick.try_load().await?;
                 println!(
                     "Tick {} id={} last={:.2} bid1={:.2}({}) ask1={:.2}({}) V={}",
                     au_tick.symbol(),

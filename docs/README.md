@@ -1,28 +1,8 @@
 # Docs Index
 
-This directory mixes current product documentation with historical engineering notes.
-
-## Current Docs
-
 - [architecture.md](./architecture.md)
-  Current module boundaries, data flow, and architecture notes.
-- [migration-marketdata-state.md](./migration-marketdata-state.md)
-  Migration guide for the state-driven marketdata model.
-- [migration-remove-legacy-compat.md](./migration-remove-legacy-compat.md)
-  Migration guide for removed legacy and compatibility surfaces.
-
-## Historical Docs
-
-- [superpowers/README.md](./superpowers/README.md)
-  Historical implementation plans and design notes from the April 2026 cleanup.
+  模块边界、数据流和当前架构说明。
+- [CODE_WIKI.md](./CODE_WIKI.md)
+  面向源码阅读的模块索引与代码路径提示。
 - [archive/](./archive/)
-  Older archived notes that are kept for context, not as canonical API documentation.
-
-## Reading Order
-
-If you are trying to understand the repository as it exists today, start with:
-
-1. `README.md` at the repository root
-2. `docs/architecture.md`
-3. the relevant migration guide in this directory
-4. `AGENTS.md` if you are making changes in the repo
+  归档资料入口；其中的内容仅作保留，不作为当前 public contract。

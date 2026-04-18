@@ -291,8 +291,10 @@ impl MarketAdapter for FakeMarketAdapter {
     }
 
     async fn wait_quote_update(&self, symbol: &str) -> crate::runtime::RuntimeResult<()> {
-        let rx = self.dm.watch(vec!["quotes".to_string(), symbol.to_string()]);
-        rx.recv()
+        let handle = self.dm.watch_handle(vec!["quotes".to_string(), symbol.to_string()]);
+        handle
+            .receiver()
+            .recv()
             .await
             .map(|_| ())
             .map_err(|_| RuntimeError::AdapterChannelClosed {

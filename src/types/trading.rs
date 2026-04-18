@@ -307,17 +307,6 @@ impl PartialEq for Trade {
     }
 }
 
-/// 通知事件
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NotifyEvent {
-    pub code: String,
-    pub level: String,
-    pub r#type: String,
-    pub content: String,
-    pub bid: String,
-    pub user_id: String,
-}
-
 /// 通知
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Notification {
@@ -327,13 +316,6 @@ pub struct Notification {
     pub content: String,
     pub bid: String,
     pub user_id: String,
-}
-
-/// 持仓更新
-#[derive(Debug, Clone)]
-pub struct PositionUpdate {
-    pub symbol: String,
-    pub position: Position,
 }
 
 /// 下单请求

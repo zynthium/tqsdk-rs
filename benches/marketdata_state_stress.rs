@@ -35,7 +35,7 @@ async fn run_case(symbol_count: usize) {
 
     let load_start = Instant::now();
     for r in &refs {
-        let q = r.load().await;
+        let q = r.try_load().await.unwrap();
         std::hint::black_box(q.last_price);
     }
     let load_cost = load_start.elapsed();

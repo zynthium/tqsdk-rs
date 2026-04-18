@@ -324,9 +324,9 @@ async fn client_exposes_market_state_refs_directly() {
     assert_eq!(updates.klines.len(), 1);
     assert_eq!(updates.ticks.len(), 1);
 
-    let quote = quote_ref.load().await;
-    let kline = kline_ref.load().await;
-    let tick = tick_ref.load().await;
+    let quote = quote_ref.try_load().await.unwrap();
+    let kline = kline_ref.try_load().await.unwrap();
+    let tick = tick_ref.try_load().await.unwrap();
 
     assert_eq!(quote_ref.symbol(), symbol);
     assert_eq!(kline_ref.symbol(), symbol);

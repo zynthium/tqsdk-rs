@@ -58,13 +58,14 @@ fn test_set_default_creates_nested_path() {
 }
 
 #[test]
-fn test_watch_channel_is_bounded() {
+fn test_watch_handle_channel_is_bounded() {
     let config = DataManagerConfig {
         watch_channel_capacity: 1,
         ..DataManagerConfig::default()
     };
     let dm = DataManager::new(HashMap::new(), config);
-    let rx = dm.watch(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+    let handle = dm.watch_handle(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+    let rx = handle.receiver().clone();
 
     dm.merge_data(
         json!({
@@ -107,8 +108,8 @@ fn datamanager_drops_persistently_full_watcher() {
 
     let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
     let path_key = path.join(".");
-    let _slow = dm.watch(path.clone());
-    let fast = dm.watch(path.clone());
+    let _slow = dm.watch_handle(path.clone());
+    let fast = dm.watch_handle(path.clone());
 
     for last_price in 0..64 {
         dm.merge_data(
@@ -125,7 +126,9 @@ fn datamanager_drops_persistently_full_watcher() {
             true,
         );
 
-        fast.try_recv().expect("healthy watcher should keep draining updates");
+        fast.receiver()
+            .try_recv()
+            .expect("healthy watcher should keep draining updates");
     }
 
     assert_eq!(
@@ -902,13 +905,15 @@ fn test_merge_prototype_hash_branch_delete_without_reduce_diff() {
 }
 
 #[test]
-fn test_watch_allows_multiple_receivers_for_same_path() {
+fn test_watch_handle_allows_multiple_receivers_for_same_path() {
     let mut initial_data = HashMap::new();
     initial_data.insert("quotes".to_string(), json!({}));
     let dm = DataManager::new(initial_data, DataManagerConfig::default());
 
-    let rx1 = dm.watch(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
-    let rx2 = dm.watch(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+    let first = dm.watch_handle(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+    let second = dm.watch_handle(vec!["quotes".to_string(), "SHFE.au2602".to_string()]);
+    let rx1 = first.receiver().clone();
+    let rx2 = second.receiver().clone();
 
     dm.merge_data(
         json!({
@@ -1098,7 +1103,7 @@ fn test_notify_watchers_prunes_closed_receivers() {
 
     let path = vec!["quotes".to_string(), "SHFE.au2602".to_string()];
     let path_key = path.join(".");
-    let rx = dm.watch(path);
+    let rx = dm.watch_handle(path).receiver().clone();
     drop(rx);
 
     dm.merge_data(

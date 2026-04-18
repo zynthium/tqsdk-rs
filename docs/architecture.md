@@ -6,7 +6,7 @@
 
 > Canonical public contract:
 > 当前公开主路径收口为 `Client`、`TradeSession`、`ReplaySession`、`TqRuntime`
-> 四条入口。迁移背景与已删除 surface 见 `docs/migration-remove-legacy-compat.md`。
+> 四条入口。
 
 ## 总体分层
 
@@ -72,7 +72,7 @@ Client (facade + builder + market)
 
 | 模块 | 入口类型 | 职责 |
 |------|---------|------|
-| `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期；`init_market()` 后启用 market/query facade，可用 `market_is_initialized()` / `check_market_initialized()` 做显式前置检查 |
+| `client` | `Client`, `ClientBuilder`, `ClientConfig` | 统一入口，管理生命周期；`init_market()` 后启用 market/query facade，可用 `market_is_initialized()` / `check_market_initialized()` 做显式前置检查 |
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | internal transport module | 底层连接、重连、消息分发；不作为推荐 public entry point |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |

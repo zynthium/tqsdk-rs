@@ -50,7 +50,6 @@ loop {
 - latest K 线：`Client::kline_ref(symbol, duration)` -> `KlineRef`
 - latest Tick：`Client::tick_ref(symbol)` -> `TickRef`
 - `QuoteRef` / `KlineRef` / `TickRef` 新推荐路径：`wait_update()` + `try_load()`，或 `snapshot()` / `is_ready()`
-- `load()` 为 legacy convenience：首帧前返回默认值
 - 可以先创建 ref，再在 market 激活后使用；但 pre-init 阶段不要进入 `wait_update()` 循环
 
 这些 ref 适合状态驱动策略循环；通常与 `client.wait_update()` 或 `client.wait_update_and_drain()` 配合使用。
@@ -86,7 +85,8 @@ if snapshot.update.has_new_bar {
 
 ## DataManager watcher 生命周期
 
-- `DataManager::watch_handle()` 优先于 `watch()` / `unwatch()`
+- `DataManager::watch_handle()` 返回 `DataWatchHandle`
+- 读取 channel 时用 `receiver()`；提前释放时用 `cancel()`
 
 ## 多合约对齐 K 线
 

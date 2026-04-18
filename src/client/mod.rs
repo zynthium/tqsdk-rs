@@ -58,9 +58,6 @@ impl Default for ClientConfig {
     }
 }
 
-/// 客户端选项
-pub type ClientOption = Box<dyn Fn(&mut ClientConfig)>;
-
 /// 客户端构建器
 pub struct ClientBuilder {
     username: String,
