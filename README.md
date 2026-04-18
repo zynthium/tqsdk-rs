@@ -202,12 +202,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 > `Client::builder(...).build()` / `ClientBuilder::build()` 只负责认证与构造 session owner；live 行情能力在
 > `client.init_market().await?` 后才可用。
+> 如需显式检查 live market 前置条件，优先使用
+> `client.market_is_initialized()` / `client.check_market_initialized("quote ref")`。
 > 如需显式错误而不是延迟到后续调用时再失败，优先使用
 > `Client::{try_quote,try_kline_ref,try_tick_ref}`。
 > 在 `init_market()` 之前调用 `Client::{wait_update,wait_update_and_drain}` 或
 > `QuoteRef` / `KlineRef` / `TickRef` 的 `wait_update()`，现在会直接返回
 > `MarketNotInitialized`；`quote()` / `kline_ref()` / `tick_ref()` 仍可提前取句柄，
-> 但要等 market 激活后再进入等待循环。
+> 但 canonical 用法是先 `init_market()` 再进入等待循环。
 
 ### 目标持仓任务（Builder，推荐）
 
@@ -560,12 +562,8 @@ tokio::spawn(async move {
 });
 
 session.connect().await?;
+session.wait_ready().await?;
 
-while !session.is_ready() {
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-}
-
-session.wait_update().await?;
 let account = session.get_account().await?;
 let positions = session.get_positions().await?;
 println!("权益={} 可用={}", account.balance, account.available);
@@ -577,10 +575,14 @@ println!("持仓数={}", positions.len());
 
 说明：
 
-- 交易会话推荐先建立 `wait_update()` 与 `subscribe_events()` 的消费路径，再 `connect()`。
+- 交易会话推荐先建立 `subscribe_events()` 的消费路径，再 `connect()`。
 - `subscribe_events()` 是交易侧唯一 canonical push-style 入口；`subscribe_order_events()` / `subscribe_trade_events()` 是按事件类型过滤的可靠视图，并拥有独立 retention。
 - 可靠事件流只会看到订阅之后产生的事件；账户、持仓统一按最新快照读取。
 - 需要等待某个订单出现后续更新时，优先使用 `wait_order_update_reliable(order_id)`。
+- `connect()` 只负责启动连接 / 登录 / 快照同步流程。
+- `wait_ready()` 是进入“可安全读取快照与发单”状态的 canonical gate。
+- snapshot/latest-state 的 `wait_update()` 消费循环应在 `wait_ready()` 之后再进入。
+- `is_ready()` 仅保留为瞬时状态检查，不再作为主示例里的 busy-poll 路径。
 - `connect()` 失败时会清理本次连接产生的后台状态，不会继续残留重连任务。
 
 #### 下单操作

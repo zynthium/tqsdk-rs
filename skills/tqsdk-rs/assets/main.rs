@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let symbol = "SHFE.au2602";
     let _quote_sub = client.subscribe_quote(&[symbol]).await?;
-    let quote = client.quote(symbol);
+    let quote = client.try_quote(symbol)?;
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if updates.quotes.iter().any(|item| item.as_str() == symbol) {
-            let q = quote.load().await;
+            let q = quote.try_load().await?;
             println!("{} = {}", q.instrument_id, q.last_price);
         }
     }

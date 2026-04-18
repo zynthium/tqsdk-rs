@@ -89,6 +89,92 @@ async fn trade_session_wait_update_before_connect_returns_not_connected() {
 }
 
 #[tokio::test]
+async fn trade_session_wait_ready_before_connect_returns_not_connected() {
+    let dm = build_dm();
+    let session = build_session(dm);
+
+    let err = session
+        .wait_ready()
+        .await
+        .expect_err("wait_ready should fail before connect");
+    assert!(matches!(err, TqError::TradeSessionNotConnected));
+}
+
+#[tokio::test]
+async fn trade_session_wait_ready_blocks_until_trade_snapshot_ready() {
+    let dm = build_dm();
+    let session = Arc::new(build_session(Arc::clone(&dm)));
+
+    session.ws.force_missing_io_actor_for_test();
+    session.running.store(true, Ordering::SeqCst);
+    session.start_watching().await;
+
+    let mut waiter = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move { session.wait_ready().await })
+    };
+    tokio::task::yield_now().await;
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "session": {
+                        "trading_day": "20260411"
+                    },
+                    "trade_more_data": true
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    assert!(timeout(Duration::from_millis(100), &mut waiter).await.is_err());
+
+    dm.merge_data(
+        json!({
+            "trade": {
+                "u": {
+                    "trade_more_data": false
+                }
+            }
+        }),
+        true,
+        true,
+    );
+
+    timeout(Duration::from_secs(1), waiter).await.unwrap().unwrap().unwrap();
+    assert!(session.is_ready());
+
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn trade_session_wait_ready_unblocks_with_not_connected_after_close() {
+    let dm = build_dm();
+    let session = Arc::new(build_session(Arc::clone(&dm)));
+
+    session.running.store(true, Ordering::SeqCst);
+    session.start_watching().await;
+
+    let waiter = {
+        let session = Arc::clone(&session);
+        tokio::spawn(async move { session.wait_ready().await })
+    };
+    tokio::task::yield_now().await;
+
+    session.close().await.unwrap();
+
+    let err = timeout(Duration::from_secs(1), waiter)
+        .await
+        .unwrap()
+        .unwrap()
+        .expect_err("wait_ready should fail once session is closed");
+    assert!(matches!(err, TqError::TradeSessionNotConnected));
+}
+
+#[tokio::test]
 async fn trade_session_wait_update_still_delivers_snapshot_and_reliable_event_updates() {
     let dm = build_dm();
     let session = Arc::new(build_session(Arc::clone(&dm)));

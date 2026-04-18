@@ -50,12 +50,15 @@ tqsdk_rs::init_logger("info", true);
 ## `init_market()` 的规则
 
 - `Client::builder(...).build()` / `ClientBuilder::build()` != `init_market()`
-- 需要显式 market precondition 时用 `try_quote` / `try_kline_ref` / `try_tick_ref`
+- `Client::market_is_initialized()`：显式检查当前 market 是否已初始化
+- `Client::check_market_initialized("...")`：显式前置校验，不满足时直接返回错误
+- `try_quote` / `try_kline_ref` / `try_tick_ref` 仍是 fail-fast ref 入口
 
-- `subscribe_quote()`、`quote()` 的有效更新
+- `subscribe_quote()`、`try_quote()` 的有效更新
 - `Client::{wait_update,wait_update_and_drain}` 与 ref `wait_update()` 的等待循环
 - `get_kline_serial()` / `get_tick_serial()`
-- `kline_ref()` / `tick_ref()`
+- `try_kline_ref()` / `try_tick_ref()`
+- `quote()` / `kline_ref()` / `tick_ref()` 仍可作为 ref handle 路径，但不要当成显式 precondition 主路径
 - `query_*()`、`get_trading_calendar()`、`get_trading_status()`
 
 这些 live market / query 能力都应在 `init_market()` 之后使用。
@@ -122,7 +125,7 @@ build() -> into_runtime()
 ```
 
 所以 `build_runtime()` 只保证 runtime 装配完成，不会隐式连接 builder
-预配置的交易会话。
+预配置的交易会话；它不是推荐的“可直接发单 live runtime”路径。
 
 如果 live 模式下希望 builder 预配置的交易会话直接作为 runtime execution backend
 发单，使用 `build_connected_runtime()`：
@@ -156,6 +159,7 @@ let session = client
     .create_trade_session("simnow", user_id, trade_password)
     .await?;
 session.connect().await?;
+session.wait_ready().await?;
 
 let runtime = client.into_runtime();
 let account = runtime.account("simnow:user_id")?;

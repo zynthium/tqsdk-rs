@@ -51,7 +51,7 @@ src/
 - `DataManager` 是 DIFF 协议状态中心；merge 通知继续以 `subscribe_epoch()` 为主。
 - WebSocket 层继续保持 I/O actor 模式，避免跨 `await` 持锁。
 - `QuoteSubscription` 和 `SeriesSubscription` 已是 auto-start；创建后立即生效，`close()` 只负责提前释放资源。
-- Quote 的订阅生命周期归 `QuoteSubscription`；长期读取路径应收敛到 `Client::quote(symbol)`。
+- Quote 的订阅生命周期归 `QuoteSubscription`；`Client::quote(symbol)` 可作为 ref handle 路径，但显式 precondition/fail-fast 与新代码推荐读取路径优先 `Client::try_quote(symbol)`。
 - `SeriesSubscription` 的 canonical 消费方式是 `wait_update()` / `snapshot()` / `load()`。
 - `SeriesSubscription` 的 canonical 发起入口应使用 `Client::{get_kline_serial,get_tick_serial}`。
 - `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要把它们讲成普通“历史窗口”。
@@ -59,12 +59,14 @@ src/
 - `DataManager` watcher 推荐使用 `watch_handle()`；不要再把 `unwatch(path)` 当成精确释放单个 watcher 的 canonical 路径。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。
 - `Client::builder(...).build()` / `ClientBuilder::build()` 后若要用 live 行情 / serial / query facade，仍需显式 `init_market()`。
+- market 显式前置检查优先 `Client::market_is_initialized()` / `Client::check_market_initialized("...")`；`try_quote` / `try_kline_ref` / `try_tick_ref` 继续作为 fail-fast ref，不要把 bare `quote()` / `kline_ref()` / `tick_ref()` 当成 precondition 主路径。
 - live market 在 `init_market()` 前，`Client::{wait_update,wait_update_and_drain}` 与 `QuoteRef` / `KlineRef` / `TickRef` 的 `wait_update()` 应返回 `MarketNotInitialized`；先拿 ref 句柄可以，但等待更新不属于 canonical 用法。
 - 如果 builder 预配置的 live `TradeSession` 需要直接作为 runtime execution backend 发单，优先 `ClientBuilder::build_connected_runtime()`；`build_runtime()` 不会隐式 `connect()` 这些 session。
 - `TqRuntime` 的目标持仓入口应使用 `runtime.account("...").target_pos(...).build()` 或 scheduler builder。
 - `TradeSession` 对外分成两层：
   - 账户/持仓：最新状态读取 + 等待更新
   - 订单/成交/通知/异步错误：可靠事件流
+- `TradeSession` canonical readiness gate 是 `connect()` + `wait_ready()`；`is_ready()` 仅用于瞬时状态检查，不作为主等待流程。
 - `subscribe_order_events()` / `subscribe_trade_events()` 是按类型过滤的可靠事件视图；不要再退回共享 retention 窗口导致误报 `Lagged` 的旧行为。
 - 重连逻辑必须保留“临时缓冲 + 完整性校验 + 再合并”的策略。
 - 行情与非关键状态更新上的有界缓冲和丢弃策略是刻意设计；不要无意改回无界队列。
@@ -154,6 +156,7 @@ src/
 - 新增错误边界时，优先扩展 `TqError`，不要把公开错误类型打散。
 - 示例代码属于公开接口的一部分；API 变了，示例必须同步。
 - `benches/` 是内部性能验证工件，不是公开 canonical 示例；不要把 advanced/internal 压测脚本搬回 `examples/`。
+- 文档修改不要提及历史版本的 API、示例、迁移建议或 agent 规则。
 
 ## Agent 文档同步
 

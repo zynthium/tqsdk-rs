@@ -5,10 +5,12 @@
 ## live 行情 / 序列场景
 
 - `Client::init_market()`
+- `market_is_initialized()` / `check_market_initialized()`
 - `subscribe_quote()`
-- `quote()`
+- `try_quote()`
 - `get_kline_serial()` / `get_tick_serial()`
-- `kline_ref()` / `tick_ref()`
+- `try_kline_ref()` / `try_tick_ref()`
+- `quote()` / `kline_ref()` / `tick_ref()`（precondition 已保证时可作为 handle 路径）
 - `wait_update_and_drain()`
 
 ## 一次性历史快照场景
@@ -24,7 +26,7 @@
 - `TradeSession`
 - `subscribe_events()`
 - `wait_update()`
-- `connect()` / `is_ready()`
+- `connect()` / `wait_ready()`
 - 手工下单 / 撤单片段
 
 ## replay / backtest 场景
@@ -52,7 +54,7 @@
 
 ## DIFF / DataManager 场景
 
-- `watch()` / `unwatch()`
+- `watch_handle()`
 - `get_by_path()`
 - `subscribe_epoch()`
 

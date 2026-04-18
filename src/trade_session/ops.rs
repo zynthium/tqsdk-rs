@@ -229,6 +229,24 @@ impl TradeSession {
         self.logged_in.load(Ordering::SeqCst) && self.snapshot_ready.load(Ordering::SeqCst) && self.ws.is_ready()
     }
 
+    /// 阻塞等待交易会话进入 ready 状态
+    pub async fn wait_ready(&self) -> Result<()> {
+        if !self.running.load(Ordering::SeqCst) {
+            return Err(TqError::TradeSessionNotConnected);
+        }
+
+        if self.is_ready() {
+            return Ok(());
+        }
+
+        loop {
+            self.wait_update().await?;
+            if self.is_ready() {
+                return Ok(());
+            }
+        }
+    }
+
     /// 关闭交易会话
     pub async fn close(&self) -> Result<()> {
         let was_running = self

@@ -51,14 +51,16 @@ tokio::spawn(async move {
 });
 
 session.connect().await?;
-while !session.is_ready() {
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-}
+session.wait_ready().await?;
 ```
 
-如果用户问“为什么连上了但还没快照 / 没事件”，先检查是不是还没 `connect()` 或还没 ready。
+`wait_ready()` 是进入 ready state 的 canonical gate。`is_ready()` 只用于瞬时状态探针，不推荐当主流程 busy-poll。
+
+如果用户问“为什么连上了但还没快照 / 没事件”，先检查是不是还没 `connect()` 或还没完成 `wait_ready()`。
 
 ## snapshot 读取
+
+完成 `connect()` + `wait_ready()` 后，再进入 snapshot 读取。
 
 ```rust
 session.wait_update().await?;
@@ -69,7 +71,12 @@ let orders = session.get_orders().await?;
 let trades = session.get_trades().await?;
 ```
 
-推荐把账户 / 持仓等讲成“最新状态读取”，而不是事件 fan-out。
+推荐读取路径：
+
+- ready 后 `wait_update()` + getter（等待下一次状态推进）
+- ready 后直接 getter（读取当前最新快照）
+
+不要暗示“未 ready 前就可以安全进入 snapshot wait”。
 
 ## 可靠事件流
 

@@ -46,12 +46,13 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 ## 当前 canonical 心智模型
 
 1. `Client` 是 live API 单入口。行情、序列和合约查询都优先走 `Client` facade。
-2. `init_market()` 是 live market/query 能力的前置条件。没初始化就不要推荐 `subscribe_quote()`、`get_kline_serial()`、`get_tick_serial()`、`query_*()`。
-3. `QuoteSubscription` 只负责服务端订阅生命周期；Quote 读取统一走 `Client::quote()` 返回的 `QuoteRef`。
+2. `init_market()` 是 live market/query 能力的前置条件。显式前置检查优先 `market_is_initialized()` / `check_market_initialized(...)`；`try_quote()` / `try_kline_ref()` / `try_tick_ref()` 继续作为 fail-fast ref。
+3. `QuoteSubscription` 只负责服务端订阅生命周期；`Client::quote()` / `kline_ref()` / `tick_ref()` 可作为 ref handle 路径，但显式 precondition/fail-fast 与新代码推荐读取路径优先 `try_quote()` / `try_kline_ref()` / `try_tick_ref()`。
 4. `SeriesSubscription` 是 coalesced snapshot API；窗口消费统一走 `wait_update()` / `snapshot()` / `load()`。
 5. `TradeSession` 分成两层：
    - 账户 / 持仓 / 订单 / 成交的最新状态：`wait_update()` + getter
    - 订单 / 成交 / 通知 / 异步错误事件：可靠事件流 `subscribe_events()` / `subscribe_order_events()` / `subscribe_trade_events()`
+   - readiness gate：`connect()` + `wait_ready()`；`is_ready()` 仅用于瞬时状态检查
 6. `ReplaySession` 是唯一推荐的回测 / 回放入口；`step()` 是唯一时间推进入口。
 7. `ReplayReport` 是 `BacktestResult` 的纯后处理指标层；不要把它讲成回放执行器的一部分。
 7. `TqRuntime` 只在目标持仓 / scheduler / runtime 问题里展开；入口是 `runtime.account("...")`。
@@ -60,11 +61,12 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 
 - `Client::builder(...)`, `Client::new(...)`
 - `Client::init_market()`
-- `Client::subscribe_quote()`, `Client::quote()`, `Client::wait_update()`, `Client::wait_update_and_drain()`
-- `Client::get_kline_serial()`, `Client::get_tick_serial()`, `Client::kline_ref()`, `Client::tick_ref()`
+- `Client::subscribe_quote()`, `Client::try_quote()`, `Client::wait_update()`, `Client::wait_update_and_drain()`
+- `Client::try_kline_ref()`, `Client::try_tick_ref()`, `Client::get_kline_serial()`, `Client::get_tick_serial()`
+- `Client::quote()`, `Client::kline_ref()`, `Client::tick_ref()`（仅当 precondition 已由上层保证时作为 handle 路径）
 - `Client::get_kline_data_series()`, `Client::get_tick_data_series()`
 - `Client::query_*()`, `Client::get_trading_calendar()`, `Client::get_trading_status()`
-- `Client::create_trade_session*()`, `TradeSession::connect()`, `TradeSession::wait_update()`, `TradeSession::subscribe_*_events()`
+- `Client::create_trade_session*()`, `TradeSession::connect()`, `TradeSession::wait_ready()`, `TradeSession::wait_update()`, `TradeSession::subscribe_*_events()`
 - `Client::create_backtest_session()`, `ReplaySession::quote()`, `ReplaySession::kline()`, `ReplaySession::tick()`, `ReplaySession::aligned_kline()`, `ReplaySession::step()`, `ReplaySession::finish()`
 - `ReplayReport::from_result(&BacktestResult)`
 - `ClientBuilder::build_connected_runtime()`, `ClientBuilder::build_runtime()`, `Client::into_runtime()`, `TqRuntime::account()`, `AccountHandle::target_pos()`, `AccountHandle::target_pos_scheduler()`
@@ -81,6 +83,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - 不要把 `TradeSession` 的公开叙事写成账户 / 持仓 callback 或 best-effort channel 模型
 - 不要默认把底层 `websocket/`、`SeriesAPI`、`InsAPI` 讲成普通用户主路径
 - 不要暗示 `ClientBuilder::build()` 会自动初始化 SDK 日志；日志应显式使用 `init_logger()` 或 `create_logger_layer()`
+- 不要把 `connect()` 后 busy-poll `is_ready()` 讲成主路径；应使用 `wait_ready()`
 
 ## 回答风格
 
@@ -98,6 +101,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - 我有没有把 `Client` 当成 live 主入口？
 - 我有没有错误地要求用户 `start()` Quote/Series 订阅？
 - 我有没有把 `TradeSession` 的状态读取和可靠事件流混在一起？
+- 我有没有在 `connect()` 后错误地推荐 `while !is_ready()` busy-poll，而不是 `wait_ready()`？
 - 我有没有把 `ReplaySession::step()` 之外的东西说成时间推进入口？
 - 我有没有把非 canonical 的 callback / channel 或其他旁路 surface 讲成主路径？
 

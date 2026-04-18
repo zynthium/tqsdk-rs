@@ -22,9 +22,11 @@
 - `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要和 serial 混用。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。
 - `Client::builder(...).build()` / `ClientBuilder::build()` 后若要用 live 行情 / serial / query facade，仍需显式 `init_market()`。
+- market 显式前置检查优先 `Client::market_is_initialized()` / `Client::check_market_initialized("...")`；`try_quote` / `try_kline_ref` / `try_tick_ref` 继续作为 fail-fast ref。
 - 在 `init_market()` 前，`Client::{wait_update,wait_update_and_drain}` 与 `QuoteRef` / `KlineRef` / `TickRef` 的 `wait_update()` 应返回 `MarketNotInitialized`；先创建 ref 可以，但等待更新不是 canonical 用法。
 - builder 预配置的 live `TradeSession` 若要直接作为 runtime execution backend 发单，优先 `ClientBuilder::build_connected_runtime()`；`build_runtime()` 不会隐式 `connect()` 这些 session。
 - `TradeSession` 的快照读取保持状态驱动；订单/成交/通知/异步错误保持可靠事件流。
+- `TradeSession` canonical readiness gate 是 `connect()` + `wait_ready()`；`is_ready()` 仅用于瞬时状态检查，不作为主等待流程。
 - `TradeSessionEvent`、`MarketDataUpdates` 以及其字段类型 `SymbolId` / `KlineKey` 属于 root / prelude 的 canonical contract，可直接命名与导入。
 - `ClientBuilder::build()` 不会隐式初始化 tracing；如需 SDK 日志，请显式调用 `init_logger()` 或组合 `create_logger_layer()`。
 

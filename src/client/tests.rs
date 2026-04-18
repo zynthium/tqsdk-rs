@@ -1028,6 +1028,37 @@ fn checked_market_getters_require_initialized_market() {
 }
 
 #[tokio::test]
+async fn client_exposes_market_init_helpers() {
+    let client = build_client_with_market();
+
+    assert!(client.market_is_initialized());
+    assert!(client.check_market_initialized("quote ref").is_ok());
+}
+
+#[test]
+fn market_init_helpers_report_inactive_state() {
+    let client = build_inactive_client();
+
+    assert!(!client.market_is_initialized());
+    assert!(matches!(
+        client.check_market_initialized("quote ref"),
+        Err(TqError::MarketNotInitialized { capability }) if capability == "quote ref"
+    ));
+}
+
+#[tokio::test]
+async fn market_init_helpers_report_closed_state() {
+    let client = build_client_with_market();
+    client.close().await.unwrap();
+
+    assert!(!client.market_is_initialized());
+    assert!(matches!(
+        client.check_market_initialized("quote ref"),
+        Err(TqError::ClientClosed { capability }) if capability == "quote ref"
+    ));
+}
+
+#[tokio::test]
 async fn checked_market_getters_return_client_closed_after_close() {
     let client = build_client_with_market();
     client.close().await.unwrap();

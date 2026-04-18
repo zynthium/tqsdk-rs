@@ -55,10 +55,12 @@ let data = sub.load().await?;
 先检查：
 
 1. 有没有先 `connect()`
-2. 有没有等到 `is_ready()`
+2. 有没有完成 `wait_ready()`
 3. 有没有持续消费 `wait_update()` 或可靠事件流
 
-账户 / 持仓等最新状态按“等待更新 + 最新状态读取”模型来解释。
+`wait_ready()` 是进入 ready state 的 canonical gate；`is_ready()` 只适合做瞬时状态检查，不要把它当主流程 busy-poll。
+
+账户 / 持仓等最新状态按“ready 后等待更新 + 最新状态读取”模型来解释。
 
 ## `TradeEventRecvError::Lagged`
 

@@ -10,24 +10,24 @@
    手工交易链路，负责连接交易前置、读取交易快照、消费可靠事件流。
 3. `ReplaySession`
    回测 / 回放入口，负责注册 replay 句柄、推进时间、产出原始 `BacktestResult`。
-4. `ReplayReport`
-   `BacktestResult` 上的纯后处理指标层，负责 Python 对齐 headline metrics，不参与 replay 推进。
-5. `TqRuntime`
+4. `TqRuntime`
    目标持仓和 scheduler 运行时，只在用户明确问 target-pos / runtime 时展开。
+
+补充（非主路径）：`ReplayReport` 是 `ReplaySession` 产出的 `BacktestResult` 之上的辅助后处理层，负责 Python 对齐 headline metrics，不参与 replay 推进。
 
 ## 当前公开 API 地图
 
 | 任务 | 当前 canonical API | 备注 |
 |------|--------------------|------|
-| live Quote | `init_market()` -> `subscribe_quote()` -> `try_quote()` -> `wait_update()` / `try_load()` | 订阅 auto-start；也可 `snapshot()` / `is_ready()` |
+| live Quote | `init_market()` -> `market_is_initialized()/check_market_initialized()` -> `subscribe_quote()` -> `try_quote()` -> `wait_update()` / `try_load()` | 订阅 auto-start；也可 `snapshot()` / `is_ready()` |
 | live 最新 K 线 / Tick | `try_kline_ref()` / `try_tick_ref()` | 显式 precondition；读取 latest state |
 | live 窗口序列 | `get_kline_serial()` / `get_tick_serial()` -> `SeriesSubscription::wait_update()` / `load()` | auto-start，bounded to `10000` |
 | 一次性历史快照 | `get_kline_data_series()` / `get_tick_data_series()` | 语义为 `[start_dt, end_dt)` |
 | 长时间历史导出 | `spawn_data_downloader*()` | 后台下载任务，不是实时订阅 |
 | 合约 / 期权 / 参考数据 | `query_*()`、`get_trading_calendar()`、`get_trading_status()` | 走 `Client` facade |
 | 权限检查 | `auth_id()`、`has_feature()`、`check_md_grants()` | 不再暴露 auth guard |
-| 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 |
-| live target-pos | `ClientBuilder::trade_session*().build_connected_runtime()` 或 `client.into_runtime()`（前提是对应 `TradeSession` 已 `connect()`） | `runtime.account("broker:user")` |
+| 手工交易 | `create_trade_session*()` -> `subscribe_events()` -> `connect()` -> `wait_ready()` -> `wait_update()` / getter | 状态 vs 事件分层；`is_ready()` 仅用于瞬时检查 |
+| live target-pos | `ClientBuilder::trade_session*().build_connected_runtime()` 或 `client.into_runtime()`（前提是对应 `TradeSession` 已 `connect()` + `wait_ready()`） | `runtime.account("broker:user")` |
 | replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` -> `ReplayReport::from_result(&BacktestResult)` | `step()` 是唯一时间推进；report 是后处理 |
 | replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | 首次成功初始化后 account set 固定；换账户集合需新建 `ReplaySession` |
 | DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 |
@@ -40,20 +40,23 @@
 
 ```text
 Client::builder -> build -> init_market
-  -> subscribe_quote / quote
-  -> kline_ref / tick_ref / get_kline_serial / get_tick_serial
+  -> market_is_initialized/check_market_initialized
+  -> subscribe_quote / try_quote
+  -> try_kline_ref / try_tick_ref / get_kline_serial / get_tick_serial
   -> query_* / get_trading_calendar / get_trading_status
 ```
 
-补充：需要显式 market precondition 时，优先用 `try_quote` / `try_kline_ref` / `try_tick_ref`。
+补充：`quote()` / `kline_ref()` / `tick_ref()` 仍可作为 ref handle 路径，但显式 precondition / fail-fast / 新代码推荐路径优先 `market_is_initialized()` / `check_market_initialized("...")` + `try_quote` / `try_kline_ref` / `try_tick_ref`。
 
 ### 手工交易
 
 ```text
 Client::builder -> build
   -> create_trade_session*
-  -> 建立 wait_update / reliable event 消费路径
+  -> 建立 reliable event 消费路径
   -> connect
+  -> wait_ready
+  -> 进入 wait_update / getter snapshot consumption
 ```
 
 ### live target-pos
@@ -61,10 +64,12 @@ Client::builder -> build
 ```text
 Client::builder
   -> trade_session* (预配置 live 账户)
-  -> build_runtime
+  -> build_connected_runtime
   -> runtime.account("broker:user")
   -> target_pos / target_pos_scheduler
 ```
+
+补充：`build_runtime()` 只是 runtime 装配，不是推荐的“可直接发单 live runtime”路径。
 
 补充规则：
 
@@ -76,6 +81,8 @@ Client::builder
 ```text
 Client::builder -> build
   -> create_trade_session*
+  -> connect
+  -> wait_ready
   -> into_runtime
   -> runtime.account("broker:user")
 ```

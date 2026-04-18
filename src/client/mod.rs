@@ -92,7 +92,11 @@ pub struct Client {
 }
 
 impl Client {
-    fn ensure_market_ref_capability(&self, capability: &'static str) -> Result<()> {
+    pub fn market_is_initialized(&self) -> bool {
+        self.live.is_active() && !self.live.market_state.is_closed()
+    }
+
+    pub fn check_market_initialized(&self, capability: &'static str) -> Result<()> {
         if self.live.market_state.is_closed() {
             return Err(TqError::client_closed(capability));
         }
@@ -100,6 +104,10 @@ impl Client {
             return Err(TqError::market_not_initialized(capability));
         }
         Ok(())
+    }
+
+    fn ensure_market_ref_capability(&self, capability: &'static str) -> Result<()> {
+        self.check_market_initialized(capability)
     }
 
     pub fn quote(&self, symbol: &str) -> QuoteRef {

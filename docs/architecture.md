@@ -72,27 +72,28 @@ Client (facade + builder + market)
 
 | 模块 | 入口类型 | 职责 |
 |------|---------|------|
-| `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期 |
+| `client` | `Client`, `ClientBuilder`, `ClientConfig`, `ClientOption` | 统一入口，管理生命周期；`init_market()` 后启用 market/query facade，可用 `market_is_initialized()` / `check_market_initialized()` 做显式前置检查 |
 | `auth` | `Authenticator` trait, `TqAuth` | 登录、token 解析与 claims 校验、权限检查 |
 | `websocket` | internal transport module | 底层连接、重连、消息分发；不作为推荐 public entry point |
 | `datamanager` | `DataManager` | DIFF 合并、版本追踪、路径监听 |
 | `runtime` | `TqRuntime`, `AccountHandle`, `TargetPosBuilder`, `TargetPosSchedulerBuilder` | 统一任务运行时与 Builder 任务入口；adapter/registry/planning primitives 属于内部装配 |
 | `cache` | `DataSeriesCache` | 与 Python 官方兼容的 K线/Tick 历史快照缓存、范围扫描、文件合并与并发写保护 |
-| `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；状态读取走 `Client::quote()` |
+| `quote` | `QuoteSubscription` | 仅负责 Quote 生命周期控制；`Client::quote()` 可作 ref handle，显式 precondition/fail-fast 推荐 `Client::try_quote()` |
 | `series` | `SeriesAPI`, `SeriesSubscription` | 窗口态 K线/Tick 订阅，使用 `wait_update()` / `load()` 读取快照 |
 | `ins` | `InsAPI` | 合约查询、期权筛选、结算价、排名、EDB、交易日历、交易状态 |
-| `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询) |
+| `trade_session` | `TradeSession` | 交易操作 (下单/撤单/查询)；`connect()` 启动流程，`wait_ready()` 是进入 ready state 的 canonical gate |
 | `polars_ext` | `KlineBuffer`, `TickBuffer`, `EdbBuffer`, `RankingBuffer`, `SettlementBuffer` | DataFrame 转换 (可选) |
 | `prelude` | — | 便捷 re-export |
 
 ## Canonical Contract
 
-- live 主路径已收口到 `Client`：`Client` 是一次 live session owner，对齐 Python `TqApi` 的会话模型；行情状态读取、序列订阅和 query facade 都直接挂在 `Client`，`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。
+- live 主路径已收口到 `Client`：`Client` 是一次 live session owner，对齐 Python `TqApi` 的会话模型；行情状态读取、序列订阅和 query facade 都直接挂在 `Client`，`TqApi`、`SeriesAPI`、`InsAPI` 不再出现在 crate root / prelude / README 主路径。`init_market()` 之后才进入 market/query 可用态；显式前置检查优先 `Client::market_is_initialized()` / `Client::check_market_initialized(...)`。
 - `ClientBuilder` / `ClientConfig` / `TqAuth` 是构造侧概念；不再引入 public `LiveClient` / `LiveSession` 双对象。当前内部 live 资源统一收敛在私有 `LiveContext`。
 - Quote / Series 继续坚持状态驱动，不重新引入 Stream fan-out；当前已经是创建即生效。
 - `TradeSession` 继续按“状态 vs 事件”分层：
   账户/持仓是 snapshot getter + `wait_update()`。
   订单/成交/通知/异步错误是可靠事件流。
+  canonical readiness gate 是 `connect()` + `wait_ready()`；`is_ready()` 仅用于瞬时状态探测，不替代进入 ready 的等待流程。
 - `ReplaySession` 与 `TqRuntime` 保持独立主路径，不为了 live API 对称性而重新缠回 `Client`。
 
 ## Replay Capability Boundary
@@ -108,7 +109,7 @@ Client (facade + builder + market)
 - I/O actor：WebSocket 读写通过单所有者 actor 隔离，避免跨 `await` 持锁。
 - DIFF 合并：`DataManager` 负责递归 merge、默认值补齐、路径监听与查询；merge 完成通知优先使用 `subscribe_epoch()`。
 - `QuoteSubscription`、`SeriesSubscription` 已改为 auto-start，只保留 `close()` 作为提前释放资源接口。
-- 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期，`QuoteRef` 负责读取最新状态。
+- 状态读取与订阅控制分离：Quote 由 `QuoteSubscription` 管订阅生命周期；新代码推荐通过 `Client::try_quote()` 获取 fail-fast `QuoteRef` 并读取最新状态（`Client::quote()` 仍可作为 handle 路径）。
 - 窗口状态读取：`SeriesSubscription` 监听 DataManager epoch，并通过 coalesced `SeriesSnapshot` 暴露多合约对齐窗口状态。
 - serial 收口：`Client::{get_kline_serial,get_tick_serial}` 走更新中的 bounded sequence 路径，`data_length` 会归一化到 `1..=10000`。
 - 历史下载收口：`Client::{get_kline_data_series,get_tick_data_series}` 走 one-shot 下载路径，内部复用分页 `set_chart` 协议，并在入口检查 `tq_dl`。

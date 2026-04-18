@@ -74,41 +74,6 @@ async fn trade_reliable_event_example() {
     // .create_trade_session("X兴证期货", &sim_user_id, &sim_password)
     .expect("创建交易会话失败");
 
-    let snapshot_trader = trader.clone();
-    tokio::spawn(async move {
-        loop {
-            match snapshot_trader.wait_update().await {
-                Ok(()) => {
-                    if let Ok(account) = snapshot_trader.get_account().await {
-                        info!(
-                            "💰 账户快照: 权益={:.2}, 可用={:.2}, 风险度={:.2}%",
-                            account.balance,
-                            account.available,
-                            account.risk_ratio * 100.0
-                        );
-                    }
-
-                    if let Ok(positions) = snapshot_trader.get_positions().await {
-                        for (symbol, pos) in positions {
-                            let total_long = pos.volume_long_today + pos.volume_long_his;
-                            let total_short = pos.volume_short_today + pos.volume_short_his;
-                            if total_long > 0 || total_short > 0 {
-                                info!(
-                                    "📊 {} 持仓快照: 多头={}, 空头={}, 浮动盈亏={:.2}",
-                                    symbol, total_long, total_short, pos.float_profit
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(err) => {
-                    info!("交易快照监听结束: {}", err);
-                    break;
-                }
-            }
-        }
-    });
-
     let mut events = trader.subscribe_events();
     tokio::spawn(async move {
         while let Ok(event) = events.recv().await {
@@ -150,16 +115,50 @@ async fn trade_reliable_event_example() {
         }
     });
 
-    // 先建立 snapshot / event 消费路径，再连接交易服务器
+    // 先建立事件消费路径，再连接交易服务器
     info!("连接交易服务器...");
     trader.connect().await.expect("连接失败");
 
     // 等待登录就绪
     info!("等待登录就绪...");
-    while !trader.is_ready() {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    trader.wait_ready().await.expect("交易会话未就绪");
     info!("✅ 已登录，交易就绪!");
+
+    // 就绪后再启动 snapshot 监听，避免未连接时 wait_update() 误报未就绪错误。
+    let snapshot_trader = trader.clone();
+    tokio::spawn(async move {
+        loop {
+            match snapshot_trader.wait_update().await {
+                Ok(()) => {
+                    if let Ok(account) = snapshot_trader.get_account().await {
+                        info!(
+                            "💰 账户快照: 权益={:.2}, 可用={:.2}, 风险度={:.2}%",
+                            account.balance,
+                            account.available,
+                            account.risk_ratio * 100.0
+                        );
+                    }
+
+                    if let Ok(positions) = snapshot_trader.get_positions().await {
+                        for (symbol, pos) in positions {
+                            let total_long = pos.volume_long_today + pos.volume_long_his;
+                            let total_short = pos.volume_short_today + pos.volume_short_his;
+                            if total_long > 0 || total_short > 0 {
+                                info!(
+                                    "📊 {} 持仓快照: 多头={}, 空头={}, 浮动盈亏={:.2}",
+                                    symbol, total_long, total_short, pos.float_profit
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    info!("交易快照监听结束: {}", err);
+                    break;
+                }
+            }
+        }
+    });
 
     // 查询账户（同步方式）
     if let Ok(account) = trader.get_account().await {
