@@ -33,7 +33,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 
 只读与问题直接相关的参考文件：
 
-1. `ClientBuilder`、`ClientConfig`、`EndpointConfig`、`init_market()`、端点覆盖、`build_runtime()`：读 [references/client-and-endpoints.md](references/client-and-endpoints.md)
+1. `ClientBuilder`、`ClientConfig`、`EndpointConfig`、`init_market()`、端点覆盖、`build_runtime()`、`build_connected_runtime()`：读 [references/client-and-endpoints.md](references/client-and-endpoints.md)
 2. Quote、K 线、Tick、`wait_update()`、`wait_update_and_drain()`、`QuoteRef`、`SeriesSubscription`、历史下载：读 [references/market-and-series.md](references/market-and-series.md)
 3. 合约查询、期权筛选、结算价、持仓排名、EDB、交易日历、交易状态：读 [references/ins-and-reference-data.md](references/ins-and-reference-data.md)
 4. `TradeSession`、可靠事件流、下单撤单、snapshot getter：读 [references/trading-and-orders.md](references/trading-and-orders.md)
@@ -67,7 +67,7 @@ description: Use when working with the tqsdk-rs Rust SDK, Rust Tianqin/TQSDK wor
 - `Client::create_trade_session*()`, `TradeSession::connect()`, `TradeSession::wait_update()`, `TradeSession::subscribe_*_events()`
 - `Client::create_backtest_session()`, `ReplaySession::quote()`, `ReplaySession::kline()`, `ReplaySession::tick()`, `ReplaySession::aligned_kline()`, `ReplaySession::step()`, `ReplaySession::finish()`
 - `ReplayReport::from_result(&BacktestResult)`
-- `ClientBuilder::build_runtime()`, `Client::into_runtime()`, `TqRuntime::account()`, `AccountHandle::target_pos()`, `AccountHandle::target_pos_scheduler()`
+- `ClientBuilder::build_connected_runtime()`, `ClientBuilder::build_runtime()`, `Client::into_runtime()`, `TqRuntime::account()`, `AccountHandle::target_pos()`, `AccountHandle::target_pos_scheduler()`
 
 ## 避免的非 canonical surface
 

@@ -93,7 +93,7 @@ pub use download::{
 };
 pub use errors::{Result, TqError};
 pub use logger::{create_logger_layer, init_logger};
-pub use marketdata::{KlineRef, MarketDataUpdates, QuoteRef, TickRef};
+pub use marketdata::{KlineKey, KlineRef, MarketDataUpdates, QuoteRef, SymbolId, TickRef};
 pub use quote::QuoteSubscription;
 pub use replay::{ReplayConfig, ReplayReport, ReplaySession};
 pub use runtime::{

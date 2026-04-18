@@ -59,6 +59,7 @@ src/
 - `DataManager` watcher 推荐使用 `watch_handle()`；不要再把 `unwatch(path)` 当成精确释放单个 watcher 的 canonical 路径。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。
 - `Client::builder(...).build()` / `ClientBuilder::build()` 后若要用 live 行情 / serial / query facade，仍需显式 `init_market()`。
+- 如果 builder 预配置的 live `TradeSession` 需要直接作为 runtime execution backend 发单，优先 `ClientBuilder::build_connected_runtime()`；`build_runtime()` 不会隐式 `connect()` 这些 session。
 - `TqRuntime` 的目标持仓入口应使用 `runtime.account("...").target_pos(...).build()` 或 scheduler builder。
 - `TradeSession` 对外分成两层：
   - 账户/持仓：最新状态读取 + 等待更新
@@ -140,7 +141,7 @@ src/
 - `skills/tqsdk-rs/` 是当前 public shape 的知识包，不是历史归档；当架构、公开 API、README canonical 路径、示例、迁移建议或 agent 规则变化时，要同步更新。
 - 如果本次改动删除或替换了 public surface，同时更新 `docs/migration-remove-legacy-compat.md`。
 - live API 继续收口到 `Client`，不要把新能力重新挂回 `TqApi` / `SeriesAPI` / `InsAPI`。
-- root / `prelude` 的 canonical contract 继续包含 `TradeSessionEvent` 与 `MarketDataUpdates`，不要让主路径用户被迫回退到内部模块命名空间。
+- root / `prelude` 的 canonical contract 继续包含 `TradeSessionEvent`、`MarketDataUpdates` 及其字段类型 `SymbolId` / `KlineKey`，不要让主路径用户被迫回退到内部模块命名空间。
 - `SeriesAPI` / `InsAPI` 已退回 crate 内部装配细节；query / series / downloader 主路径应继续收口到 `Client` facade。
 - runtime live adapter 必须复用 `Client` 的同一私有 live context，不要再自建第二套行情 websocket / `MarketDataState`。
 - 切换账号应关闭旧 `Client` 并创建新 `Client`；不要把 `set_auth()+init_market()` 写成运行时切账号 canonical 路径。

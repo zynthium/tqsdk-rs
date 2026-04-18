@@ -682,6 +682,45 @@ async fn builder_can_preconfigure_trade_sessions_for_runtime() {
 }
 
 #[tokio::test]
+async fn builder_can_build_connected_runtime_without_trade_sessions() {
+    let runtime = Client::builder("tester", "secret")
+        .auth(TestAuth)
+        .build_connected_runtime()
+        .await
+        .expect("connected runtime should build when no trade sessions are configured");
+
+    assert!(runtime.account("simnow:user").is_err());
+}
+
+#[tokio::test]
+async fn build_connected_runtime_propagates_trade_session_connect_failure() {
+    let result = Client::builder("tester", "secret")
+        .auth(TestAuth)
+        .trade_session_with_options(
+            "simnow",
+            "user",
+            "password",
+            TradeSessionOptions {
+                td_url_override: Some("not-a-valid-url".to_string()),
+                reliable_events_max_retained: 32,
+                use_sm: false,
+            },
+        )
+        .build_connected_runtime()
+        .await;
+
+    let err = match result {
+        Ok(_) => panic!("connected runtime should fail if a configured trade session cannot connect"),
+        Err(err) => err,
+    };
+
+    assert!(
+        !matches!(err, TqError::InternalError(ref message) if message == "交易会话未就绪"),
+        "build_connected_runtime should surface the connect failure, got {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn builder_can_preconfigure_trade_sessions_with_login_options() {
     let client = Client::builder("tester", "secret")
         .auth(TestAuth)

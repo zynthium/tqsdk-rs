@@ -27,7 +27,7 @@
 | 合约 / 期权 / 参考数据 | `query_*()`、`get_trading_calendar()`、`get_trading_status()` | 走 `Client` facade |
 | 权限检查 | `auth_id()`、`has_feature()`、`check_md_grants()` | 不再暴露 auth guard |
 | 手工交易 | `create_trade_session*()` -> `wait_update()` / getter + `subscribe_*events()` -> `connect()` | 状态 vs 事件分层 |
-| live target-pos | `ClientBuilder::trade_session*().build_runtime()` 或 `client.into_runtime()` | `runtime.account("broker:user")` |
+| live target-pos | `ClientBuilder::trade_session*().build_connected_runtime()` 或 `client.into_runtime()`（前提是对应 `TradeSession` 已 `connect()`） | `runtime.account("broker:user")` |
 | replay / backtest | `create_backtest_session()` -> `ReplaySession::{quote,kline,tick,aligned_kline,step,finish}` -> `ReplayReport::from_result(&BacktestResult)` | `step()` 是唯一时间推进；report 是后处理 |
 | replay target-pos | `ReplaySession::runtime([account])` -> `runtime.account(account)` | 首次成功初始化后 account set 固定；换账户集合需新建 `ReplaySession` |
 | DIFF 状态调试 | `DataManager`、`subscribe_epoch()`、`get_path_epoch()` | 高级 / 内部导向 |

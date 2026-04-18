@@ -22,8 +22,9 @@
 - `Client::{get_kline_data_series,get_tick_data_series}` 是显式时间范围下载接口，不要和 serial 混用。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。
 - `Client::builder(...).build()` / `ClientBuilder::build()` 后若要用 live 行情 / serial / query facade，仍需显式 `init_market()`。
+- builder 预配置的 live `TradeSession` 若要直接作为 runtime execution backend 发单，优先 `ClientBuilder::build_connected_runtime()`；`build_runtime()` 不会隐式 `connect()` 这些 session。
 - `TradeSession` 的快照读取保持状态驱动；订单/成交/通知/异步错误保持可靠事件流。
-- `TradeSessionEvent` 与 `MarketDataUpdates` 属于 root / prelude 的 canonical contract，可直接命名与导入。
+- `TradeSessionEvent`、`MarketDataUpdates` 以及其字段类型 `SymbolId` / `KlineKey` 属于 root / prelude 的 canonical contract，可直接命名与导入。
 - `ClientBuilder::build()` 不会隐式初始化 tracing；如需 SDK 日志，请显式调用 `init_logger()` 或组合 `create_logger_layer()`。
 
 ## 不要重新引入

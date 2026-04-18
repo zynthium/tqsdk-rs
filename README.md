@@ -207,16 +207,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 目标持仓任务（Builder，推荐）
 
-`TqRuntime` 由 `ClientBuilder::build_runtime()`、`Client::into_runtime()` 或
-`ReplaySession::runtime()` 提供；`ExecutionAdapter` / `MarketAdapter` /
-`TaskRegistry` 等装配细节不再作为推荐的 public extension surface。
+`TqRuntime` 由 `ClientBuilder::{build_runtime,build_connected_runtime}`、
+`Client::into_runtime()` 或 `ReplaySession::runtime()` 提供；
+`ExecutionAdapter` / `MarketAdapter` / `TaskRegistry` 等装配细节不再作为推荐的
+public extension surface。
 
 live 模式下，无论走 `build_runtime()` 还是 `into_runtime()`，runtime 都会复用同一个
 `Client` session 的 private live context，而不是另起一套行情 websocket /
 `MarketDataState`。关闭该 `Client` session 后，runtime market wait 路径也会收到同一关闭信号。
 
-live 模式下，推荐先在 `ClientBuilder` 上预配置交易账户，再直接 `build_runtime()`；
-运行时账户 key 使用 `broker:user_id` 形式。例如：
+live 模式下，如果要让 builder 预配置的交易账户直接作为 runtime execution backend
+发单，使用 `build_connected_runtime()`；`build_runtime()` 只做 runtime 装配，
+不会隐式 `connect()` 这些 `TradeSession`。运行时账户 key 使用
+`broker:user_id` 形式。例如：
 
 ```rust
 let runtime = Client::builder(username, password)
@@ -230,7 +233,7 @@ let runtime = Client::builder(username, password)
             ..Default::default()
         },
     )
-    .build_runtime()
+    .build_connected_runtime()
     .await?;
 
 let account = runtime
@@ -244,7 +247,7 @@ use tqsdk_rs::prelude::*;
 
 async fn demo(runtime: Arc<TqRuntime>) -> RuntimeResult<()> {
     let account = runtime
-        .account("SIM")
+        .account("simnow:user")
         .expect("configured account should exist");
     let task = account.target_pos("SHFE.rb2601").build()?;
 

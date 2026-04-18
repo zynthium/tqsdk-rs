@@ -8,8 +8,8 @@
 
 推荐两条路径：
 
-1. builder 预配置交易账户，再 `build_runtime()`
-2. 已有 `Client` + `TradeSession`，再 `into_runtime()`
+1. builder 预配置交易账户，并且希望 runtime 直接负责 live 发单时，用 `build_connected_runtime()`
+2. 已有 `Client` + `TradeSession`，先按 `TradeSession::connect()` 完成连接，再 `into_runtime()`
 
 示例：
 
@@ -24,11 +24,14 @@ let runtime: Arc<TqRuntime> = Client::builder(username, password)
         trade_password,
         TradeSessionOptions::default(),
     )
-    .build_runtime()
+    .build_connected_runtime()
     .await?;
 
 let account = runtime.account("simnow:user_id")?;
 ```
+
+`build_runtime()` 仍然可用，但它只做 runtime 装配，不会隐式 `connect()` builder
+预配置的 `TradeSession`。
 
 ### replay runtime
 

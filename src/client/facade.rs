@@ -87,6 +87,30 @@ fn resolve_trade_td_url(
 }
 
 impl Client {
+    pub(crate) async fn connect_registered_trade_sessions(&self) -> Result<()> {
+        let mut sessions = {
+            let sessions = self.trade_sessions.read().unwrap();
+            sessions
+                .iter()
+                .map(|(account_key, session)| (account_key.clone(), Arc::clone(session)))
+                .collect::<Vec<_>>()
+        };
+        sessions.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut connected: Vec<Arc<TradeSession>> = Vec::with_capacity(sessions.len());
+        for (_, session) in sessions {
+            if let Err(err) = session.connect().await {
+                for connected_session in connected.into_iter().rev() {
+                    let _ = connected_session.close().await;
+                }
+                return Err(err);
+            }
+            connected.push(session);
+        }
+
+        Ok(())
+    }
+
     /// 创建新的客户端（使用默认配置）
     ///
     /// 这是一个便捷方法，等同于：

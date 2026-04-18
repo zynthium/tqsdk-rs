@@ -275,4 +275,14 @@ impl ClientBuilder {
     pub async fn build_runtime(self) -> Result<Arc<TqRuntime>> {
         Ok(self.build().await?.into_runtime())
     }
+
+    /// 构建 runtime，并显式连接 builder 预配置的交易会话。
+    ///
+    /// 该方法不会改变 `build_runtime()` 的现有语义；如果只需要 runtime
+    /// 装配而不要求交易会话已连接，继续使用 `build_runtime()`。
+    pub async fn build_connected_runtime(self) -> Result<Arc<TqRuntime>> {
+        let client = self.build().await?;
+        client.connect_registered_trade_sessions().await?;
+        Ok(client.into_runtime())
+    }
 }

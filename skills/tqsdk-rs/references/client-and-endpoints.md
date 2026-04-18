@@ -119,7 +119,11 @@ TradeSessionOptions.td_url_override
 build() -> into_runtime()
 ```
 
-所以 live 模式下若想直接拿到可用账户句柄，推荐先在 builder 上预配置交易会话：
+所以 `build_runtime()` 只保证 runtime 装配完成，不会隐式连接 builder
+预配置的交易会话。
+
+如果 live 模式下希望 builder 预配置的交易会话直接作为 runtime execution backend
+发单，使用 `build_connected_runtime()`：
 
 ```rust
 use std::sync::Arc;
@@ -132,7 +136,7 @@ let runtime: Arc<TqRuntime> = Client::builder(username, password)
         trade_password,
         TradeSessionOptions::default(),
     )
-    .build_runtime()
+    .build_connected_runtime()
     .await?;
 
 let account = runtime.account("simnow:user_id")?;
@@ -146,9 +150,10 @@ let account = runtime.account("simnow:user_id")?;
 
 ```rust
 let client = Client::builder(username, password).build().await?;
-let _session = client
+let session = client
     .create_trade_session("simnow", user_id, trade_password)
     .await?;
+session.connect().await?;
 
 let runtime = client.into_runtime();
 let account = runtime.account("simnow:user_id")?;

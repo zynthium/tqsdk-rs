@@ -1,11 +1,11 @@
 pub use crate::{
     AccountHandle, Client, ClientConfig, DataDownloadAdjType, DataDownloadOptions, DataDownloadRequest,
-    DataDownloadWriteMode, DataDownloadWriter, DataDownloader, EndpointConfig, KlineRef, MarketDataUpdates,
+    DataDownloadWriteMode, DataDownloadWriter, DataDownloader, EndpointConfig, KlineKey, KlineRef, MarketDataUpdates,
     OffsetPriority, OrderDirection, OrderEventStream, PriceMode, QuoteRef, QuoteSubscription, ReplayConfig,
-    ReplayReport, ReplaySession, Result, RuntimeResult, SeriesSubscription, TargetPosConfig, TargetPosScheduleStep,
-    TargetPosScheduler, TargetPosTask, TickRef, TqError, TqRuntime, TradeEventRecvError, TradeEventStream,
-    TradeFrontConfig, TradeLoginOptions, TradeOnlyEventStream, TradeSession, TradeSessionEvent, TradeSessionEventKind,
-    TradeSessionOptions, VolumeSplitPolicy, create_logger_layer, init_logger,
+    ReplayReport, ReplaySession, Result, RuntimeResult, SeriesSubscription, SymbolId, TargetPosConfig,
+    TargetPosScheduleStep, TargetPosScheduler, TargetPosTask, TickRef, TqError, TqRuntime, TradeEventRecvError,
+    TradeEventStream, TradeFrontConfig, TradeLoginOptions, TradeOnlyEventStream, TradeSession, TradeSessionEvent,
+    TradeSessionEventKind, TradeSessionOptions, VolumeSplitPolicy, create_logger_layer, init_logger,
 };
 
 #[cfg(feature = "polars")]
@@ -27,6 +27,16 @@ mod tests {
 
         use crate::prelude::*;
         let _prelude_updates: Option<MarketDataUpdates> = None;
+    }
+
+    #[test]
+    fn root_and_prelude_export_market_data_update_field_types() {
+        let _root_symbol: Option<crate::SymbolId> = None;
+        let _root_kline_key: Option<crate::KlineKey> = None;
+
+        use crate::prelude::*;
+        let _prelude_symbol: Option<SymbolId> = None;
+        let _prelude_kline_key: Option<KlineKey> = None;
     }
 
     #[test]
