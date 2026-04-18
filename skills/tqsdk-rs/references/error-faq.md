@@ -20,6 +20,9 @@ client.init_market().await?;
 
 当前 live market / query 能力都依赖 `init_market()`。
 
+同样地，`Client::{wait_update,wait_update_and_drain}` 与 `QuoteRef` / `KlineRef` /
+`TickRef` 的 `wait_update()` 在未初始化时也会直接报这个错误，而不是一直等待。
+
 ## Quote / Series 创建后为什么没 `start()`
 
 因为创建后就已经 auto-start 了。

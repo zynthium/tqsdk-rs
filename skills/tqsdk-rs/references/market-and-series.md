@@ -27,6 +27,10 @@ loop {
 
 也可以用 `client.wait_update_and_drain()` 做统一 update loop，再按 `updates.quotes / updates.klines / updates.ticks` 分发。
 
+前提：这些 live wait 路径都要在 `init_market()` 之后使用。`Client::{wait_update,wait_update_and_drain}`
+以及 `QuoteRef` / `KlineRef` / `TickRef` 的 `wait_update()` 在未初始化时会返回
+`MarketNotInitialized`，而不是挂起等待。
+
 ## `QuoteSubscription` 的当前语义
 
 - 创建后立即生效，已经 auto-start
@@ -47,6 +51,7 @@ loop {
 - latest Tick：`Client::tick_ref(symbol)` -> `TickRef`
 - `QuoteRef` / `KlineRef` / `TickRef` 新推荐路径：`wait_update()` + `try_load()`，或 `snapshot()` / `is_ready()`
 - `load()` 为 legacy convenience：首帧前返回默认值
+- 可以先创建 ref，再在 market 激活后使用；但 pre-init 阶段不要进入 `wait_update()` 循环
 
 这些 ref 适合状态驱动策略循环；通常与 `client.wait_update()` 或 `client.wait_update_and_drain()` 配合使用。
 

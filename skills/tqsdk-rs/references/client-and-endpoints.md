@@ -53,11 +53,13 @@ tqsdk_rs::init_logger("info", true);
 - 需要显式 market precondition 时用 `try_quote` / `try_kline_ref` / `try_tick_ref`
 
 - `subscribe_quote()`、`quote()` 的有效更新
+- `Client::{wait_update,wait_update_and_drain}` 与 ref `wait_update()` 的等待循环
 - `get_kline_serial()` / `get_tick_serial()`
 - `kline_ref()` / `tick_ref()`
 - `query_*()`、`get_trading_calendar()`、`get_trading_status()`
 
 这些 live market / query 能力都应在 `init_market()` 之后使用。
+如果用户在未初始化时直接进入上述 wait 路径，当前契约应是返回 `MarketNotInitialized`。
 
 ## 切换账号
 

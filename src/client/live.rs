@@ -21,6 +21,7 @@ impl LiveContext {
     pub(crate) fn new(dm_config: DataManagerConfig) -> Self {
         let dm = Arc::new(DataManager::new(HashMap::new(), dm_config));
         let market_state = Arc::new(MarketDataState::default());
+        market_state.set_active(false);
         let live_api = TqApi::new(Arc::clone(&market_state));
         Self {
             dm,
@@ -39,5 +40,6 @@ impl LiveContext {
 
     pub(crate) fn set_active(&self, active: bool) {
         self.active.store(active, Ordering::SeqCst);
+        self.market_state.set_active(active);
     }
 }

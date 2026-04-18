@@ -59,6 +59,7 @@ src/
 - `DataManager` watcher 推荐使用 `watch_handle()`；不要再把 `unwatch(path)` 当成精确释放单个 watcher 的 canonical 路径。
 - `ReplaySession::runtime(accounts)` 初始化后账户集合固定；需要换账户集合时重新创建 `ReplaySession`。
 - `Client::builder(...).build()` / `ClientBuilder::build()` 后若要用 live 行情 / serial / query facade，仍需显式 `init_market()`。
+- live market 在 `init_market()` 前，`Client::{wait_update,wait_update_and_drain}` 与 `QuoteRef` / `KlineRef` / `TickRef` 的 `wait_update()` 应返回 `MarketNotInitialized`；先拿 ref 句柄可以，但等待更新不属于 canonical 用法。
 - 如果 builder 预配置的 live `TradeSession` 需要直接作为 runtime execution backend 发单，优先 `ClientBuilder::build_connected_runtime()`；`build_runtime()` 不会隐式 `connect()` 这些 session。
 - `TqRuntime` 的目标持仓入口应使用 `runtime.account("...").target_pos(...).build()` 或 scheduler builder。
 - `TradeSession` 对外分成两层：

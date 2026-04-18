@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
@@ -84,6 +84,7 @@ struct Entry<T> {
 }
 
 pub struct MarketDataState {
+    active: AtomicBool,
     global_epoch: AtomicU64,
     global_tx: watch::Sender<u64>,
     close_tx: watch::Sender<bool>,
@@ -99,6 +100,7 @@ impl Default for MarketDataState {
         let (close_tx, _) = watch::channel(false);
         let (updates_tx, _) = broadcast::channel(65536);
         Self {
+            active: AtomicBool::new(true),
             global_epoch: AtomicU64::new(0),
             global_tx,
             close_tx,
@@ -111,6 +113,24 @@ impl Default for MarketDataState {
 }
 
 impl MarketDataState {
+    pub fn is_active(&self) -> bool {
+        self.active.load(Ordering::SeqCst)
+    }
+
+    pub fn set_active(&self, active: bool) {
+        self.active.store(active, Ordering::SeqCst);
+    }
+
+    fn ensure_wait_capability(&self, capability: &'static str) -> Result<()> {
+        if self.is_closed() {
+            return Err(TqError::client_closed(capability));
+        }
+        if !self.is_active() {
+            return Err(TqError::market_not_initialized(capability));
+        }
+        Ok(())
+    }
+
     pub fn subscribe_global_epoch(&self) -> watch::Receiver<u64> {
         self.global_tx.subscribe()
     }
@@ -120,6 +140,7 @@ impl MarketDataState {
     }
 
     pub fn close(&self) {
+        self.set_active(false);
         self.close_tx.send_replace(true);
     }
 
@@ -347,9 +368,7 @@ impl TqApi {
         let mut rx = self.state.subscribe_global_epoch();
         let mut close_rx = self.state.subscribe_close();
         loop {
-            if *close_rx.borrow() {
-                return Err(TqError::client_closed("market wait_update"));
-            }
+            self.state.ensure_wait_capability("market wait_update")?;
             let current = *rx.borrow();
             let seen = self.inner.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
@@ -493,9 +512,7 @@ impl QuoteRef {
         let mut rx = self.state.subscribe_quote_epoch(&self.symbol).await;
         let mut close_rx = self.state.subscribe_close();
         loop {
-            if *close_rx.borrow() {
-                return Err(TqError::client_closed("quote wait_update"));
-            }
+            self.state.ensure_wait_capability("quote wait_update")?;
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
@@ -571,9 +588,7 @@ impl KlineRef {
         let mut rx = self.state.subscribe_kline_epoch(&self.key).await;
         let mut close_rx = self.state.subscribe_close();
         loop {
-            if *close_rx.borrow() {
-                return Err(TqError::client_closed("kline wait_update"));
-            }
+            self.state.ensure_wait_capability("kline wait_update")?;
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
             if current > seen {
@@ -645,9 +660,7 @@ impl TickRef {
         let mut rx = self.state.subscribe_tick_epoch(&self.symbol).await;
         let mut close_rx = self.state.subscribe_close();
         loop {
-            if *close_rx.borrow() {
-                return Err(TqError::client_closed("tick wait_update"));
-            }
+            self.state.ensure_wait_capability("tick wait_update")?;
             let current = *rx.borrow();
             let seen = self.seen_epoch.load(Ordering::SeqCst);
             if current > seen {

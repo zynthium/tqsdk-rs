@@ -204,6 +204,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 > `client.init_market().await?` 后才可用。
 > 如需显式错误而不是延迟到后续调用时再失败，优先使用
 > `Client::{try_quote,try_kline_ref,try_tick_ref}`。
+> 在 `init_market()` 之前调用 `Client::{wait_update,wait_update_and_drain}` 或
+> `QuoteRef` / `KlineRef` / `TickRef` 的 `wait_update()`，现在会直接返回
+> `MarketNotInitialized`；`quote()` / `kline_ref()` / `tick_ref()` 仍可提前取句柄，
+> 但要等 market 激活后再进入等待循环。
 
 ### 目标持仓任务（Builder，推荐）
 

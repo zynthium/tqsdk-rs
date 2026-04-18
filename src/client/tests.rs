@@ -876,6 +876,139 @@ async fn inactive_market_access_returns_market_not_initialized() {
     ));
 }
 
+#[tokio::test]
+async fn inactive_market_wait_paths_return_market_not_initialized() {
+    let client = build_inactive_client();
+    let symbol = "SHFE.au2602";
+    let quote_ref = client.quote(symbol);
+    let kline_ref = client.kline_ref(symbol, Duration::from_secs(60));
+    let tick_ref = client.tick_ref(symbol);
+
+    let client_wait = tokio::time::timeout(Duration::from_millis(100), client.wait_update()).await;
+    assert!(
+        matches!(client_wait, Ok(Err(TqError::MarketNotInitialized { .. }))),
+        "Client::wait_update should return MarketNotInitialized, got {client_wait:?}"
+    );
+
+    let client_drain = tokio::time::timeout(Duration::from_millis(100), client.wait_update_and_drain()).await;
+    assert!(
+        matches!(client_drain, Ok(Err(TqError::MarketNotInitialized { .. }))),
+        "Client::wait_update_and_drain should return MarketNotInitialized, got {client_drain:?}"
+    );
+
+    let quote_wait = tokio::time::timeout(Duration::from_millis(100), quote_ref.wait_update()).await;
+    assert!(
+        matches!(quote_wait, Ok(Err(TqError::MarketNotInitialized { .. }))),
+        "QuoteRef::wait_update should return MarketNotInitialized, got {quote_wait:?}"
+    );
+
+    let kline_wait = tokio::time::timeout(Duration::from_millis(100), kline_ref.wait_update()).await;
+    assert!(
+        matches!(kline_wait, Ok(Err(TqError::MarketNotInitialized { .. }))),
+        "KlineRef::wait_update should return MarketNotInitialized, got {kline_wait:?}"
+    );
+
+    let tick_wait = tokio::time::timeout(Duration::from_millis(100), tick_ref.wait_update()).await;
+    assert!(
+        matches!(tick_wait, Ok(Err(TqError::MarketNotInitialized { .. }))),
+        "TickRef::wait_update should return MarketNotInitialized, got {tick_wait:?}"
+    );
+}
+
+#[tokio::test]
+async fn market_refs_created_before_activation_become_waitable_after_activation() {
+    let client = build_inactive_client();
+    let symbol = "SHFE.au2602";
+    let quote_ref = client.quote(symbol);
+    let kline_ref = client.kline_ref(symbol, Duration::from_secs(60));
+    let tick_ref = client.tick_ref(symbol);
+
+    client.live.set_active(true);
+
+    let updater = async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        client
+            .live
+            .market_state
+            .update_quote(
+                symbol.into(),
+                crate::types::Quote {
+                    instrument_id: "au2602".to_string(),
+                    last_price: 520.5,
+                    ..Default::default()
+                },
+            )
+            .await;
+        client
+            .live
+            .market_state
+            .update_kline(
+                crate::marketdata::KlineKey::new(symbol, Duration::from_secs(60)),
+                crate::types::Kline {
+                    id: 1,
+                    datetime: 1_711_111_111,
+                    open: 510.0,
+                    close: 521.0,
+                    high: 523.0,
+                    low: 509.0,
+                    open_oi: 10,
+                    close_oi: 12,
+                    volume: 99,
+                    epoch: None,
+                },
+            )
+            .await;
+        client
+            .live
+            .market_state
+            .update_tick(
+                symbol.into(),
+                crate::types::Tick {
+                    id: 1,
+                    datetime: 1_711_111_222,
+                    last_price: 520.5,
+                    average: 519.0,
+                    highest: 523.0,
+                    lowest: 509.0,
+                    ask_price1: 521.0,
+                    ask_volume1: 3,
+                    bid_price1: 520.0,
+                    bid_volume1: 2,
+                    volume: 101,
+                    amount: 0.0,
+                    open_interest: 88,
+                    ..Default::default()
+                },
+            )
+            .await;
+    };
+
+    let (client_wait, quote_wait, kline_wait, tick_wait, _) = tokio::join!(
+        tokio::time::timeout(Duration::from_millis(100), client.wait_update()),
+        tokio::time::timeout(Duration::from_millis(100), quote_ref.wait_update()),
+        tokio::time::timeout(Duration::from_millis(100), kline_ref.wait_update()),
+        tokio::time::timeout(Duration::from_millis(100), tick_ref.wait_update()),
+        updater,
+    );
+
+    assert!(
+        matches!(client_wait, Ok(Ok(()))),
+        "Client::wait_update should succeed after activation, got {client_wait:?}"
+    );
+    assert!(
+        matches!(quote_wait, Ok(Ok(()))),
+        "QuoteRef::wait_update should succeed after activation, got {quote_wait:?}"
+    );
+    assert!(
+        matches!(kline_wait, Ok(Ok(()))),
+        "KlineRef::wait_update should succeed after activation, got {kline_wait:?}"
+    );
+    assert!(
+        matches!(tick_wait, Ok(Ok(()))),
+        "TickRef::wait_update should succeed after activation, got {tick_wait:?}"
+    );
+}
+
 #[test]
 fn checked_market_getters_require_initialized_market() {
     let client = build_inactive_client();
